@@ -1,5 +1,21 @@
 # 更新记录 / Changelog
 
+## v0.1.21
+
+中文：
+
+- 提高 DeepSeek 前缀缓存命中：大段固定系统提示保持为第一条 system，技能目录拆到独立后置 system，避免技能变化破坏主要前缀。
+- 工具结果消息改成稳定前缀 `TOOL_RESULT name=...`，减少自然语言包装变化。
+- 恢复会话时的 resume note 改为 user 消息，避免在历史中插入额外 system 破坏系统前缀。
+- DeepSeek HTTP 客户端复用连接，减少重复 TLS/连接开销。
+
+English:
+
+- Improved DeepSeek prefix cache hits by keeping the large fixed system prompt as the first system message and moving skill context into a separate later system message.
+- Tool result messages now use the stable `TOOL_RESULT name=...` prefix.
+- Resume notes now use user messages instead of inserting extra system messages into resumed history.
+- The DeepSeek HTTP client reuses its connection client to reduce repeated TLS/connection overhead.
+
 ## v0.1.20
 
 中文：

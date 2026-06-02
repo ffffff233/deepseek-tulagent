@@ -229,7 +229,7 @@ def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str 
     if resume:
         try:
             session = SessionStore(settings.workspace).load(resume)
-            session.messages.append(Message(role="system", content="Resume note: preserve this conversation. If older tool history shows a background shell command timed out, do not assume the service failed; verify with service_status, ss, or curl. Prefer start_service for new background processes."))
+            session.messages.append(Message(role="user", content="Resume note: preserve this conversation. If older tool history shows a background shell command timed out, do not assume the service failed; verify with service_status, ss, or curl. Prefer start_service for new background processes."))
             print(f"resumed  : {session.session_id[:8]} · {len(session.messages)} messages")
             print_recent_session_messages(session)
         except FileNotFoundError as exc:
@@ -686,7 +686,7 @@ def print_recent_session_messages(session, limit: int = 3) -> None:
 
 def is_human_visible_history(text: str) -> bool:
     stripped = text.strip()
-    if stripped.startswith("Tool result from "):
+    if stripped.startswith("Tool result from ") or stripped.startswith("TOOL_RESULT "):
         return False
     if stripped.startswith('{"tool"') or stripped.startswith("```json"):
         return False

@@ -90,7 +90,8 @@ class TuLAgent:
     ) -> AgentResult:
         session = session or Session(self.settings.workspace)
         if not session.messages:
-            session.append(Message("system", self._system_prompt()))
+            for message in self._initial_messages():
+                session.append(message)
         session.append(Message("user", prompt))
 
         final_answer = ""
@@ -140,7 +141,7 @@ class TuLAgent:
                 content = json.dumps({"ok": False, "output": str(exc)}, ensure_ascii=False)
             if on_event:
                 on_event(f"done {name}")
-            session.append(Message("user", f"Tool result from {name}:\n{content}"))
+            session.append(Message("user", tool_result_message(name, content)))
             last_turn_had_tool_result = True
             if stop_after_tool:
                 return AgentResult(session.session_id, "", rounds)
@@ -152,6 +153,13 @@ class TuLAgent:
                 final_answer = "工具轮数已用完；请查看上面的工具结果，继续发送下一步指令。"
 
         return AgentResult(session.session_id, final_answer, rounds)
+
+    def _initial_messages(self) -> list[Message]:
+        messages = [Message("system", self._system_prompt())]
+        skill_context = SkillStore(self.settings.workspace).prompt_context()
+        if skill_context:
+            messages.append(Message("system", skill_context))
+        return messages
 
     def _system_prompt(self) -> str:
         mode_hint = {
@@ -169,7 +177,6 @@ class TuLAgent:
         return (
             f"{SYSTEM_PROMPT}\nWorkspace: {self.settings.workspace}\n{mode_hint}\n"
             f"Thinking mode: {self.thinking.name}. {self.thinking.system_hint}\n{policy_hint}\n"
-            f"{SkillStore(self.settings.workspace).prompt_context()}\n"
         )
 
     def _finalize_after_tool_limit(
@@ -253,6 +260,10 @@ def parse_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
 def is_question_mark_only(text: str) -> bool:
     stripped = text.strip()
     return bool(stripped) and all(char in {"?", "？"} for char in stripped)
+
+
+def tool_result_message(name: str, content: str) -> str:
+    return f"TOOL_RESULT name={name}\n{content}"
 
 
 def promises_more_work(text: str) -> bool:

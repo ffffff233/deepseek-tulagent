@@ -6,7 +6,7 @@ import io
 import os
 import re
 
-from deepseek_tulagent.agent import TuLAgent, compact_context_messages, is_question_mark_only, parse_tool_call, plainify_assistant_text, promises_more_work
+from deepseek_tulagent.agent import TuLAgent, compact_context_messages, is_question_mark_only, parse_tool_call, plainify_assistant_text, promises_more_work, tool_result_message
 from deepseek_tulagent.cli import main
 from deepseek_tulagent.config import Settings, get_settings, resolve_model
 from deepseek_tulagent.policy import ApprovalPolicy, ThinkingMode
@@ -120,6 +120,20 @@ def test_agent_runs_read_tool_loop(tmp_path: Path):
     assert (tmp_path / ".deepseek-tulagent" / "sessions").exists()
 
 
+def test_initial_messages_keep_large_system_prompt_cacheable(tmp_path: Path):
+    SkillStore(tmp_path).create("repo-debug", "Debug this repository.", "Run tests.")
+    agent = TuLAgent(settings(tmp_path), client=FakeClient(["done"]))
+    initial = agent._initial_messages()
+    assert [message.role for message in initial] == ["system", "system"]
+    assert "Available tools:" in initial[0].content
+    assert "repo-debug" not in initial[0].content
+    assert "repo-debug" in initial[1].content
+
+
+def test_tool_result_message_has_stable_prefix():
+    assert tool_result_message("run_shell", '{"ok": true}').startswith('TOOL_RESULT name=run_shell\n{"ok": true}')
+
+
 def test_agent_continues_after_assistant_promises_next_tool(tmp_path: Path):
     class ContinueClient:
         def __init__(self):
@@ -213,7 +227,7 @@ def test_question_mark_only_goes_to_model_but_ignores_tools(tmp_path: Path):
     assert result.rounds == 1
     assert result.answer == '{"tool":"list_files","arguments":{"path":"."}}'
     transcript = next((tmp_path / ".deepseek-tulagent" / "sessions").glob("*.jsonl")).read_text(encoding="utf-8")
-    assert "Tool result from" not in transcript
+    assert "TOOL_RESULT" not in transcript
     assert is_question_mark_only("???") is True
 
 
@@ -224,7 +238,7 @@ def test_agent_executes_action_bash_block_instead_of_fake_execution(tmp_path: Pa
     ])
     result = TuLAgent(settings(tmp_path), mode="root", client=client).run("检查仓库")
     transcript = next((tmp_path / ".deepseek-tulagent" / "sessions").glob("*.jsonl")).read_text(encoding="utf-8")
-    assert "Tool result from run_shell" in transcript
+    assert "TOOL_RESULT name=run_shell" in transcript
     assert "repo-ok" in transcript
     assert result.answer == "工具结果是 repo-ok。"
 
@@ -239,7 +253,7 @@ def test_tool_result_is_sent_as_user_context_not_tool_role(tmp_path: Path):
             if self.calls == 1:
                 return '{"tool":"read_file","arguments":{"path":"README.md"}}'
             assert messages[-1].role == "user"
-            assert "Tool result from read_file" in messages[-1].content
+            assert "TOOL_RESULT name=read_file" in messages[-1].content
             return "done"
 
     (tmp_path / "README.md").write_text("hello", encoding="utf-8")
@@ -486,13 +500,13 @@ def test_compact_history_hides_tool_noise(capsys):
     session = Session(Path("/tmp"), session_id="s")
     session.messages = [
         Message("assistant", '{"tool":"run_shell","arguments":{}}'),
-        Message("user", "Tool result from run_shell:\n{}"),
+        Message("user", "TOOL_RESULT name=run_shell\n{}"),
         Message("user", "在本机上开一个新端口。"),
         Message("assistant", "服务已经启动。"),
     ]
     print_recent_session_messages(session)
     out = capsys.readouterr().out
-    assert "Tool result" not in out
+    assert "TOOL_RESULT" not in out
     assert '{"tool"' not in out
     assert "在本机上开一个新端口" in out
 
@@ -702,7 +716,7 @@ def test_session_store_lists_and_loads_messages(tmp_path: Path):
     listed = store.list()
     assert listed[0]["session_id"] == result.session_id
     loaded = store.load(result.session_id)
-    assert [message.role for message in loaded.messages] == ["system", "user", "assistant"]
+    assert [message.role for message in loaded.messages] == ["system", "system", "user", "assistant"]
 
 
 def test_resume_global_session_appends_to_original_file(monkeypatch, tmp_path: Path):

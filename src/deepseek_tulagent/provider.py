@@ -14,6 +14,12 @@ class DeepSeekClient:
     def __init__(self, settings: Settings, timeout: float | None = None):
         self.settings = settings
         self.timeout = timeout or settings.request_timeout
+        self._client: httpx.Client | None = None
+
+    def _http(self) -> httpx.Client:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.Client(timeout=self.timeout)
+        return self._client
 
     def chat(self, messages: Iterable[Message]) -> str:
         if not self.settings.api_key:
@@ -31,9 +37,8 @@ class DeepSeekClient:
             "Content-Type": "application/json",
         }
         url = f"{self.settings.base_url}/chat/completions"
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(url, headers=headers, json=payload)
-            raise_for_status_with_body(response)
+        response = self._http().post(url, headers=headers, json=payload)
+        raise_for_status_with_body(response)
         data = response.json()
         try:
             return data["choices"][0]["message"]["content"] or ""
@@ -57,23 +62,22 @@ class DeepSeekClient:
             "Content-Type": "application/json",
         }
         url = f"{self.settings.base_url}/chat/completions"
-        with httpx.Client(timeout=self.timeout) as client:
-            with client.stream("POST", url, headers=headers, json=payload) as response:
-                raise_for_status_with_body(response)
-                for line in response.iter_lines():
-                    if not line or not line.startswith("data: "):
-                        continue
-                    chunk = line.removeprefix("data: ").strip()
-                    if chunk == "[DONE]":
-                        break
-                    try:
-                        data = json.loads(chunk)
-                        delta = data["choices"][0].get("delta", {})
-                    except (json.JSONDecodeError, KeyError, IndexError, TypeError):
-                        continue
-                    content = delta.get("content")
-                    if content:
-                        yield content
+        with self._http().stream("POST", url, headers=headers, json=payload) as response:
+            raise_for_status_with_body(response)
+            for line in response.iter_lines():
+                if not line or not line.startswith("data: "):
+                    continue
+                chunk = line.removeprefix("data: ").strip()
+                if chunk == "[DONE]":
+                    break
+                try:
+                    data = json.loads(chunk)
+                    delta = data["choices"][0].get("delta", {})
+                except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+                    continue
+                content = delta.get("content")
+                if content:
+                    yield content
 
     def models(self) -> list[str]:
         if not self.settings.api_key:
