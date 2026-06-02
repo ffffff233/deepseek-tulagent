@@ -73,6 +73,16 @@ def test_parse_ordinary_bash_example_is_not_tool_call():
     assert call is None
 
 
+def test_parse_multiple_action_bash_blocks_as_one_shell_tool():
+    call = parse_tool_call(
+        "我来检查本机所有端口：\n\n"
+        "```bash\nss -tuln\n```\n\n"
+        "同时查看连接：\n\n"
+        "```bash\nss -tun\n```"
+    )
+    assert call == ("run_shell", {"command": "ss -tuln\nss -tun"})
+
+
 def test_agent_runs_read_tool_loop(tmp_path: Path):
     (tmp_path / "README.md").write_text("hello", encoding="utf-8")
     client = FakeClient([

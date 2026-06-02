@@ -215,14 +215,15 @@ EXAMPLE_SHELL_CUES = (
 
 def parse_action_shell_block(text: str) -> tuple[str, dict[str, Any]] | None:
     blocks = re.findall(r"```(?:bash|sh|shell)\s*\n(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
-    if len(blocks) != 1:
+    if not blocks:
         return None
     prefix = text[: text.find("```")].lower()
     if any(cue in prefix for cue in EXAMPLE_SHELL_CUES):
         return None
     if not any(cue in prefix for cue in ACTION_SHELL_CUES):
         return None
-    command = normalize_shell_block(blocks[0])
+    command = "\n".join(normalize_shell_block(block) for block in blocks)
+    command = "\n".join(line for line in command.splitlines() if line.strip())
     if not command:
         return None
     return "run_shell", {"command": command}
