@@ -1,5 +1,19 @@
 # 更新记录 / Changelog
 
+## v0.1.24
+
+中文：
+
+- 修复思考动画和工具事件同时输出时互相覆盖、残留在同一行的问题。
+- 思考动画清行改用终端整行清除，并在工具事件输出前主动清掉当前动画行。
+- 思考动画颜色判断改为使用 stderr 的 TTY 状态。
+
+English:
+
+- Fixed thinking spinner and tool events overwriting or leaving remnants on the same terminal line.
+- Spinner cleanup now clears the whole terminal line and tool events clear the active spinner line before printing.
+- Spinner color detection now uses stderr TTY state.
+
 ## v0.1.23
 
 中文：

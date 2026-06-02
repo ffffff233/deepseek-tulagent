@@ -118,14 +118,18 @@ def confirm_tool(name: str, arguments: dict) -> bool:
 
 
 class ThinkingSpinner:
+    active: "ThinkingSpinner | None" = None
+
     def __init__(self, label: str = "thinking"):
         self.label = label
         self.stop_event = Event()
         self.thread: Thread | None = None
+        self.clear_width = 96
 
     def __enter__(self):
         if not sys.stderr.isatty():
             return self
+        ThinkingSpinner.active = self
         self.thread = Thread(target=self._spin, daemon=True)
         self.thread.start()
         return self
@@ -134,18 +138,29 @@ class ThinkingSpinner:
         self.stop_event.set()
         if self.thread:
             self.thread.join(timeout=0.2)
+        if ThinkingSpinner.active is self:
+            ThinkingSpinner.active = None
+        self.clear_line()
+
+    def clear_line(self) -> None:
         if sys.stderr.isatty():
-            print("\r" + " " * 60 + "\r", end="", file=sys.stderr, flush=True)
+            print("\r\033[2K", end="", file=sys.stderr, flush=True)
+
+    @classmethod
+    def clear_active_line(cls) -> None:
+        if cls.active is not None:
+            cls.active.clear_line()
 
     def _spin(self) -> None:
         frames = [
-            color("thinking", BRIGHT_MAGENTA + BOLD) + color("  ◐ ", CYAN) + color("reasoning", GRAY),
-            color("thinking", BRIGHT_MAGENTA + BOLD) + color("  ◓ ", CYAN) + color("planning", GRAY),
-            color("thinking", BRIGHT_MAGENTA + BOLD) + color("  ◑ ", CYAN) + color("routing", GRAY),
-            color("thinking", BRIGHT_MAGENTA + BOLD) + color("  ◒ ", CYAN) + color("checking", GRAY),
+            stream_color("thinking", BRIGHT_MAGENTA + BOLD, sys.stderr) + stream_color("  ◐ ", CYAN, sys.stderr) + stream_color("reasoning", GRAY, sys.stderr),
+            stream_color("thinking", BRIGHT_MAGENTA + BOLD, sys.stderr) + stream_color("  ◓ ", CYAN, sys.stderr) + stream_color("planning", GRAY, sys.stderr),
+            stream_color("thinking", BRIGHT_MAGENTA + BOLD, sys.stderr) + stream_color("  ◑ ", CYAN, sys.stderr) + stream_color("routing", GRAY, sys.stderr),
+            stream_color("thinking", BRIGHT_MAGENTA + BOLD, sys.stderr) + stream_color("  ◒ ", CYAN, sys.stderr) + stream_color("checking", GRAY, sys.stderr),
         ]
         index = 0
         while not self.stop_event.is_set():
+            self.clear_line()
             print("\r" + frames[index % len(frames)], end="", file=sys.stderr, flush=True)
             index += 1
             time.sleep(0.12)
@@ -559,6 +574,12 @@ def assistant_prefix() -> str:
 
 def color(text: str, code: str) -> str:
     if not sys.stdout.isatty() or os.getenv("NO_COLOR"):
+        return text
+    return f"{code}{text}{RESET}"
+
+
+def stream_color(text: str, code: str, stream) -> str:
+    if not stream.isatty() or os.getenv("NO_COLOR"):
         return text
     return f"{code}{text}{RESET}"
 

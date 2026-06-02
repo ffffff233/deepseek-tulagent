@@ -146,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
             print(text, end="", flush=True)
 
         def event(text: str) -> None:
+            ThinkingSpinner.clear_active_line()
             print("\n" + format_agent_event(text), file=sys.stderr)
 
         approver = (lambda _name, _args: True) if args.yes or args.mode in {"yolo", "root"} else None
@@ -389,6 +390,7 @@ def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str 
             continue
 
         def event(text: str) -> None:
+            ThinkingSpinner.clear_active_line()
             print(format_agent_event(text), flush=True)
 
         approver = (lambda _name, _args: True) if yes or current_mode in {"yolo", "root"} else confirm_tool

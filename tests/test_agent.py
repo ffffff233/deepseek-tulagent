@@ -14,7 +14,7 @@ from deepseek_tulagent.provider import apply_thinking_payload
 from deepseek_tulagent.session import SessionStore
 from deepseek_tulagent.skills import SkillStore
 from deepseek_tulagent.tui import ChatTui, TuiState
-from deepseek_tulagent.ui import display_width, filter_slash_items, format_agent_event, read_bracketed_paste, read_escape_suffix, read_raw_char, redraw_composer, selected_window_start, should_submit_newline, tail_for_width, slash_selection_insertion
+from deepseek_tulagent.ui import ThinkingSpinner, display_width, filter_slash_items, format_agent_event, read_bracketed_paste, read_escape_suffix, read_raw_char, redraw_composer, selected_window_start, should_submit_newline, tail_for_width, slash_selection_insertion
 from deepseek_tulagent.tools import ToolError, ToolRegistry, normalize_bing_url
 
 
@@ -799,6 +799,11 @@ def test_slash_skill_selection_inserts_agent_prompt():
 def test_agent_event_formatter_labels_tools():
     assert "run_shell" in format_agent_event("tool run_shell command=ls")
     assert "done" in format_agent_event("done run_shell")
+
+
+def test_spinner_clear_active_line_is_safe_without_active_spinner():
+    ThinkingSpinner.active = None
+    ThinkingSpinner.clear_active_line()
 
 
 def test_slash_selected_window_scrolls_with_selection():
