@@ -57,7 +57,7 @@ def get_settings() -> Settings:
         base_url=(os.getenv("DEEPSEEK_BASE_URL") or str(file_config.get("base_url") or "https://api.deepseek.com")).rstrip("/"),
         model=resolve_model(model),
         workspace=workspace,
-        max_tool_rounds=int(os.getenv("DSTUL_MAX_TOOL_ROUNDS") or file_config.get("max_tool_rounds") or "8"),
+        max_tool_rounds=int(os.getenv("DSTUL_MAX_TOOL_ROUNDS") or file_config.get("max_tool_rounds") or "256"),
         max_tokens=int(os.getenv("DSTUL_MAX_TOKENS") or file_config.get("max_tokens") or "8192"),
         request_timeout=float(os.getenv("DSTUL_REQUEST_TIMEOUT") or file_config.get("request_timeout") or "180"),
         default_mode=str(file_config.get("default_mode") or "root"),

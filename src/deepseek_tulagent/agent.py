@@ -43,6 +43,9 @@ Rules:
 - Keep final replies visually plain. Avoid decorative Markdown, bold markers, and asterisk bullets unless code syntax or shell globbing requires `*`.
 - If the user message is only `?`, `？`, or repeated question marks, do not infer a task and do not use tools. Ask what they want to ask.
 - To start a long-running/background process, use start_service(name, command). Do not use shell "&" backgrounding.
+- To expose a local service publicly, check both local listening state and the public address. Prefer:
+  `curl -fsS --connect-timeout 5 https://api.ipify.org || curl -fsS --connect-timeout 5 https://ifconfig.me || curl -fsS --connect-timeout 5 https://checkip.amazonaws.com`
+  then verify the service with `ss -tlnp`, local `curl`, and firewall status (`ufw status` or iptables/nftables when available).
 - For text search, prefer a narrow path and small max_matches. Broad searches can time out.
 - If a web_search result is empty, irrelevant, or failed and the user asked to search, request one more web_search with a clearer query instead of saying you will search again.
 - If no tool is needed, answer directly.
@@ -142,7 +145,11 @@ class TuLAgent:
             if stop_after_tool:
                 return AgentResult(session.session_id, "", rounds)
         else:
-            final_answer = "Paused after tool execution. Review the result above, then send the next instruction if needed."
+            final_answer = self._finalize_after_tool_limit(session, stream=stream, on_delta=on_delta, on_event=on_event)
+            if final_answer:
+                session.append(Message("assistant", final_answer))
+            else:
+                final_answer = "工具轮数已用完；请查看上面的工具结果，继续发送下一步指令。"
 
         return AgentResult(session.session_id, final_answer, rounds)
 
@@ -164,6 +171,33 @@ class TuLAgent:
             f"Thinking mode: {self.thinking.name}. {self.thinking.system_hint}\n{policy_hint}\n"
             f"{SkillStore(self.settings.workspace).prompt_context()}\n"
         )
+
+    def _finalize_after_tool_limit(
+        self,
+        session: Session,
+        *,
+        stream: bool,
+        on_delta: Callable[[str], None] | None,
+        on_event: Callable[[str], None] | None,
+    ) -> str:
+        if on_event:
+            on_event("tool round limit reached; finalizing")
+        messages = compact_context_messages(session.messages, self.settings.model, on_event=on_event)
+        messages = messages + [
+            Message(
+                "user",
+                "The tool round limit has been reached. Do not request more tools. "
+                "Summarize what succeeded, what failed or remains unverified, and the exact next command or user action if needed.",
+            )
+        ]
+        if stream:
+            parts: list[str] = []
+            for delta in self.client.stream_chat(messages):
+                parts.append(delta)
+                if on_delta:
+                    on_delta(delta)
+            return plainify_assistant_text("".join(parts))
+        return plainify_assistant_text(self.client.chat(messages))
 
     def _needs_confirmation(self, name: str) -> bool:
         dangerous = {"write_file", "run_shell", "apply_patch", "download_url", "start_service", "stop_service"}

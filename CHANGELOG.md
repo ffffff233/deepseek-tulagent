@@ -1,5 +1,19 @@
 # 更新记录 / Changelog
 
+## v0.1.20
+
+中文：
+
+- 默认工具轮数从 8 提高到 256，复杂任务不会轻易打满。
+- 工具轮数真的打满时，不再输出 `Paused after tool execution...`；会让模型基于已有工具结果做一次最终总结。
+- 系统提示加入公网服务验证建议：公网 IP 获取优先使用 `api.ipify.org`、`ifconfig.me`、`checkip.amazonaws.com`，并配合 `ss`、本地 `curl`、防火墙状态检查。
+
+English:
+
+- Raised the default tool round limit from 8 to 256 for longer automation tasks.
+- When the tool round limit is actually reached, the agent no longer prints `Paused after tool execution...`; it asks the model to summarize the completed and remaining state.
+- Added public service verification guidance using `api.ipify.org`, `ifconfig.me`, `checkip.amazonaws.com`, plus `ss`, local `curl`, and firewall checks.
+
 ## v0.1.19
 
 中文：

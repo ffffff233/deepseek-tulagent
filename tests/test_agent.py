@@ -141,6 +141,24 @@ def test_agent_continues_after_assistant_promises_next_tool(tmp_path: Path):
     assert result.rounds == 4
 
 
+def test_agent_finalizes_instead_of_pausing_after_tool_limit(tmp_path: Path):
+    class LimitClient:
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, messages):
+            self.calls += 1
+            if self.calls <= 2:
+                return '{"tool":"read_file","arguments":{"path":"README.md"}}'
+            assert "tool round limit" in messages[-1].content.lower()
+            return "工具轮数已到。README 已读取，但还没完成更多验证。"
+
+    (tmp_path / "README.md").write_text("hello", encoding="utf-8")
+    result = TuLAgent(settings(tmp_path), mode="root", client=LimitClient()).run("连续检查", max_tool_rounds=2)
+    assert result.answer == "工具轮数已到。README 已读取，但还没完成更多验证。"
+    assert "Paused after tool execution" not in result.answer
+
+
 def test_promises_more_work_detection_is_narrow():
     assert promises_more_work("接下来继续执行后续步骤：检查网络环境、启动服务器、验证运行状态。")
     assert not promises_more_work("文件已写入成功。")
@@ -421,6 +439,7 @@ def test_settings_read_local_config_file(monkeypatch, tmp_path: Path):
     assert settings_obj.api_key == "sk-test"
     assert settings_obj.model == "deepseek-v4-flash"
     assert settings_obj.default_mode == "root"
+    assert settings_obj.max_tool_rounds == 256
 
 
 def test_empty_cli_defaults_to_root_fast_start(monkeypatch, tmp_path: Path):
