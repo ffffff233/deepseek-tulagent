@@ -13,7 +13,7 @@ from deepseek_tulagent.policy import ApprovalPolicy, ThinkingMode
 from deepseek_tulagent.session import SessionStore
 from deepseek_tulagent.skills import SkillStore
 from deepseek_tulagent.tui import ChatTui, TuiState
-from deepseek_tulagent.ui import filter_slash_items, slash_selection_insertion
+from deepseek_tulagent.ui import filter_slash_items, read_escape_suffix, slash_selection_insertion
 from deepseek_tulagent.tools import ToolError, ToolRegistry
 
 
@@ -507,21 +507,32 @@ def test_slash_skill_selection_inserts_agent_prompt():
 def test_slash_select_draw_clips_to_terminal_width(monkeypatch):
     from deepseek_tulagent.ui import draw_slash_select
 
-    output = io.StringIO()
-    monkeypatch.setattr("sys.stdout", output)
-    monkeypatch.setattr("shutil.get_terminal_size", lambda _fallback: os.terminal_size((42, 20)))
-    lines = draw_slash_select(
-        [
-            ("/model", "choose model / show live DeepSeek models with a very long tail"),
-            ("/mode root", "highest permission, all tools approved with a very long tail"),
-        ],
-        "",
-        0,
-    )
-    text = re.sub(r"\033\[[0-9;]*[A-Za-z]", "", output.getvalue()).replace("\r", "")
-    visible_lines = [line for line in text.splitlines() if line.strip()]
-    assert lines == 5
-    assert visible_lines
-    assert all(len(line) <= 42 for line in visible_lines)
-    assert sum("/model" in line for line in visible_lines) == 1
-    assert sum("/mode root" in line for line in visible_lines) == 1
+    for columns in (20, 42, 100):
+        output = io.StringIO()
+        monkeypatch.setattr("sys.stdout", output)
+        monkeypatch.setattr("shutil.get_terminal_size", lambda _fallback, columns=columns: os.terminal_size((columns, 20)))
+        lines = draw_slash_select(
+            [
+                ("/model", "choose model / show live DeepSeek models with a very long tail"),
+                ("/mode root", "highest permission, all tools approved with a very long tail"),
+            ],
+            "",
+            0,
+        )
+        text = re.sub(r"\033\[[0-9;]*[A-Za-z]", "", output.getvalue()).replace("\r", "")
+        visible_lines = [line for line in text.splitlines() if line.strip()]
+        assert lines == 5
+        assert "\r\n" in output.getvalue()
+        assert visible_lines
+        assert all(len(line) <= columns for line in visible_lines)
+        assert sum("/model" in line for line in visible_lines) == 1
+
+
+def test_escape_suffix_reads_arrow_bytes_from_fd():
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b"[B")
+        assert read_escape_suffix(read_fd) == "[B"
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)

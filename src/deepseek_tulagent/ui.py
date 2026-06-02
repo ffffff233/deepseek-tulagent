@@ -186,9 +186,9 @@ def read_composer(prompt: str, slash_items: list[tuple[str, str]] | None = None)
         sys.stdout.write(prompt)
         sys.stdout.flush()
         while True:
-            char = sys.stdin.read(1)
+            char = read_raw_char(fd)
             if char in {"\r", "\n"}:
-                sys.stdout.write("\n")
+                sys.stdout.write("\r\n")
                 sys.stdout.flush()
                 return "".join(buffer)
             if char == "\x03":
@@ -211,7 +211,7 @@ def read_composer(prompt: str, slash_items: list[tuple[str, str]] | None = None)
                         sys.stdout.write(prompt + insertion)
                         sys.stdout.flush()
                         continue
-                    sys.stdout.write(prompt + selected + "\n")
+                    sys.stdout.write(prompt + selected + "\r\n")
                     sys.stdout.flush()
                     return selected
                 sys.stdout.write("\r\033[2K")
@@ -250,6 +250,7 @@ def slash_select(items: list[tuple[str, str]], title: str = "commands") -> str |
     query = ""
     selected = 0
     last_lines = 0
+    fd = sys.stdin.fileno()
     enter_palette_screen()
     try:
         while True:
@@ -257,7 +258,7 @@ def slash_select(items: list[tuple[str, str]], title: str = "commands") -> str |
             if selected >= len(filtered):
                 selected = 0
             last_lines = draw_slash_select(filtered, query, selected, last_lines, title=title)
-            char = sys.stdin.read(1)
+            char = read_raw_char(fd)
             if char in {"\r", "\n"}:
                 if not filtered:
                     return None
@@ -270,7 +271,7 @@ def slash_select(items: list[tuple[str, str]], title: str = "commands") -> str |
                     return command
                 return command
             if char == "\x1b":
-                next_chars = read_escape_suffix()
+                next_chars = read_escape_suffix(fd)
                 if next_chars in {"[A", "OA"}:
                     selected = max(0, selected - 1)
                     continue
@@ -319,16 +320,16 @@ def filter_slash_items(items: list[tuple[str, str]], query: str) -> list[tuple[s
 
 def draw_slash_select(items: list[tuple[str, str]], query: str, selected: int, previous_lines: int = 0, title: str = "commands") -> int:
     width, height = shutil.get_terminal_size((88, 24))
-    width = max(width, 24)
+    width = max(width, 12)
     height = max(height, 12)
-    inner_width = max(width - 2, 20)
+    inner_width = width
     visible = items[:6]
     total_lines = 3 + max(len(visible), 1)
     top = max((height - total_lines) // 4, 1)
     sys.stdout.write("\033[H\033[2J")
-    sys.stdout.write("\n" * top)
+    sys.stdout.write("\r\n" * top)
     title_text = f"{title} /{query}" if query else title
-    sys.stdout.write(color(clip_visible(title_text, inner_width), BOLD + WHITE) + "\n")
+    sys.stdout.write(color(clip_visible(title_text, inner_width), BOLD + WHITE) + "\r\n")
     command_width = min(max(max((len(item[0]) for item in visible), default=8), 12), 22)
     for index, (command, description) in enumerate(visible):
         marker = ">" if index == selected else " "
@@ -340,11 +341,11 @@ def draw_slash_select(items: list[tuple[str, str]], query: str, selected: int, p
             line = color(line, BOLD + WHITE)
         else:
             line = color(line, GRAY)
-        sys.stdout.write(line + "\n")
+        sys.stdout.write(line + "\r\n")
     if not visible:
-        sys.stdout.write(color("no matches", GRAY) + "\n")
+        sys.stdout.write(color("no matches", GRAY) + "\r\n")
     footer = clip_visible("enter: run | up/down or j/k: select | esc/backspace: cancel", inner_width)
-    sys.stdout.write(color(footer, GRAY) + "\n")
+    sys.stdout.write(color(footer, GRAY) + "\r\n")
     sys.stdout.flush()
     return total_lines
 
@@ -369,13 +370,17 @@ def exit_palette_screen() -> None:
     sys.stdout.flush()
 
 
-def read_escape_suffix() -> str:
+def read_raw_char(fd: int) -> str:
+    return os.read(fd, 1).decode("utf-8", errors="ignore")
+
+
+def read_escape_suffix(fd: int) -> str:
     chars: list[str] = []
-    for timeout in (0.35, 0.2, 0.05, 0.02):
-        ready, _, _ = select.select([sys.stdin], [], [], timeout)
+    for timeout in (0.8, 0.25, 0.08, 0.03):
+        ready, _, _ = select.select([fd], [], [], timeout)
         if not ready:
             break
-        chars.append(sys.stdin.read(1))
+        chars.append(read_raw_char(fd))
         if "".join(chars) in {"[A", "[B", "[C", "[D", "OA", "OB", "OC", "OD"}:
             break
     return "".join(chars)
