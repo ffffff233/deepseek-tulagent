@@ -362,7 +362,7 @@ def normalize_tool_call(data: Any) -> tuple[str, dict[str, Any]] | None:
     if not isinstance(data, dict):
         return None
     if isinstance(data.get("tool"), str):
-        return data["tool"], normalize_arguments(data.get("arguments", {}))
+        return data["tool"], normalize_tool_arguments(data)
     if isinstance(data.get("name"), str) and ("input" in data or "arguments" in data):
         return data["name"], normalize_arguments(data.get("input", data.get("arguments", {})))
     function_call = data.get("function_call")
@@ -378,6 +378,14 @@ def normalize_tool_call(data: Any) -> tuple[str, dict[str, Any]] | None:
             if isinstance(first.get("name"), str):
                 return first["name"], normalize_arguments(first.get("arguments", first.get("input", {})))
     return None
+
+
+def normalize_tool_arguments(data: dict[str, Any]) -> dict[str, Any]:
+    arguments = normalize_arguments(data.get("arguments", {}))
+    for key in ("timeout", "max_results", "max_bytes", "max_matches"):
+        if key in data and key not in arguments:
+            arguments[key] = data[key]
+    return arguments
 
 
 def normalize_arguments(value: Any) -> dict[str, Any]:

@@ -1,5 +1,19 @@
 # 更新记录 / Changelog
 
+## v0.1.18
+
+中文：
+
+- 修复模型输出工具 JSON 后面混入代码围栏尾巴时没有执行工具的问题。
+- 兼容模型把 `timeout`、`max_results` 等参数放在工具 JSON 顶层的情况。
+- TUI 中空闲状态按 `Ctrl+C` 仍会退出；正在思考/执行状态下收到中断只取消当前回合并回到输入。
+
+English:
+
+- Fixed tool JSON not being executed when the model leaves trailing code-fence noise after the JSON object.
+- Accepts top-level tool options such as `timeout` and `max_results` when the model emits them outside `arguments`.
+- In the TUI, `Ctrl+C` still exits while idle; during thinking/execution, an interrupt cancels only the current turn and returns to input.
+
 ## v0.1.17
 
 中文：

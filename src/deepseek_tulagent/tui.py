@@ -39,29 +39,41 @@ class ChatTui:
         while True:
             self._draw(stdscr)
             key = stdscr.getch()
-            if key in (3, 4):
-                self.state.status = "exit"
+            if self._handle_key(key):
                 return
-            if key in (curses.KEY_ENTER, 10, 13):
-                text = self.state.input_text.strip()
+
+    def _handle_key(self, key: int) -> bool:
+        if key == 4:
+            self.state.status = "exit"
+            return True
+        if key == 3:
+            if self.state.status in {"thinking", "running", "executing"}:
                 self.state.input_text = ""
-                if not text:
-                    continue
-                if text in {"/exit", "/quit"}:
-                    self.state.status = "exit"
-                    return
-                if text.startswith("/"):
-                    should_exit = self.on_command(text, self.state)
-                    if should_exit:
-                        return
-                else:
-                    self.on_submit(text, self.state)
-                continue
-            if key in (curses.KEY_BACKSPACE, 127, 8):
-                self.state.input_text = self.state.input_text[:-1]
-                continue
-            if 0 <= key < 256 and chr(key).isprintable():
-                self.state.input_text += chr(key)
+                self.state.status = "cancelled"
+                return False
+            self.state.status = "exit"
+            return True
+        if key in (curses.KEY_ENTER, 10, 13):
+            text = self.state.input_text.strip()
+            self.state.input_text = ""
+            if not text:
+                return False
+            if text in {"/exit", "/quit"}:
+                self.state.status = "exit"
+                return True
+            if text.startswith("/"):
+                return self.on_command(text, self.state)
+            try:
+                self.on_submit(text, self.state)
+            except KeyboardInterrupt:
+                self.state.status = "cancelled"
+            return False
+        if key in (curses.KEY_BACKSPACE, 127, 8):
+            self.state.input_text = self.state.input_text[:-1]
+            return False
+        if 0 <= key < 256 and chr(key).isprintable():
+            self.state.input_text += chr(key)
+        return False
 
     def _draw(self, stdscr) -> None:
         stdscr.erase()

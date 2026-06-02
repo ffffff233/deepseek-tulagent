@@ -67,6 +67,19 @@ def test_parse_text_wrapped_tool_json():
     assert call == ("search_text", {"query": "DeepSeek"})
 
 
+def test_parse_tool_json_with_trailing_fence_noise():
+    text = (
+        "现在修改文件。\n"
+        '{"tool":"apply_patch","arguments":{"patch":"--- a/index.html\\n+++ b/index.html\\n@@\\n-old\\n+new\\n"},"timeout":10}}\n'
+        "```"
+    )
+    call = parse_tool_call(text)
+    assert call == (
+        "apply_patch",
+        {"patch": "--- a/index.html\n+++ b/index.html\n@@\n-old\n+new\n", "timeout": 10},
+    )
+
+
 def test_plainify_assistant_text_removes_decorative_stars():
     text = "**标题**\n* 项目\n```bash\necho *.py\n```"
     cleaned = plainify_assistant_text(text)
@@ -687,6 +700,20 @@ def test_tui_draw_avoids_bottom_right_curses_error(monkeypatch):
     monkeypatch.setattr("deepseek_tulagent.tui.curses.color_pair", lambda _n: 0)
     state = TuiState(model="deepseek-v4-flash", mode="root", thinking="fast")
     ChatTui(state, lambda _text, _state: None, lambda _cmd, _state: False)._draw(FakeWindow())
+
+
+def test_tui_ctrl_c_exits_when_idle():
+    state = TuiState(model="deepseek-v4-flash", mode="root", thinking="fast", input_text="正在输入")
+    tui = ChatTui(state, lambda _text, _state: None, lambda _cmd, _state: False)
+    assert tui._handle_key(3) is True
+    assert state.status == "exit"
+
+
+def test_tui_ctrl_c_cancels_running_turn_not_exit():
+    state = TuiState(model="deepseek-v4-flash", mode="root", thinking="fast", input_text="正在输入", status="thinking")
+    tui = ChatTui(state, lambda _text, _state: None, lambda _cmd, _state: False)
+    assert tui._handle_key(3) is False
+    assert state.status == "cancelled"
 
 
 def test_slash_filter_matches_command_initial():
