@@ -221,6 +221,7 @@ def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str 
     else:
         print_header(str(settings.workspace), settings.base_url, settings.model, mode, thinking.name, approval_text)
     print(f"limits   : {settings.max_tool_rounds} tool rounds, {settings.max_tokens} max tokens, {settings.request_timeout:g}s timeout")
+    print(f"app      : DeepSeek TuLAgent {__version__}")
     toolkit = ToolRegistry(settings.workspace)
     print(f"toolkit  : {len(toolkit.names)} tools loaded; type / to inspect")
     session = None
@@ -416,12 +417,15 @@ def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str 
 
 def maybe_prompt_update() -> None:
     if os.getenv("DSTUL_NO_UPDATE_CHECK"):
+        print(f"version  : {__version__} (update check disabled)")
         return
     if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print(f"version  : {__version__}")
         return
     try:
         info = check_for_update(__version__, timeout=1.5)
     except Exception:
+        print(f"version  : {__version__} (update check failed)")
         return
     if not info:
         print(f"version  : {__version__} (latest)")

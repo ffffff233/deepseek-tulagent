@@ -14,7 +14,7 @@ from deepseek_tulagent.provider import apply_thinking_payload
 from deepseek_tulagent.session import SessionStore
 from deepseek_tulagent.skills import SkillStore
 from deepseek_tulagent.tui import ChatTui, TuiState
-from deepseek_tulagent.ui import filter_slash_items, read_escape_suffix, read_raw_char, selected_window_start, slash_selection_insertion
+from deepseek_tulagent.ui import filter_slash_items, read_escape_suffix, read_raw_char, redraw_composer, selected_window_start, slash_selection_insertion
 from deepseek_tulagent.tools import ToolError, ToolRegistry
 
 
@@ -474,6 +474,30 @@ def test_interactive_think_command_uses_picker(monkeypatch, tmp_path: Path, caps
     assert get_settings().default_thinking == "deep"
 
 
+def test_interactive_startup_prints_version(monkeypatch, tmp_path: Path, capsys):
+    import deepseek_tulagent.cli as cli
+
+    prompts = iter(["/exit"])
+
+    class FakeDeepSeekClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ping(self):
+            return {"model_available": True}
+
+    monkeypatch.setattr(cli, "startup_animation", lambda enabled=True: None)
+    monkeypatch.setattr(cli, "read_composer", lambda *_args, **_kwargs: next(prompts))
+    monkeypatch.setattr(cli, "maybe_prompt_update", lambda: print("version  : test (latest)"))
+    monkeypatch.setattr(cli, "DeepSeekClient", FakeDeepSeekClient)
+
+    code = cli.interactive(settings(tmp_path), "root", "fast", True)
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "app      : DeepSeek TuLAgent" in out
+    assert "version  : test (latest)" in out
+
+
 def test_auto_thinking_uses_model_choice(monkeypatch, tmp_path: Path):
     import deepseek_tulagent.cli as cli
 
@@ -639,6 +663,25 @@ def test_slash_selected_window_scrolls_with_selection():
     assert selected_window_start(total=12, selected=5, window_size=6) == 0
     assert selected_window_start(total=12, selected=6, window_size=6) == 1
     assert selected_window_start(total=12, selected=11, window_size=6) == 6
+
+
+def test_redraw_composer_clears_entire_line(monkeypatch):
+    output = io.StringIO()
+    monkeypatch.setattr("sys.stdout", output)
+    redraw_composer("prompt> ", list("abc"))
+    text = output.getvalue()
+    assert "\r\033[2K" in text
+    assert text.endswith("prompt> abc")
+
+
+def test_redraw_composer_handles_wide_chinese_text(monkeypatch):
+    output = io.StringIO()
+    monkeypatch.setattr("sys.stdout", output)
+    redraw_composer("prompt> ", list("画画"))
+    redraw_composer("prompt> ", list("画"))
+    text = output.getvalue()
+    assert text.count("\r\033[2K") == 2
+    assert text.endswith("prompt> 画")
 
 
 def test_slash_select_draw_clips_to_terminal_width(monkeypatch):

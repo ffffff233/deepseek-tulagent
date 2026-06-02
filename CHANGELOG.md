@@ -1,5 +1,17 @@
 # 更新记录 / Changelog
 
+## v0.1.13
+
+中文：
+
+- 输入框每次输入、删除、插入技能后都会整行清理并重画，修复中文宽字符残留、第二个中文字删不掉的问题。
+- 启动信息明确显示 `DeepSeek TuLAgent <version>`，并显示更新检查状态。
+
+English:
+
+- Composer now clears and redraws the full line after typing, deleting, or skill insertion, fixing wide-character residue and undeletable second CJK characters.
+- Startup now clearly prints `DeepSeek TuLAgent <version>` and update-check status.
+
 ## v0.1.12
 
 中文：

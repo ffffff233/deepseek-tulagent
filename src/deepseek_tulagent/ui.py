@@ -206,9 +206,7 @@ def read_composer(prompt: str, slash_items: list[tuple[str, str]] | None = None)
     buffer: list[str] = []
     try:
         tty.setraw(fd)
-        sys.stdout.write("\033[?25h")
-        sys.stdout.write(prompt)
-        sys.stdout.flush()
+        redraw_composer(prompt, buffer)
         while True:
             char = read_raw_char(fd)
             if char in {"\r", "\n"}:
@@ -222,8 +220,7 @@ def read_composer(prompt: str, slash_items: list[tuple[str, str]] | None = None)
             if char in {"\x7f", "\b"}:
                 if buffer:
                     buffer.pop()
-                    sys.stdout.write("\b \b")
-                    sys.stdout.flush()
+                    redraw_composer(prompt, buffer)
                 continue
             if char == "/" and not buffer and slash_items:
                 selected = slash_select(slash_items)
@@ -231,23 +228,25 @@ def read_composer(prompt: str, slash_items: list[tuple[str, str]] | None = None)
                     insertion = slash_selection_insertion(selected)
                     if insertion is not None:
                         buffer.extend(insertion)
-                        sys.stdout.write("\r\033[2K")
-                        sys.stdout.write(prompt + insertion)
-                        sys.stdout.flush()
+                        redraw_composer(prompt, buffer)
                         continue
                     sys.stdout.write(prompt + selected + "\r\n")
                     sys.stdout.flush()
                     return selected
-                sys.stdout.write("\r\033[2K")
-                sys.stdout.write(prompt)
-                sys.stdout.flush()
+                redraw_composer(prompt, buffer)
                 continue
             if char.isprintable():
                 buffer.append(char)
-                sys.stdout.write(char)
-                sys.stdout.flush()
+                redraw_composer(prompt, buffer)
+                continue
     finally:
         termios.tcsetattr(fd, termios.TCSANOW, old)
+
+
+def redraw_composer(prompt: str, buffer: list[str]) -> None:
+    sys.stdout.write("\033[?25h\r\033[2K")
+    sys.stdout.write(prompt + "".join(buffer))
+    sys.stdout.flush()
 
 
 def choose_palette(items: list[tuple[str, str]], title: str = "commands") -> str | None:
