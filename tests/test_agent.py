@@ -545,13 +545,14 @@ def test_context_compaction_keeps_recent_messages(monkeypatch):
     assert "old 19" in compacted[-1].content
 
 
-def test_auto_context_compaction_is_disabled_by_default(monkeypatch):
+def test_auto_context_compaction_can_be_disabled(monkeypatch):
     from deepseek_tulagent.messages import Message
     import deepseek_tulagent.agent as agent
 
     messages = [Message("system", "system")]
     messages.extend(Message("user", "old " + ("x" * 200)) for _ in range(20))
     monkeypatch.setattr(agent, "context_window_tokens", lambda _model: 200)
+    monkeypatch.setenv("DSTUL_AUTO_COMPACT", "0")
 
     assert compact_context_messages(messages, "tiny") is messages
 

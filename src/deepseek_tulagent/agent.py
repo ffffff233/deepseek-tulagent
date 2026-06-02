@@ -226,10 +226,10 @@ def compact_context_messages(
     on_event: Callable[[str], None] | None = None,
     force: bool = False,
 ) -> list[Message]:
-    if not force and os.getenv("DSTUL_AUTO_COMPACT", "").lower() not in {"1", "true", "yes"}:
+    if not force and os.getenv("DSTUL_AUTO_COMPACT", "1").lower() in {"0", "false", "no"}:
         return messages
     limit = context_window_tokens(model)
-    threshold = int(limit * 0.82)
+    threshold = int(limit * 0.92)
     estimated = estimate_message_tokens(messages)
     if not force and estimated <= threshold:
         return messages
