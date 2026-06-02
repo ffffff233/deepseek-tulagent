@@ -6,14 +6,14 @@ import io
 import os
 import re
 
-from deepseek_tulagent.agent import TuLAgent, parse_tool_call
+from deepseek_tulagent.agent import TuLAgent, compact_context_messages, parse_tool_call
 from deepseek_tulagent.cli import main
 from deepseek_tulagent.config import Settings, get_settings, resolve_model
 from deepseek_tulagent.policy import ApprovalPolicy, ThinkingMode
 from deepseek_tulagent.session import SessionStore
 from deepseek_tulagent.skills import SkillStore
 from deepseek_tulagent.tui import ChatTui, TuiState
-from deepseek_tulagent.ui import filter_slash_items, read_escape_suffix, slash_selection_insertion
+from deepseek_tulagent.ui import filter_slash_items, read_escape_suffix, selected_window_start, slash_selection_insertion
 from deepseek_tulagent.tools import ToolError, ToolRegistry
 
 
@@ -173,6 +173,7 @@ def test_thinking_mode_resolves_model_and_budget():
     deep = ThinkingMode.resolve("deep")
     assert fast.model_hint == "deepseek-v4-flash"
     assert fast.max_tokens < deep.max_tokens
+    assert deep.deliberation_passes > 0
     assert deep.system_hint
 
 
@@ -398,6 +399,62 @@ def test_interactive_model_command_uses_picker(monkeypatch, tmp_path: Path, caps
     assert "model set to deepseek-v4-pro" in out
 
 
+def test_interactive_think_command_uses_picker(monkeypatch, tmp_path: Path, capsys):
+    import deepseek_tulagent.cli as cli
+
+    prompts = iter(["/think", "/exit"])
+
+    class FakeDeepSeekClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ping(self):
+            return {"model_available": True}
+
+    monkeypatch.setattr(cli, "startup_animation", lambda enabled=True: None)
+    monkeypatch.setattr(cli, "read_composer", lambda *_args, **_kwargs: next(prompts))
+    monkeypatch.setattr(cli, "choose_palette", lambda rows, title="commands": "deep")
+    monkeypatch.setattr(cli, "DeepSeekClient", FakeDeepSeekClient)
+
+    code = cli.interactive(settings(tmp_path), "root", "fast", True)
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "thinking set to deep" in out
+    assert "internal_passes=2" in out
+
+
+def test_internal_thinking_runs_extra_model_pass(tmp_path: Path):
+    class ThinkingClient:
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, messages):
+            self.calls += 1
+            if self.calls <= 2:
+                return f"private note {self.calls}"
+            assert "Private model deliberation notes" in messages[-1].content
+            return "final answer"
+
+    client = ThinkingClient()
+    result = TuLAgent(settings(tmp_path), thinking="deep", client=client).run("solve")
+    assert client.calls == 3
+    assert result.answer == "final answer"
+
+
+def test_context_compaction_keeps_recent_messages(monkeypatch):
+    from deepseek_tulagent.messages import Message
+    import deepseek_tulagent.agent as agent
+
+    messages = [Message("system", "system")]
+    messages.extend(Message("user", "old " + str(index) + " " + ("x" * 200)) for index in range(20))
+    monkeypatch.setattr(agent, "context_window_tokens", lambda _model: 200)
+
+    compacted = compact_context_messages(messages, "tiny")
+    assert len(compacted) < len(messages)
+    assert "Auto-compressed earlier conversation context" in compacted[1].content
+    assert "old 19" in compacted[-1].content
+
+
 def test_update_version_comparison():
     from deepseek_tulagent.updates import is_newer, normalize_version
 
@@ -499,9 +556,23 @@ def test_slash_filter_matches_command_initial():
     assert filter_slash_items(items, "t")[0][0] == "/think fast"
 
 
+def test_slash_items_include_manual_compact(tmp_path: Path):
+    import deepseek_tulagent.cli as cli
+
+    commands = [command for command, _description in cli.slash_items(settings(tmp_path))]
+    assert "/compact" in commands
+
+
 def test_slash_skill_selection_inserts_agent_prompt():
     assert slash_selection_insertion("/skill repo-debug") == "Use skill repo-debug: "
     assert slash_selection_insertion("/model") is None
+
+
+def test_slash_selected_window_scrolls_with_selection():
+    assert selected_window_start(total=12, selected=0, window_size=6) == 0
+    assert selected_window_start(total=12, selected=5, window_size=6) == 0
+    assert selected_window_start(total=12, selected=6, window_size=6) == 1
+    assert selected_window_start(total=12, selected=11, window_size=6) == 6
 
 
 def test_slash_select_draw_clips_to_terminal_width(monkeypatch):

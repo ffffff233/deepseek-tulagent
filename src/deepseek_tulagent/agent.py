@@ -58,7 +58,7 @@ class TuLAgent:
         self,
         settings: Settings,
         mode: str = "agent",
-        thinking: str = "balanced",
+        thinking: str = "fast",
         client: DeepSeekClient | None = None,
         approve: Callable[[str, dict[str, Any]], bool] | None = None,
     ):
@@ -90,15 +90,17 @@ class TuLAgent:
         rounds = 0
         round_limit = max_tool_rounds or self.settings.max_tool_rounds
         for rounds in range(1, round_limit + 1):
+            model_messages = compact_context_messages(session.messages, self.settings.model, on_event=on_event)
+            model_messages = self._with_internal_thinking(model_messages, on_event=on_event)
             if stream:
                 parts: list[str] = []
-                for delta in self.client.stream_chat(session.messages):
+                for delta in self.client.stream_chat(model_messages):
                     parts.append(delta)
                     if on_delta:
                         on_delta(delta)
                 assistant_text = "".join(parts)
             else:
-                assistant_text = self.client.chat(session.messages)
+                assistant_text = self.client.chat(model_messages)
             session.append(Message("assistant", assistant_text))
             tool_call = parse_tool_call(assistant_text)
             if not tool_call:
@@ -154,6 +156,28 @@ class TuLAgent:
             return self.approve(name, arguments)
         return False
 
+    def _with_internal_thinking(self, messages: list[Message], on_event: Callable[[str], None] | None = None) -> list[Message]:
+        if self.thinking.deliberation_passes <= 0:
+            return messages
+        notes: list[str] = []
+        for index in range(self.thinking.deliberation_passes):
+            if on_event:
+                on_event(f"thinking pass {index + 1}/{self.thinking.deliberation_passes}")
+            planning_messages = messages + [
+                Message(
+                    "user",
+                    "Internal deliberation pass. Think privately about the task, risks, missing context, and next tool/action. "
+                    "Do not answer the user. Do not request tools. Return concise private notes only.",
+                )
+            ]
+            note = self.client.chat(planning_messages).strip()
+            if note:
+                notes.append(note[:6000])
+        if not notes:
+            return messages
+        joined = "\n\n".join(f"Pass {index + 1}:\n{note}" for index, note in enumerate(notes))
+        return messages + [Message("system", "Private model deliberation notes for this turn:\n" + joined)]
+
 
 def parse_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
     stripped = text.strip()
@@ -170,6 +194,73 @@ def parse_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
         if parsed:
             return parsed
     return parse_action_shell_block(stripped)
+
+
+def compact_context_messages(
+    messages: list[Message],
+    model: str,
+    *,
+    on_event: Callable[[str], None] | None = None,
+    force: bool = False,
+) -> list[Message]:
+    limit = context_window_tokens(model)
+    threshold = int(limit * 0.82)
+    estimated = estimate_message_tokens(messages)
+    if not force and estimated <= threshold:
+        return messages
+    if len(messages) <= 10:
+        return messages
+
+    head: list[Message] = [messages[0]] if messages and messages[0].role == "system" else []
+    body = messages[1:] if head else messages
+    recent = body[-8:]
+    older = body[:-8]
+    if not older:
+        return messages
+
+    summary = summarize_messages_locally(older, max_chars=min(24000, max(4000, limit * 2)))
+    compacted = head + [
+        Message(
+            "system",
+            "Auto-compressed earlier conversation context because the estimated context window was near the model limit. "
+            "Use this summary as prior context; recent exact messages follow.\n\n" + summary,
+        )
+    ] + recent
+    if on_event:
+        on_event(f"context compacted {estimated} -> {estimate_message_tokens(compacted)} est tokens")
+    return compacted
+
+
+def context_window_tokens(model: str) -> int:
+    lowered = model.lower()
+    if "v4" in lowered:
+        return 1_000_000
+    if "pro" in lowered:
+        return 128_000
+    if "flash" in lowered:
+        return 128_000
+    return 64_000
+
+
+def estimate_message_tokens(messages: list[Message]) -> int:
+    total_chars = sum(len(message.content) + len(message.role) + 8 for message in messages)
+    return max(1, total_chars // 4)
+
+
+def summarize_messages_locally(messages: list[Message], max_chars: int) -> str:
+    lines: list[str] = []
+    remaining = max_chars
+    for message in messages:
+        content = " ".join(message.content.split())
+        entry = f"[{message.role}] {content}"
+        if len(entry) > 1200:
+            entry = entry[:1197] + "..."
+        if len(entry) + 1 > remaining:
+            lines.append("...")
+            break
+        lines.append(entry)
+        remaining -= len(entry) + 1
+    return "\n".join(lines)
 
 
 ACTION_SHELL_CUES = (

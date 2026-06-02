@@ -11,7 +11,7 @@ DeepSeek TuLAgent 是一个专门适配 DeepSeek OpenAI 兼容接口的终端编
 - DeepSeek V4 模型别名：`pro`、`v4-pro`、`flash`、`v4-flash`
 - 工具：读写文件、本地搜索、联网搜索、Git 状态、Shell、补丁、下载、后台服务
 - 权限模式：`plan`、`review`、`agent`、`trusted`、`yolo`、`root`
-- 思考模式：`off`、`fast`、`balanced`、`deep`、`max`
+- 思考模式：`off`、`instant`、`fast`、`standard`、`balanced`、`careful`、`deep`、`deeper`、`max`、`ultra`
 - 本地技能目录：自动发现 `SKILL.md`
 - 会话保存和恢复：JSONL 格式
 
@@ -100,10 +100,17 @@ root + fast + deepseek-v4-flash
 | 模式 | 路由 | 适用场景 |
 | --- | --- | --- |
 | `off` | `deepseek-v4-flash` | 最快直接回答 |
+| `instant` | `deepseek-v4-flash` | 极快响应 |
 | `fast` | `deepseek-v4-flash` | 快速工具任务 |
+| `standard` | `deepseek-v4-flash` | 标准任务 |
 | `balanced` | `deepseek-v4-pro` | 普通工程任务 |
+| `careful` | `deepseek-v4-pro` | 更谨慎验证 |
 | `deep` | `deepseek-v4-pro` | 复杂调试和设计 |
+| `deeper` | `deepseek-v4-pro` | 更深层复杂任务 |
 | `max` | `deepseek-v4-pro` | 最复杂任务 |
+| `ultra` | `deepseek-v4-pro` | 最大内部思考预算 |
+
+`balanced` 及以上会进行真实内部思考轮次：客户端会先调用模型生成私有规划，再把规划作为本轮回答上下文使用，不靠动画假装思考。
 
 ## `/` 命令面板
 
@@ -121,7 +128,9 @@ root + fast + deepseek-v4-flash
 /model
 /models
 /mode root
+/think
 /think fast
+/compact
 /doctor
 /skills
 /skill <name>
@@ -130,9 +139,26 @@ root + fast + deepseek-v4-flash
 ```
 
 `/model` 会打开模型选择面板，回车后切换当前会话模型；`/models` 只打印模型列表。
+`/think` 会打开思考模式选择面板；`/compact` 会手动压缩旧上下文，保留最近消息原文。
 在 `/` 面板里选中技能时，不会立刻执行命令，而是把 `Use skill <name>: ` 插入输入框，你可以继续补充任务再回车发送给 AI。
 
 更新记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 上下文压缩
+
+TuLAgent 会估算消息上下文大小。接近模型上下文窗口时，会自动压缩旧消息：
+
+- 保留系统提示
+- 保留最近 8 条消息原文
+- 把更早的用户、助手、工具结果压成摘要系统消息
+
+手动压缩：
+
+```text
+/compact
+```
+
+这个策略参考 Codex 类终端代理的上下文压缩方向：旧上下文摘要化，近期关键上下文保留原文。
 
 ## 版本和更新
 

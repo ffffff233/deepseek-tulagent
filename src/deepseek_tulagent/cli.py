@@ -6,7 +6,7 @@ import os
 import sys
 
 from . import __version__
-from .agent import TuLAgent, parse_tool_call
+from .agent import TuLAgent, compact_context_messages, estimate_message_tokens, parse_tool_call
 from .config import get_settings, load_file_config, save_file_config
 from .messages import Message
 from .policy import ApprovalPolicy, ThinkingMode
@@ -26,7 +26,7 @@ tools: shell | read | write | patch
 """
 
 MODES = ["plan", "review", "agent", "trusted", "yolo", "root"]
-THINKING = ["off", "fast", "balanced", "deep", "max"]
+THINKING = ThinkingMode.names()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -134,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "run":
         thinking = ThinkingMode.resolve(args.think)
-        runtime_settings = settings.with_runtime(model=thinking.model_hint, max_tokens=min(settings.max_tokens, thinking.max_tokens))
+        runtime_settings = settings.with_runtime(model=thinking.model_hint, max_tokens=thinking.max_tokens)
 
         def delta(text: str) -> None:
             print(text, end="", flush=True)
@@ -197,7 +197,7 @@ def update_command(check_only: bool = False) -> int:
 
 def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str | None = None) -> int:
     thinking = ThinkingMode.resolve(thinking_name)
-    settings = settings.with_runtime(model=thinking.model_hint, max_tokens=min(settings.max_tokens, thinking.max_tokens))
+    settings = settings.with_runtime(model=thinking.model_hint, max_tokens=thinking.max_tokens)
     startup_animation(enabled=resume is None)
     approval_text = "all yes" if yes or mode in {"yolo", "root"} else "manual yes for gated tools"
     if resume:
@@ -279,7 +279,17 @@ def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str 
             thinking = ThinkingMode.resolve(requested)
             settings = settings.with_runtime(model=thinking.model_hint, max_tokens=thinking.max_tokens)
             print_header(str(settings.workspace), settings.base_url, settings.model, current_mode, thinking.name, "all yes" if yes or current_mode in {"yolo", "root"} else "manual yes for gated tools")
-            print(f"thinking set to {thinking.name}; model={settings.model}; max_tokens={settings.max_tokens}")
+            print(f"thinking set to {thinking.name}; model={settings.model}; max_tokens={settings.max_tokens}; internal_passes={thinking.deliberation_passes}")
+            continue
+        if prompt == "/think":
+            rows = [(name, thinking_description(name)) for name in THINKING]
+            selected_thinking = choose_palette(rows, title="thinking")
+            if not selected_thinking:
+                print("thinking unchanged")
+                continue
+            thinking = ThinkingMode.resolve(selected_thinking)
+            settings = settings.with_runtime(model=thinking.model_hint, max_tokens=thinking.max_tokens)
+            print(f"thinking set to {thinking.name}; model={settings.model}; max_tokens={settings.max_tokens}; internal_passes={thinking.deliberation_passes}")
             continue
         if prompt == "/models":
             for model in DeepSeekClient(settings).models():
@@ -302,6 +312,15 @@ def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str 
                 print("no skills discovered")
             for skill in discovered:
                 print(skill.summary())
+            continue
+        if prompt == "/compact":
+            if not session or len(session.messages) <= 2:
+                print("compact: no conversation context yet")
+                continue
+            before = estimate_message_tokens(session.messages)
+            session.messages = compact_context_messages(session.messages, settings.model, force=True)
+            after = estimate_message_tokens(session.messages)
+            print(f"compact: {before} -> {after} est tokens; recent messages kept exact")
             continue
         if prompt.startswith("/skill "):
             name = prompt.split(maxsplit=1)[1].strip()
@@ -527,6 +546,7 @@ def print_palette(settings) -> None:
         ("/models", "list live DeepSeek models"),
         ("/doctor", "check live DeepSeek config"),
         ("/skills", "list discovered skills"),
+        ("/compact", "compress older conversation context now"),
         ("/skill <name>", "show a skill body"),
         ("/tool <json>", "execute a tool JSON object directly"),
     ]
@@ -538,19 +558,26 @@ def print_palette(settings) -> None:
 def slash_items(settings) -> list[tuple[str, str]]:
     items = [
         ("/model", "choose model / show live DeepSeek models"),
+        ("/think", "choose thinking depth"),
         ("/mode root", "highest permission, all tools approved"),
         ("/mode agent", "agent mode with manual gated approvals"),
         ("/mode plan", "read-only planning mode"),
-        ("/think fast", "fast thinking with flash model"),
-        ("/think balanced", "balanced thinking"),
-        ("/think deep", "deep thinking with pro model"),
         ("/doctor", "check live DeepSeek config"),
         ("/skills", "list discovered skills"),
+        ("/compact", "compress older conversation context now"),
         ("/exit", "leave and print resume command"),
     ]
+    for name in THINKING:
+        items.append((f"/think {name}", thinking_description(name)))
     for skill in SkillStore(settings.workspace).list():
         items.append((f"/skill {skill.name}", skill.description))
     return items
+
+
+def thinking_description(name: str) -> str:
+    mode = ThinkingMode.resolve(name)
+    passes = f"{mode.deliberation_passes} internal pass" + ("" if mode.deliberation_passes == 1 else "es")
+    return f"{mode.model_hint}, {mode.max_tokens} max tokens, {passes}"
 
 
 def print_session_handoff(session_id: str) -> None:

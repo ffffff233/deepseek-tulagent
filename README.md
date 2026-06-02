@@ -105,7 +105,9 @@ Common commands:
 - `/model`
 - `/models`
 - `/mode root`
+- `/think`
 - `/think fast`
+- `/compact`
 - `/doctor`
 - `/skills`
 - `/skill <name>`
@@ -115,9 +117,26 @@ Common commands:
 Discovered skills are shown in the same palette as `/skill <name>` entries.
 
 `/model` opens the model picker and switches the current session model. `/models` only prints the live model list.
+`/think` opens the thinking-mode picker. `/compact` manually compresses older context while keeping recent messages exact.
 Selecting a skill from the `/` palette inserts `Use skill <name>: ` into the composer so you can keep typing the task before sending it to the agent.
 
 See [CHANGELOG.md](CHANGELOG.md) for update history.
+
+## Context Compaction
+
+TuLAgent estimates conversation context before model calls. Near the model context limit, it automatically compacts older messages:
+
+- system prompt is preserved
+- the most recent 8 messages are kept exactly
+- older user, assistant, and tool-result messages become one summary system message
+
+Manual compaction:
+
+```text
+/compact
+```
+
+This follows the same broad strategy used by terminal agents such as Codex: summarize older context while preserving recent context exactly.
 
 ## Versions and Updates
 
@@ -197,10 +216,17 @@ Discovered skill summaries are injected into the agent prompt at startup/run tim
 | Mode | Route | Budget |
 | --- | --- | --- |
 | `off` | `deepseek-v4-flash` | smallest |
+| `instant` | `deepseek-v4-flash` | fastest response |
 | `fast` | `deepseek-v4-flash` | quick tool-driven work |
+| `standard` | `deepseek-v4-flash` | normal tasks |
 | `balanced` | `deepseek-v4-pro` | default engineering work |
+| `careful` | `deepseek-v4-pro` | careful verification |
 | `deep` | `deepseek-v4-pro` | complex debugging/design |
+| `deeper` | `deepseek-v4-pro` | deeper complex work |
 | `max` | `deepseek-v4-pro` | hardest ambiguous tasks |
+| `ultra` | `deepseek-v4-pro` | largest internal thinking budget |
+
+`balanced` and deeper modes perform real internal deliberation passes: the client makes extra model calls for private planning, then uses those notes as context for the final answer.
 
 ## Configuration
 

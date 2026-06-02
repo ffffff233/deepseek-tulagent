@@ -323,7 +323,10 @@ def draw_slash_select(items: list[tuple[str, str]], query: str, selected: int, p
     width = max(width, 12)
     height = max(height, 12)
     inner_width = width
-    visible = items[:6]
+    window_size = 6
+    start = selected_window_start(len(items), selected, window_size)
+    visible = items[start : start + window_size]
+    local_selected = selected - start
     total_lines = 3 + max(len(visible), 1)
     top = max((height - total_lines) // 4, 1)
     sys.stdout.write("\033[H\033[2J")
@@ -332,7 +335,7 @@ def draw_slash_select(items: list[tuple[str, str]], query: str, selected: int, p
     sys.stdout.write(color(clip_visible(title_text, inner_width), BOLD + WHITE) + "\r\n")
     command_width = min(max(max((len(item[0]) for item in visible), default=8), 12), 22)
     for index, (command, description) in enumerate(visible):
-        marker = ">" if index == selected else " "
+        marker = ">" if index == local_selected else " "
         desc_width = max(inner_width - command_width - 3, 8)
         desc = clip_visible(description, desc_width)
         line = f"{marker} {command:<{command_width}} {desc}"
@@ -348,6 +351,12 @@ def draw_slash_select(items: list[tuple[str, str]], query: str, selected: int, p
     sys.stdout.write(color(footer, GRAY) + "\r\n")
     sys.stdout.flush()
     return total_lines
+
+
+def selected_window_start(total: int, selected: int, window_size: int) -> int:
+    if total <= window_size:
+        return 0
+    return min(max(selected - window_size + 1, 0), total - window_size)
 
 
 def clear_slash_select(lines: int) -> None:
