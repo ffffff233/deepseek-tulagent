@@ -49,6 +49,8 @@ Rules:
   `curl -fsS --connect-timeout 5 https://api.ipify.org || curl -fsS --connect-timeout 5 https://ifconfig.me || curl -fsS --connect-timeout 5 https://checkip.amazonaws.com`
   then verify the service with `ss -tlnp`, local `curl`, and firewall status (`ufw status` or iptables/nftables when available).
 - For text search, prefer a narrow path and small max_matches. Broad searches can time out.
+- Use delegate_agent proactively for multi-branch investigation, independent review, verification, research, or long workflows that can be split into focused subtasks. Good subagent names: researcher, reviewer, verifier, implementer, debugger.
+- When delegating, give the subagent a narrow task and ask for evidence plus a recommended next step. Do not delegate trivial one-step tasks.
 - If a web_search result is empty, irrelevant, or failed and the user asked to search, request one more web_search with a clearer query instead of saying you will search again.
 - If no tool is needed, answer directly.
 - After tool results, continue until the task is complete or clearly blocked.
@@ -370,6 +372,7 @@ def is_complex_task(prompt: str) -> bool:
 def private_execution_hint() -> str:
     return (
         "Private execution hint: this is a multi-step task. Work in small tool-backed steps. "
+        "If part of the task benefits from independent research, review, debugging, or verification, use delegate_agent with a narrow subtask. "
         "After each tool result, continue with the next required tool until the requested workflow is verified or blocked. "
         "Do not merely say what you will do next."
     )

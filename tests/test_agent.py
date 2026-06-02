@@ -151,6 +151,7 @@ def test_initial_messages_keep_large_system_prompt_cacheable(tmp_path: Path):
     assert [message.role for message in initial] == ["system", "system"]
     assert "Available tools:" in initial[0].content
     assert "cf题" in initial[0].content
+    assert "Use delegate_agent proactively" in initial[0].content
     assert "repo-debug" not in initial[0].content
     assert "repo-debug" in initial[1].content
 
@@ -245,6 +246,7 @@ def test_complex_task_gets_private_execution_hint(tmp_path: Path):
     class InspectClient:
         def chat(self, messages):
             assert "Private execution hint" in messages[-1].content
+            assert "delegate_agent" in messages[-1].content
             return "ok"
 
     result = TuLAgent(settings(tmp_path), mode="root", client=InspectClient()).run("写一个 HTML，然后启动服务，再检查端口并验证公网访问")

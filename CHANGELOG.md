@@ -1,5 +1,17 @@
 # 更新记录 / Changelog
 
+## v0.1.29
+
+中文：
+
+- 强化子代理提示词：多分支调查、独立复核、验证、研究、长流程拆分时会更主动考虑 `delegate_agent`。
+- 复杂任务的私有执行提示也会提醒模型把适合独立处理的部分交给子代理。
+
+English:
+
+- Strengthened subagent prompting so the model more proactively considers `delegate_agent` for multi-branch investigation, independent review, verification, research, and long workflows.
+- Complex-task private hints now also remind the model to delegate focused subtasks when useful.
+
 ## v0.1.28
 
 中文：
