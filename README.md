@@ -213,7 +213,7 @@ Discovered skill summaries are injected into the agent prompt at startup/run tim
 
 ## Thinking Modes
 
-| Mode | Route | Max output | API thinking | Internal passes |
+| Mode | Recommended model | Max output | API thinking | Internal passes |
 | --- | --- | ---: | --- | ---: |
 | `auto` | auto-selected | 384K | auto | auto |
 | `off` | `deepseek-v4-flash` | 384K | disabled | 0 |

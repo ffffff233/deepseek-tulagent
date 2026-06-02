@@ -97,7 +97,7 @@ root + fast + deepseek-v4-flash
 
 ## 思考模式
 
-| 模式 | 路由 | 最大输出 | API thinking | 内部思考 |
+| 模式 | 推荐模型 | 最大输出 | API thinking | 内部思考 |
 | --- | --- | ---: | --- | ---: |
 | `auto` | 自动选择 | 384K | 自动 | 自动 |
 | `off` | `deepseek-v4-flash` | 384K | 关闭 | 0 |

@@ -1,5 +1,19 @@
 # 更新记录 / Changelog
 
+## v0.1.8
+
+中文：
+
+- 文档把思考模式表的“路由”改为“推荐模型”，避免误解成切思考模式会强制换模型。
+- 测试假模型名改成 `deepseek-v4-flash`，避免误导。
+- 伪终端验证 `/think max` 后能继续输入并退出，且模型保持 `deepseek-v4-flash`。
+
+English:
+
+- Renamed the thinking-mode table column from route to recommended model to clarify that thinking changes do not force model switches.
+- Replaced the test-only fake model with `deepseek-v4-flash`.
+- Verified through a pseudo-terminal that `/think max` returns to input and keeps `deepseek-v4-flash`.
+
 ## v0.1.7
 
 中文：

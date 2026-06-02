@@ -30,7 +30,7 @@ def settings(tmp_path: Path) -> Settings:
     return Settings(
         api_key="test",
         base_url="https://api.deepseek.com",
-        model="deepseek-chat",
+        model="deepseek-v4-flash",
         workspace=tmp_path,
         max_tool_rounds=4,
         max_tokens=2048,
@@ -318,8 +318,9 @@ def test_settings_read_local_config_file(monkeypatch, tmp_path: Path):
     assert settings_obj.default_mode == "root"
 
 
-def test_empty_cli_defaults_to_root_fast_start(monkeypatch):
+def test_empty_cli_defaults_to_root_fast_start(monkeypatch, tmp_path: Path):
     captured = {}
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config"))
 
     def fake_interactive(settings_obj, mode, thinking, yes, resume=None):
         captured["mode"] = mode
@@ -441,7 +442,7 @@ def test_interactive_think_command_uses_picker(monkeypatch, tmp_path: Path, caps
     out = capsys.readouterr().out
     assert code == 0
     assert "thinking set to deep" in out
-    assert "model=deepseek-chat" in out
+    assert "model=deepseek-v4-flash" in out
     assert "internal_passes=2" in out
     assert get_settings().default_thinking == "deep"
 
