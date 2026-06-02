@@ -1,5 +1,23 @@
 # 更新记录 / Changelog
 
+## v0.1.33
+
+中文：
+
+- 新增桌面端入口：`deepseekTul desktop` 和 `deepseekTulDesktop`。
+- 桌面端支持聊天、文件上传、技能列表、模型/思考/权限切换、第三方 OpenAI 兼容 API 配置。
+- 工具调用、子代理、上下文压缩和内部思考事件在桌面端折叠展示，需要用户点开查看详情。
+- 新增 Windows exe 构建脚本 `scripts/build_windows_exe.ps1`。
+- 新增 GitHub Actions Windows 构建流水线，tag 发布时生成 `DeepSeekTuLAgent-windows` artifact。
+
+English:
+
+- Added desktop entrypoints: `deepseekTul desktop` and `deepseekTulDesktop`.
+- The desktop app supports chat, file uploads, skills, model/thinking/permission switching, and third-party OpenAI-compatible API settings.
+- Tool calls, subagents, context compaction, and internal thinking events are shown as collapsible desktop events.
+- Added `scripts/build_windows_exe.ps1` for Windows exe builds.
+- Added a GitHub Actions Windows build workflow that uploads a `DeepSeekTuLAgent-windows` artifact on tagged releases.
+
 ## v0.1.32
 
 中文：

@@ -635,6 +635,53 @@ def test_empty_cli_defaults_to_root_fast_start(monkeypatch, tmp_path: Path):
     assert captured == {"mode": "root", "thinking": "fast", "resume": None}
 
 
+def test_cli_desktop_command_invokes_desktop(monkeypatch):
+    import deepseek_tulagent.desktop.app as desktop
+
+    called = {}
+    monkeypatch.setattr(desktop, "main", lambda: called.setdefault("ok", True))
+    assert main(["desktop"]) == 0
+    assert called["ok"] is True
+
+
+def test_desktop_api_boot_and_runtime(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test")
+    api = desktop.DesktopApi()
+    boot = api.boot()
+    assert boot["version"]
+    assert boot["mode"] == "root"
+    assert "fast" in boot["thinkingModes"]
+
+    updated = api.set_runtime({"mode": "plan", "thinking": "deep", "model": "deepseek-v4-pro"})
+    assert updated["mode"] == "plan"
+    assert updated["thinking"] == "deep"
+    assert updated["model"] == "deepseek-v4-pro"
+
+
+def test_desktop_upload_saves_file(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    result = api.save_upload({"name": "../hello.txt", "content": "data:text/plain;base64,aGVsbG8="})
+    assert result["ok"] is True
+    assert Path(result["path"]).read_text(encoding="utf-8") == "hello"
+    assert ".." not in result["name"]
+
+
+def test_desktop_event_parser():
+    from deepseek_tulagent.desktop.app import parse_agent_event
+
+    assert parse_agent_event("tool run_shell command=ls") == {"kind": "tool", "name": "run_shell", "detail": "command=ls"}
+    assert parse_agent_event("thinking pass 1/2")["kind"] == "thinking"
+    assert parse_agent_event("done read_file") == {"kind": "done", "name": "read_file", "detail": ""}
+
+
 def test_session_handoff_prints_resume_command(capsys):
     from deepseek_tulagent.cli import print_session_handoff
 

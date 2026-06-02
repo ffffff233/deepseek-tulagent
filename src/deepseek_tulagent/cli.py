@@ -58,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("models", help="list live DeepSeek models")
     sub.add_parser("version", help="print DeepSeek TuLAgent version")
+    sub.add_parser("desktop", help="start the desktop app")
     update_parser = sub.add_parser("update", help="check for and install the latest tagged version")
     update_parser.add_argument("--check", action="store_true", help="only check; do not install")
 
@@ -119,6 +120,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "version":
         print(__version__)
+        return 0
+
+    if args.cmd == "desktop":
+        from .desktop.app import main as desktop_main
+
+        desktop_main()
         return 0
 
     if args.cmd == "update":

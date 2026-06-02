@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DeepSeek TuLAgent</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="shell">
+    <aside class="rail">
+      <div class="brand">
+        <div class="mark">D</div>
+        <div>
+          <strong>DeepSeek TuLAgent</strong>
+          <span id="version">desktop</span>
+        </div>
+      </div>
+      <button id="newSession" class="quiet">新对话</button>
+      <section>
+        <h2>会话</h2>
+        <div id="sessions" class="list muted">暂无会话</div>
+      </section>
+      <section>
+        <h2>技能</h2>
+        <div id="skills" class="list muted">暂无技能</div>
+      </section>
+    </aside>
+
+    <section class="work">
+      <header class="topbar">
+        <div class="selectors">
+          <label>模型 <select id="model"></select></label>
+          <label>思考 <select id="thinking"></select></label>
+          <label>权限 <select id="mode"></select></label>
+          <label>接口 <select id="format"><option>DeepSeek</option><option>OpenAI-compatible</option></select></label>
+        </div>
+        <button id="settingsBtn" class="quiet">API</button>
+      </header>
+
+      <div id="messages" class="messages">
+        <div class="empty">
+          <h1>DeepSeek TuLAgent</h1>
+          <p>选择模型和思考模式，发送任务。工具、技能和内部思考会在需要时折叠显示。</p>
+        </div>
+      </div>
+
+      <div id="activity" class="activity"></div>
+
+      <footer class="composer">
+        <input id="fileInput" type="file" multiple hidden>
+        <button id="attach" class="icon" title="添加文件">+</button>
+        <div id="attachments" class="attachments"></div>
+        <textarea id="prompt" rows="1" placeholder="输入任务，Enter 发送，Shift+Enter 换行"></textarea>
+        <button id="send">发送</button>
+      </footer>
+    </section>
+
+    <dialog id="settingsDialog">
+      <form method="dialog" class="settings">
+        <h2>第三方 API / 兼容接口</h2>
+        <label>Base URL <input id="baseUrl" placeholder="https://api.deepseek.com"></label>
+        <label>API Key <input id="apiKey" type="password" placeholder="sk-..."></label>
+        <label>默认模型 <input id="defaultModel" placeholder="deepseek-v4-flash"></label>
+        <menu>
+          <button value="cancel" class="quiet">取消</button>
+          <button id="saveSettings" value="default">保存</button>
+        </menu>
+      </form>
+    </dialog>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
+

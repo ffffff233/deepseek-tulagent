@@ -3,6 +3,7 @@
 简体中文 | [English](README.md)
 
 DeepSeek TuLAgent 是一个专门适配 DeepSeek OpenAI 兼容接口的终端编程代理。它支持本地工具、会话恢复、`/` 命令面板、权限模式、思考模式和本地技能目录。
+同时提供桌面端入口，可打包成 Windows exe。
 
 ## 功能
 
@@ -10,6 +11,7 @@ DeepSeek TuLAgent 是一个专门适配 DeepSeek OpenAI 兼容接口的终端编
 - 默认全局命令：`deepseekTul`
 - DeepSeek V4 模型别名：`pro`、`v4-pro`、`flash`、`v4-flash`
 - 工具：读写文件、本地搜索、联网搜索、Git 状态、Shell、补丁、下载、仓库拉取、后台服务
+- 桌面端：聊天、文件发送、技能列表、工具调用折叠展示、内部思考折叠展示、模型/思考/权限切换、第三方 OpenAI 兼容 API 配置
 - 权限模式：`plan`、`review`、`agent`、`trusted`、`yolo`、`root`
 - 思考模式：`off`、`instant`、`fast`、`standard`、`balanced`、`careful`、`deep`、`deeper`、`max`、`ultra`
 - 本地技能目录：自动发现 `SKILL.md`
@@ -30,10 +32,24 @@ deepseekTul doctor --live
 deepseekTul
 ```
 
+启动桌面端：
+
+```bash
+python3 -m pip install --upgrade ".[desktop]"
+deepseekTul desktop
+```
+
+Windows 安装后也可以直接运行：
+
+```powershell
+py -3 -m pip install --upgrade "deepseek-tulagent[desktop] @ https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.33.tar.gz"
+deepseekTulDesktop
+```
+
 Windows PowerShell 原生安装：
 
 ```powershell
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.32.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.33.tar.gz
 deepseekTul config set --base-url https://api.deepseek.com --api-key sk-你的key --model deepseek-v4-flash
 deepseekTul doctor --live
 deepseekTul
@@ -42,17 +58,18 @@ deepseekTul
 Windows CMD：
 
 ```bat
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.32.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.33.tar.gz
 deepseekTul version
 deepseekTul
 ```
 
 Windows 原生可以使用 `deepseekTul run`、`config`、`update`、`sessions` 和普通行输入交互。高级 Unix TUI 依赖 `curses`；Windows 没有该模块时会自动退回普通行输入，不再启动就崩。
+桌面端使用 `pywebview`，适合 Windows 原生使用。
 
 如果用户机器上的 `git clone` 因代理、端口写法或 git 配置失败，可以不依赖 git，直接安装 GitHub tag 源码包：
 
 ```bash
-python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.32.tar.gz
+python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.33.tar.gz
 ```
 
 代理环境示例：
@@ -60,7 +77,7 @@ python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/
 ```bash
 export HTTPS_PROXY=http://127.0.0.1:7890
 export HTTP_PROXY=http://127.0.0.1:7890
-python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.32.tar.gz
+python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.33.tar.gz
 ```
 
 Windows PowerShell 代理示例：
@@ -68,7 +85,7 @@ Windows PowerShell 代理示例：
 ```powershell
 $env:HTTPS_PROXY="http://127.0.0.1:7890"
 $env:HTTP_PROXY="http://127.0.0.1:7890"
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.32.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.33.tar.gz
 ```
 
 Windows CMD 代理示例：
@@ -76,7 +93,7 @@ Windows CMD 代理示例：
 ```bat
 set HTTPS_PROXY=http://127.0.0.1:7890
 set HTTP_PROXY=http://127.0.0.1:7890
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.32.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.33.tar.gz
 ```
 
 让 agent 拉取其他 GitHub 仓库时，可以直接说“把 `owner/repo` 拉到 `path`”。它会优先使用 `clone_repo` 工具，自动尝试直连、镜像和 GitHub archive 下载，不会反复手写同一批失败的 `git clone` 命令。全部失败后才会提示你配置 `HTTP_PROXY` / `HTTPS_PROXY` 或 git proxy。
@@ -102,7 +119,35 @@ deepseekTul version
 deepseekTul update --check
 deepseekTul update
 deepseekTul skills list
+deepseekTul desktop
 ```
+
+## 桌面端和 Windows exe
+
+桌面端提供：
+
+- 左侧会话和技能目录
+- 顶部模型、思考模式、权限模式、兼容接口选择
+- 右上角第三方 API / OpenAI-compatible Base URL 配置
+- 底部 `+` 上传文件
+- 工具调用、子代理、上下文压缩和内部思考事件折叠展示，必须点开才看详情
+
+Windows 本机打包 exe：
+
+```powershell
+git clone https://github.com/ffffff233/deepseek-tulagent.git
+cd deepseek-tulagent
+.\scripts\build_windows_exe.ps1
+```
+
+生成位置：
+
+```text
+dist\DeepSeekTuLAgent\DeepSeekTuLAgent.exe
+```
+
+GitHub Actions 也会在推送 tag 时构建 Windows artifact：`DeepSeekTuLAgent-windows`。
+当前仓库所在的 Linux 环境不能直接产出真正 Windows exe；需要在 Windows 或 GitHub Actions 的 `windows-latest` 上构建。
 
 ## 配置
 

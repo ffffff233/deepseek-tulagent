@@ -11,6 +11,7 @@
 English
 
 DeepSeek TuLAgent is a terminal coding agent built specifically around DeepSeek's OpenAI-compatible chat API. It provides local tools, session resume, slash commands, permission modes, thinking modes, and installable skills while keeping the implementation independent and compact.
+It also includes a desktop entrypoint that can be packaged as a Windows exe.
 
 ## Features
 
@@ -19,6 +20,7 @@ DeepSeek TuLAgent is a terminal coding agent built specifically around DeepSeek'
 - Live model discovery through `deepseekTul models` and `deepseekTul doctor --live`
 - Global `deepseekTul` command for interactive use
 - Tool registry: files, local search, web search, git status, shell, patch, downloads, resilient repository cloning, background services
+- Desktop app: chat, file attachments, skill list, collapsible tool calls, collapsible internal thinking, quick model/thinking/permission switching, and third-party OpenAI-compatible API configuration
 - Six permission modes: `plan`, `review`, `agent`, `trusted`, `yolo`, `root`
 - Five thinking modes: `off`, `fast`, `balanced`, `deep`, `max`
 - Local skill directories with `SKILL.md` discovery and skill creation
@@ -41,10 +43,24 @@ deepseekTul doctor --live
 deepseekTul
 ```
 
+Start the desktop app:
+
+```bash
+python3 -m pip install --upgrade ".[desktop]"
+deepseekTul desktop
+```
+
+On Windows after installation:
+
+```powershell
+py -3 -m pip install --upgrade "deepseek-tulagent[desktop] @ https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.33.tar.gz"
+deepseekTulDesktop
+```
+
 Native Windows PowerShell:
 
 ```powershell
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.32.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.33.tar.gz
 deepseekTul config set --base-url https://api.deepseek.com --api-key sk-... --model deepseek-v4-flash
 deepseekTul doctor --live
 deepseekTul
@@ -53,17 +69,18 @@ deepseekTul
 Windows CMD:
 
 ```bat
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.32.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.33.tar.gz
 deepseekTul version
 deepseekTul
 ```
 
 Native Windows supports `deepseekTul run`, `config`, `update`, `sessions`, and line-mode interactive chat. The Unix-style full TUI depends on `curses`; when it is unavailable on Windows, the CLI falls back to line mode instead of crashing at startup.
+The desktop app uses `pywebview` and is suitable for native Windows use.
 
 If `git clone` is blocked by local proxy/git configuration, install directly from the tagged source tarball instead:
 
 ```bash
-python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.32.tar.gz
+python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.33.tar.gz
 ```
 
 Proxy-compatible examples:
@@ -71,7 +88,7 @@ Proxy-compatible examples:
 ```bash
 export HTTPS_PROXY=http://127.0.0.1:7890
 export HTTP_PROXY=http://127.0.0.1:7890
-python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.32.tar.gz
+python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.33.tar.gz
 ```
 
 Windows PowerShell proxy example:
@@ -79,7 +96,7 @@ Windows PowerShell proxy example:
 ```powershell
 $env:HTTPS_PROXY="http://127.0.0.1:7890"
 $env:HTTP_PROXY="http://127.0.0.1:7890"
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.32.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.33.tar.gz
 ```
 
 Windows CMD proxy example:
@@ -87,7 +104,7 @@ Windows CMD proxy example:
 ```bat
 set HTTPS_PROXY=http://127.0.0.1:7890
 set HTTP_PROXY=http://127.0.0.1:7890
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.32.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.33.tar.gz
 ```
 
 When asking the agent to fetch another GitHub repository, say something like `clone owner/repo into path`. The agent should use `clone_repo`, which tries direct git, mirror URLs, and GitHub archive download before asking you to configure `HTTP_PROXY`, `HTTPS_PROXY`, or git proxy settings.
@@ -115,6 +132,32 @@ deepseekTul start --mode trusted --think deep --yes
 deepseekTul start --mode root --think max
 deepseekTul run --mode agent --think fast --yes "run tests and fix failures"
 ```
+
+## Desktop App and Windows exe
+
+The desktop app includes:
+
+- conversation and skill navigation
+- model, thinking mode, permission mode, and compatibility format selectors
+- third-party API / OpenAI-compatible Base URL settings
+- `+` file uploads
+- collapsible tool calls, subagents, context compaction, and internal thinking events
+
+Build the Windows exe locally:
+
+```powershell
+git clone https://github.com/ffffff233/deepseek-tulagent.git
+cd deepseek-tulagent
+.\scripts\build_windows_exe.ps1
+```
+
+Output:
+
+```text
+dist\DeepSeekTuLAgent\DeepSeekTuLAgent.exe
+```
+
+GitHub Actions also builds a `DeepSeekTuLAgent-windows` artifact on tagged releases. This Linux workspace cannot directly produce a real Windows exe; build it on Windows or through the `windows-latest` workflow.
 
 ## Conversations
 
