@@ -120,6 +120,30 @@ def test_agent_runs_read_tool_loop(tmp_path: Path):
     assert (tmp_path / ".deepseek-tulagent" / "sessions").exists()
 
 
+def test_agent_delegates_to_subagent_with_isolated_context(tmp_path: Path):
+    class DelegateClient:
+        def __init__(self):
+            self.calls = 0
+            self.subagent_saw_parent_prompt = False
+
+        def chat(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return '{"tool":"delegate_agent","arguments":{"name":"researcher","task":"检查 README","mode":"plan"}}'
+            if self.calls == 2:
+                joined = "\n".join(message.content for message in messages)
+                self.subagent_saw_parent_prompt = "主任务秘密" in joined
+                return "子代理结论：README 不存在。"
+            assert "SUBAGENT_RESULT name=researcher" in messages[-1].content
+            assert "子代理结论" in messages[-1].content
+            return "主代理总结：已收到子代理结果。"
+
+    client = DelegateClient()
+    result = TuLAgent(settings(tmp_path), mode="root", client=client).run("主任务秘密：委派检查")
+    assert result.answer == "主代理总结：已收到子代理结果。"
+    assert client.subagent_saw_parent_prompt is False
+
+
 def test_initial_messages_keep_large_system_prompt_cacheable(tmp_path: Path):
     SkillStore(tmp_path).create("repo-debug", "Debug this repository.", "Run tests.")
     agent = TuLAgent(settings(tmp_path), client=FakeClient(["done"]))
@@ -133,6 +157,7 @@ def test_initial_messages_keep_large_system_prompt_cacheable(tmp_path: Path):
 
 def test_tool_result_message_has_stable_prefix():
     assert tool_result_message("run_shell", '{"ok": true}').startswith('TOOL_RESULT name=run_shell\n{"ok": true}')
+    assert tool_result_message("delegate_agent", '{"ok": true, "name": "reviewer"}').startswith('SUBAGENT_RESULT name=reviewer')
 
 
 def test_tool_result_content_is_trimmed_with_head_and_tail():
@@ -559,7 +584,9 @@ def test_slash_palette_prints_commands_and_tools(tmp_path: Path, monkeypatch, ca
     out = capsys.readouterr().out
     assert "Command Palette" in out
     assert "/mode <name>" in out
+    assert "/subagents" in out
     assert "Tools" in out
+    assert "delegate_agent" in out
     assert "write_file" in out
 
 
@@ -910,6 +937,7 @@ def test_slash_skill_selection_inserts_agent_prompt():
 def test_agent_event_formatter_labels_tools():
     assert "run_shell" in format_agent_event("tool run_shell command=ls")
     assert "done" in format_agent_event("done run_shell")
+    assert "subagent" in format_agent_event("subagent reviewer mode=plan")
 
 
 def test_spinner_clear_active_line_is_safe_without_active_spinner():

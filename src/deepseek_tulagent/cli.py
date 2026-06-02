@@ -365,6 +365,13 @@ def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str 
             for skill in discovered:
                 print(skill.summary())
             continue
+        if prompt == "/subagents":
+            print_box("Subagents", [
+                "delegate_agent(name, task, mode?, think?, max_rounds?)",
+                "isolated context; returns concise summary to parent",
+                "best for research, review, verification, and parallel-style decomposition",
+            ])
+            continue
         if prompt == "/compact":
             if not session or len(session.messages) <= 2:
                 print("compact: no conversation context yet")
@@ -625,12 +632,15 @@ def print_palette(settings) -> None:
         ("/skills", "list discovered skills"),
         ("/compact", "compress older conversation context now"),
         ("/goal <text>", "set persistent objective; continue until complete or blocked"),
+        ("/subagents", "show subagent delegation capability"),
         ("/skill <name>", "show a skill body"),
         ("/tool <json>", "execute a tool JSON object directly"),
     ]
     skill_rows = [(skill.name, skill.description) for skill in SkillStore(settings.workspace).list()]
     print_slash_palette(commands, skill_rows)
-    print_tool_palette(ToolRegistry(settings.workspace).describe())
+    tools = ToolRegistry(settings.workspace).describe()
+    tools["delegate_agent"] = "virtual: run isolated subagent and return summary"
+    print_tool_palette(tools)
 
 
 def slash_items(settings) -> list[tuple[str, str]]:
@@ -646,6 +656,7 @@ def slash_items(settings) -> list[tuple[str, str]]:
         ("/goal ", "set active goal"),
         ("/goal", "show active goal"),
         ("/goal clear", "clear active goal"),
+        ("/subagents", "show subagent delegation capability"),
         ("/exit", "leave and print resume command"),
     ]
     for name in THINKING:
@@ -706,7 +717,7 @@ def print_recent_session_messages(session, limit: int = 3) -> None:
 
 def is_human_visible_history(text: str) -> bool:
     stripped = text.strip()
-    if stripped.startswith("Tool result from ") or stripped.startswith("TOOL_RESULT "):
+    if stripped.startswith("Tool result from ") or stripped.startswith("TOOL_RESULT ") or stripped.startswith("SUBAGENT_RESULT "):
         return False
     if stripped.startswith('{"tool"') or stripped.startswith("```json"):
         return False

@@ -1,5 +1,21 @@
 # 更新记录 / Changelog
 
+## v0.1.28
+
+中文：
+
+- 新增子代理能力：主 agent 可调用 `delegate_agent(name, task, mode?, think?, max_rounds?)`。
+- 子代理使用隔离上下文执行任务，只把摘要、证据和建议下一步返回给主 agent。
+- `/subagents` 可查看子代理能力说明；`/` 面板和工具面板会显示子代理入口。
+- 子代理结果使用 `SUBAGENT_RESULT` 格式，恢复对话时会隐藏这类工具噪音。
+
+English:
+
+- Added subagent delegation: the parent agent can call `delegate_agent(name, task, mode?, think?, max_rounds?)`.
+- Subagents run in isolated context and return a concise summary, evidence, and recommended next step to the parent agent.
+- `/subagents` shows the delegation capability; the slash palette and tool palette expose the entry.
+- Subagent results use `SUBAGENT_RESULT` and are hidden from resumed human-visible history noise.
+
 ## v0.1.27
 
 中文：

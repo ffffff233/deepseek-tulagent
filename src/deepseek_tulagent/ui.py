@@ -179,6 +179,8 @@ def format_agent_event(text: str) -> str:
     if text.startswith("done "):
         name = text.removeprefix("done ").strip()
         return color("  ╰─", CYAN) + color(" done ", GREEN + BOLD) + color(name, BRIGHT_GREEN)
+    if text.startswith("subagent "):
+        return color("  ◆ ", BRIGHT_MAGENTA) + color(text, BRIGHT_CYAN)
     if text.startswith("thinking pass "):
         return color("  ◇ ", BRIGHT_MAGENTA) + color(text, GRAY)
     if text.startswith("context compacted"):

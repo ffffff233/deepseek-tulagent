@@ -21,6 +21,7 @@ You can answer normally or request exactly one tool call by returning a single J
 {"tool":"read_file","arguments":{"path":"README.md","max_bytes":12000}}
 
 Available tools:
+- delegate_agent(name, task, mode?, think?, max_rounds?): run an isolated subagent and return its summary
 - list_files(path?, max_entries?)
 - search_text(query, path?, max_matches?)
 - git_status(timeout?)
@@ -152,10 +153,13 @@ class TuLAgent:
             if on_event:
                 on_event(f"tool {name} {summarize_arguments(arguments)}")
             try:
-                if self._needs_confirmation(name) and not self._approved(name, arguments):
+                if name == "delegate_agent":
+                    content = self._run_subagent(arguments, on_event=on_event)
+                elif self._needs_confirmation(name) and not self._approved(name, arguments):
                     raise ToolError(f"confirmation required for tool: {name}")
-                result = self.tools.run(name, arguments)
-                content = result.to_message()
+                else:
+                    result = self.tools.run(name, arguments)
+                    content = result.to_message()
             except (ToolError, OSError, subprocess.SubprocessError) as exc:  # type: ignore[name-defined]
                 content = json.dumps({"ok": False, "output": str(exc)}, ensure_ascii=False)
             if on_event:
@@ -230,6 +234,33 @@ class TuLAgent:
         dangerous = {"write_file", "run_shell", "apply_patch", "download_url", "start_service", "stop_service"}
         return name in dangerous and self.policy.require_confirmation
 
+    def _run_subagent(self, arguments: dict[str, Any], on_event: Callable[[str], None] | None = None) -> str:
+        task = str(arguments.get("task") or "").strip()
+        if not task:
+            raise ToolError("delegate_agent requires task")
+        name = str(arguments.get("name") or "subagent").strip()[:40] or "subagent"
+        mode = str(arguments.get("mode") or "plan")
+        thinking = str(arguments.get("think") or self.thinking.name)
+        max_rounds = min(max(int(arguments.get("max_rounds", 4)), 1), 16)
+        if on_event:
+            on_event(f"subagent {name} mode={mode} rounds={max_rounds}")
+        subagent = TuLAgent(self.settings, mode=mode, thinking=thinking, client=self.client, approve=self.approve)
+        sub_prompt = (
+            f"You are subagent `{name}`. Work in an isolated context.\n"
+            f"Task: {task}\n"
+            "Return a concise result for the parent agent: findings, evidence, and recommended next step."
+        )
+        result = subagent.run(sub_prompt, max_tool_rounds=max_rounds)
+        payload = {
+            "ok": True,
+            "name": name,
+            "task": task,
+            "summary": result.answer,
+            "session_id": result.session_id,
+            "rounds": result.rounds,
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
     def _approved(self, name: str, arguments: dict[str, Any]) -> bool:
         if self.mode in {"yolo", "root"}:
             return True
@@ -283,6 +314,15 @@ def is_question_mark_only(text: str) -> bool:
 
 
 def tool_result_message(name: str, content: str) -> str:
+    if name == "delegate_agent":
+        subagent_name = "delegate_agent"
+        try:
+            data = json.loads(content)
+            if isinstance(data, dict) and isinstance(data.get("name"), str):
+                subagent_name = data["name"]
+        except json.JSONDecodeError:
+            pass
+        return f"SUBAGENT_RESULT name={subagent_name}\n{content}"
     return f"TOOL_RESULT name={name}\n{content}"
 
 
