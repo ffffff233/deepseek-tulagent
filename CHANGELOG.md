@@ -1,5 +1,19 @@
 # 更新记录 / Changelog
 
+## v0.1.25
+
+中文：
+
+- 多步骤任务会自动加入私有执行提示，促使模型按工具结果连续推进，不只口头说明下一步。
+- 工具失败后，如果模型没有尝试恢复路径也没有明确说明阻塞，会自动要求模型基于错误再尝试一个更合适的工具调用。
+- 工具结果进入上下文前会裁剪超长输出，保留头尾，降低上下文污染和遗忘概率。
+
+English:
+
+- Multi-step tasks now get a private execution hint so the model keeps progressing through tool-backed steps instead of only describing the next action.
+- After a failed tool result, if the model neither retries nor explicitly declares a block, the agent asks it to recover with a better tool call.
+- Very large tool outputs are trimmed before entering context, preserving head and tail to reduce context pollution.
+
 ## v0.1.24
 
 中文：

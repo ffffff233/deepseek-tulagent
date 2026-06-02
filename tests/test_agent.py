@@ -6,7 +6,7 @@ import io
 import os
 import re
 
-from deepseek_tulagent.agent import TuLAgent, compact_context_messages, is_question_mark_only, parse_tool_call, plainify_assistant_text, promises_more_work, tool_result_message
+from deepseek_tulagent.agent import TuLAgent, compact_context_messages, is_question_mark_only, parse_tool_call, plainify_assistant_text, promises_more_work, trim_tool_content, tool_result_message
 from deepseek_tulagent.cli import main
 from deepseek_tulagent.config import Settings, get_settings, resolve_model
 from deepseek_tulagent.policy import ApprovalPolicy, ThinkingMode
@@ -135,6 +135,14 @@ def test_tool_result_message_has_stable_prefix():
     assert tool_result_message("run_shell", '{"ok": true}').startswith('TOOL_RESULT name=run_shell\n{"ok": true}')
 
 
+def test_tool_result_content_is_trimmed_with_head_and_tail():
+    content = "a" * 40000 + "TAIL"
+    trimmed = trim_tool_content(content, max_chars=1000)
+    assert len(trimmed) < 1400
+    assert "[tool output trimmed" in trimmed
+    assert "TAIL" in trimmed
+
+
 def test_agent_continues_after_assistant_promises_next_tool(tmp_path: Path):
     class ContinueClient:
         def __init__(self):
@@ -154,6 +162,37 @@ def test_agent_continues_after_assistant_promises_next_tool(tmp_path: Path):
     result = TuLAgent(settings(tmp_path), mode="root", client=ContinueClient()).run("写登录 HTML，然后启动服务")
     assert result.answer == "服务器已启动。"
     assert result.rounds == 4
+
+
+def test_agent_retries_after_tool_failure_when_model_stops(tmp_path: Path):
+    class RetryClient:
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return '{"tool":"read_file","arguments":{"path":"missing.txt"}}'
+            if self.calls == 2:
+                return "读取失败，文件不存在。"
+            if self.calls == 3:
+                assert "tool failed" in messages[-1].content.lower()
+                return '{"tool":"list_files","arguments":{"path":"."}}'
+            return "已改为列目录确认文件不存在。"
+
+    result = TuLAgent(settings(tmp_path), mode="root", client=RetryClient()).run("读取 missing.txt，如果失败就检查目录")
+    assert result.answer == "已改为列目录确认文件不存在。"
+    assert result.rounds == 4
+
+
+def test_complex_task_gets_private_execution_hint(tmp_path: Path):
+    class InspectClient:
+        def chat(self, messages):
+            assert "Private execution hint" in messages[-1].content
+            return "ok"
+
+    result = TuLAgent(settings(tmp_path), mode="root", client=InspectClient()).run("写一个 HTML，然后启动服务，再检查端口并验证公网访问")
+    assert result.answer == "ok"
 
 
 def test_agent_finalizes_instead_of_pausing_after_tool_limit(tmp_path: Path):

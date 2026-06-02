@@ -98,9 +98,12 @@ class TuLAgent:
         final_answer = ""
         rounds = 0
         last_turn_had_tool_result = False
+        last_turn_had_tool_error = False
         round_limit = max_tool_rounds or self.settings.max_tool_rounds
         for rounds in range(1, round_limit + 1):
             model_messages = compact_context_messages(session.messages, self.settings.model, on_event=on_event)
+            if rounds == 1 and is_complex_task(prompt):
+                model_messages = model_messages + [Message("user", private_execution_hint())]
             model_messages = self._with_internal_thinking(model_messages, on_event=on_event)
             if stream:
                 parts: list[str] = []
@@ -126,10 +129,21 @@ class TuLAgent:
                     )
                     last_turn_had_tool_result = False
                     continue
+                if last_turn_had_tool_error and not declares_blocked_or_complete(assistant_text):
+                    session.append(
+                        Message(
+                            "user",
+                            "The previous tool failed, but you stopped without trying a recovery path. "
+                            "Continue with one better tool call using the error details, or explicitly state that the task is blocked.",
+                        )
+                    )
+                    last_turn_had_tool_error = False
+                    continue
                 final_answer = assistant_text
                 break
             session.append(Message("assistant", assistant_text))
             last_turn_had_tool_result = False
+            last_turn_had_tool_error = False
             name, arguments = tool_call
             if on_event:
                 on_event(f"tool {name} {summarize_arguments(arguments)}")
@@ -142,8 +156,9 @@ class TuLAgent:
                 content = json.dumps({"ok": False, "output": str(exc)}, ensure_ascii=False)
             if on_event:
                 on_event(f"done {name}")
-            session.append(Message("user", tool_result_message(name, content)))
+            session.append(Message("user", tool_result_message(name, trim_tool_content(content))))
             last_turn_had_tool_result = True
+            last_turn_had_tool_error = is_failed_tool_result(content)
             if stop_after_tool:
                 return AgentResult(session.session_id, "", rounds)
         else:
@@ -265,6 +280,43 @@ def is_question_mark_only(text: str) -> bool:
 
 def tool_result_message(name: str, content: str) -> str:
     return f"TOOL_RESULT name={name}\n{content}"
+
+
+def trim_tool_content(content: str, max_chars: int = 24000) -> str:
+    if len(content) <= max_chars:
+        return content
+    head_len = max_chars // 2
+    tail_len = max_chars - head_len
+    omitted = len(content) - head_len - tail_len
+    return content[:head_len] + f"\n[tool output trimmed: {omitted} chars omitted]\n" + content[-tail_len:]
+
+
+def is_failed_tool_result(content: str) -> bool:
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(data, dict) and data.get("ok") is False
+
+
+def declares_blocked_or_complete(text: str) -> bool:
+    lowered = text.lower()
+    cues = ("blocked", "无法继续", "被阻塞", "需要用户", "已完成", "完成了", "done", "finished")
+    return any(cue in lowered for cue in cues)
+
+
+def is_complex_task(prompt: str) -> bool:
+    normalized = re.sub(r"\s+", "", prompt.lower())
+    cues = ("然后", "再", "并", "启动", "验证", "检查", "部署", "开放端口", "公网", "and", "then")
+    return sum(1 for cue in cues if cue in normalized) >= 2
+
+
+def private_execution_hint() -> str:
+    return (
+        "Private execution hint: this is a multi-step task. Work in small tool-backed steps. "
+        "After each tool result, continue with the next required tool until the requested workflow is verified or blocked. "
+        "Do not merely say what you will do next."
+    )
 
 
 def promises_more_work(text: str) -> bool:
