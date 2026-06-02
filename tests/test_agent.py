@@ -372,6 +372,32 @@ def test_session_handoff_is_not_printed_after_run(monkeypatch, tmp_path: Path, c
     assert "[resume]" not in captured.err
 
 
+def test_interactive_model_command_uses_picker(monkeypatch, tmp_path: Path, capsys):
+    import deepseek_tulagent.cli as cli
+
+    prompts = iter(["/model", "/exit"])
+
+    class FakeDeepSeekClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ping(self):
+            return {"model_available": True}
+
+        def models(self):
+            return ["deepseek-v4-flash", "deepseek-v4-pro"]
+
+    monkeypatch.setattr(cli, "startup_animation", lambda enabled=True: None)
+    monkeypatch.setattr(cli, "read_composer", lambda *_args, **_kwargs: next(prompts))
+    monkeypatch.setattr(cli, "choose_palette", lambda rows, title="commands": rows[1][0])
+    monkeypatch.setattr(cli, "DeepSeekClient", FakeDeepSeekClient)
+
+    code = cli.interactive(settings(tmp_path), "root", "fast", True)
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "model set to deepseek-v4-pro" in out
+
+
 def test_session_store_lists_and_loads_messages(tmp_path: Path):
     client = FakeClient(["hello"])
     result = TuLAgent(settings(tmp_path), mode="plan", client=client).run("say hello")

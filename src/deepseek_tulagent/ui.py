@@ -219,7 +219,19 @@ def read_composer(prompt: str, slash_items: list[tuple[str, str]] | None = None)
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
-def slash_select(items: list[tuple[str, str]]) -> str | None:
+def choose_palette(items: list[tuple[str, str]], title: str = "commands") -> str | None:
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return None
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        return slash_select(items, title=title)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def slash_select(items: list[tuple[str, str]], title: str = "commands") -> str | None:
     query = ""
     selected = 0
     last_lines = 0
@@ -229,7 +241,7 @@ def slash_select(items: list[tuple[str, str]]) -> str | None:
             filtered = filter_slash_items(items, query)
             if selected >= len(filtered):
                 selected = 0
-            last_lines = draw_slash_select(filtered, query, selected, last_lines)
+            last_lines = draw_slash_select(filtered, query, selected, last_lines, title=title)
             char = sys.stdin.read(1)
             if char in {"\r", "\n"}:
                 if not filtered:
@@ -282,7 +294,7 @@ def filter_slash_items(items: list[tuple[str, str]], query: str) -> list[tuple[s
     return command_matches + description_matches
 
 
-def draw_slash_select(items: list[tuple[str, str]], query: str, selected: int, previous_lines: int = 0) -> int:
+def draw_slash_select(items: list[tuple[str, str]], query: str, selected: int, previous_lines: int = 0, title: str = "commands") -> int:
     width, height = shutil.get_terminal_size((88, 24))
     width = max(width, 24)
     height = max(height, 12)
@@ -294,9 +306,9 @@ def draw_slash_select(items: list[tuple[str, str]], query: str, selected: int, p
     left = " " * max((width - box_width) // 2, 0)
     sys.stdout.write("\033[H\033[2J")
     sys.stdout.write("\n" * top)
-    title = f" /{query}" if query else " / commands"
-    sys.stdout.write(left + color("╭─", CYAN) + color(clip_visible(title, inner_width), BOLD + WHITE))
-    title_fill = max(box_width - visible_len(title) - 3, 0)
+    title_text = f" {title} /{query}" if query else f" {title}"
+    sys.stdout.write(left + color("╭─", CYAN) + color(clip_visible(title_text, inner_width), BOLD + WHITE))
+    title_fill = max(box_width - visible_len(title_text) - 3, 0)
     sys.stdout.write(color("─" * title_fill + "╮", CYAN) + "\n")
     command_width = min(max(max((len(item[0]) for item in visible), default=8), 12), 22)
     for index, (command, description) in enumerate(visible):
@@ -341,14 +353,13 @@ def exit_palette_screen() -> None:
 
 
 def read_escape_suffix() -> str:
-    ready, _, _ = select.select([sys.stdin], [], [], 0.03)
-    if not ready:
-        return ""
-    first = sys.stdin.read(1)
-    ready, _, _ = select.select([sys.stdin], [], [], 0.03)
-    if not ready:
-        return first
-    return first + sys.stdin.read(1)
+    chars: list[str] = []
+    for timeout in (0.15, 0.05):
+        ready, _, _ = select.select([sys.stdin], [], [], timeout)
+        if not ready:
+            break
+        chars.append(sys.stdin.read(1))
+    return "".join(chars)
 
 
 def assistant_prefix() -> str:

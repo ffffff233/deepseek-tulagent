@@ -116,6 +116,7 @@ root + fast + deepseek-v4-flash
 
 ```text
 /model
+/models
 /mode root
 /think fast
 /doctor
@@ -124,6 +125,8 @@ root + fast + deepseek-v4-flash
 /tool <json>
 /exit
 ```
+
+`/model` 会打开模型选择面板，回车后切换当前会话模型；`/models` 只打印模型列表。
 
 ## 会话恢复
 

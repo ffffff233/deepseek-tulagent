@@ -100,6 +100,7 @@ Inside `deepseekTul`, press `/` to open the command palette immediately:
 Common commands:
 
 - `/model`
+- `/models`
 - `/mode root`
 - `/think fast`
 - `/doctor`
@@ -109,6 +110,8 @@ Common commands:
 - `/exit`
 
 Discovered skills are shown in the same palette as `/skill <name>` entries.
+
+`/model` opens the model picker and switches the current session model. `/models` only prints the live model list.
 
 ## Permission Modes
 

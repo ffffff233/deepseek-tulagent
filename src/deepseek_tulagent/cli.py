@@ -13,7 +13,7 @@ from .session import SessionStore
 from .skills import SkillStore
 from .tools import ToolRegistry
 from .tui import ChatTui, TuiState
-from .ui import ThinkingSpinner, assistant_prefix, composer_prompt, confirm_tool, print_box, print_header, print_slash_palette, print_tool_palette, read_composer, startup_animation
+from .ui import ThinkingSpinner, assistant_prefix, choose_palette, composer_prompt, confirm_tool, print_box, print_header, print_slash_palette, print_tool_palette, read_composer, startup_animation
 
 
 BANNER = r"""
@@ -249,10 +249,20 @@ def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str 
             print_header(str(settings.workspace), settings.base_url, settings.model, current_mode, thinking.name, "all yes" if yes or current_mode in {"yolo", "root"} else "manual yes for gated tools")
             print(f"thinking set to {thinking.name}; model={settings.model}; max_tokens={settings.max_tokens}")
             continue
-        if prompt in {"/models", "/model"}:
+        if prompt == "/models":
             for model in DeepSeekClient(settings).models():
                 marker = " *" if model == settings.model else ""
                 print(f"{model}{marker}")
+            continue
+        if prompt == "/model":
+            models = DeepSeekClient(settings).models()
+            rows = [(model, "current" if model == settings.model else "available") for model in models]
+            selected_model = choose_palette(rows, title="models")
+            if not selected_model:
+                print("model unchanged")
+                continue
+            settings = settings.with_runtime(model=selected_model)
+            print(f"model set to {settings.model}")
             continue
         if prompt == "/skills":
             discovered = SkillStore(settings.workspace).list()
