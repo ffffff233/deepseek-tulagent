@@ -183,6 +183,7 @@ def read_composer(prompt: str, slash_items: list[tuple[str, str]] | None = None)
     buffer: list[str] = []
     try:
         tty.setraw(fd)
+        sys.stdout.write("\033[?25h")
         sys.stdout.write(prompt)
         sys.stdout.flush()
         while True:

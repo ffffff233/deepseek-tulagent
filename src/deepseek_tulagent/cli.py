@@ -135,7 +135,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "run":
         thinking = ThinkingMode.resolve(args.think)
         runtime_settings = settings.with_runtime(
-            model=thinking.model_hint,
             max_tokens=thinking.max_tokens,
             thinking_enabled=thinking.api_thinking,
             reasoning_effort=thinking.reasoning_effort,
@@ -151,7 +150,6 @@ def main(argv: list[str] | None = None) -> int:
         if thinking.name == "auto":
             thinking = choose_auto_thinking(runtime_settings, args.prompt)
             runtime_settings = runtime_settings.with_runtime(
-                model=thinking.model_hint,
                 max_tokens=thinking.max_tokens,
                 thinking_enabled=thinking.api_thinking,
                 reasoning_effort=thinking.reasoning_effort,
@@ -211,7 +209,6 @@ def update_command(check_only: bool = False) -> int:
 def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str | None = None) -> int:
     thinking = ThinkingMode.resolve(thinking_name)
     settings = settings.with_runtime(
-        model=thinking.model_hint,
         max_tokens=thinking.max_tokens,
         thinking_enabled=thinking.api_thinking,
         reasoning_effort=thinking.reasoning_effort,
@@ -286,6 +283,7 @@ def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str 
                 print("mode must be one of: " + ", ".join(MODES))
                 continue
             current_mode = requested
+            persist_default("default_mode", current_mode)
             print_header(str(settings.workspace), settings.base_url, settings.model, current_mode, thinking.name, "all yes" if yes or current_mode in {"yolo", "root"} else "manual yes for gated tools")
             print(f"mode set to {current_mode}")
             continue
@@ -296,11 +294,11 @@ def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str 
                 continue
             thinking = ThinkingMode.resolve(requested)
             settings = settings.with_runtime(
-                model=thinking.model_hint,
                 max_tokens=thinking.max_tokens,
                 thinking_enabled=thinking.api_thinking,
                 reasoning_effort=thinking.reasoning_effort,
             )
+            persist_default("default_thinking", thinking.name)
             print_header(str(settings.workspace), settings.base_url, settings.model, current_mode, thinking.name, "all yes" if yes or current_mode in {"yolo", "root"} else "manual yes for gated tools")
             print(f"thinking set to {thinking.name}; model={settings.model}; max_tokens={settings.max_tokens}; api_thinking={settings.thinking_enabled}; reasoning_effort={settings.reasoning_effort}; internal_passes={thinking.deliberation_passes}")
             continue
@@ -312,11 +310,11 @@ def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str 
                 continue
             thinking = ThinkingMode.resolve(selected_thinking)
             settings = settings.with_runtime(
-                model=thinking.model_hint,
                 max_tokens=thinking.max_tokens,
                 thinking_enabled=thinking.api_thinking,
                 reasoning_effort=thinking.reasoning_effort,
             )
+            persist_default("default_thinking", thinking.name)
             print(f"thinking set to {thinking.name}; model={settings.model}; max_tokens={settings.max_tokens}; api_thinking={settings.thinking_enabled}; reasoning_effort={settings.reasoning_effort}; internal_passes={thinking.deliberation_passes}")
             continue
         if prompt == "/models":
@@ -332,6 +330,7 @@ def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str 
                 print("model unchanged")
                 continue
             settings = settings.with_runtime(model=selected_model)
+            persist_default("model", settings.model)
             print(f"model set to {settings.model}")
             continue
         if prompt == "/skills":
@@ -387,7 +386,6 @@ def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str 
         if thinking.name == "auto":
             run_thinking = choose_auto_thinking(settings, prompt)
             run_settings = settings.with_runtime(
-                model=run_thinking.model_hint,
                 max_tokens=run_thinking.max_tokens,
                 thinking_enabled=run_thinking.api_thinking,
                 reasoning_effort=run_thinking.reasoning_effort,
@@ -471,7 +469,11 @@ def interactive_tui(settings, mode: str, thinking: ThinkingMode, yes: bool, sess
             if requested in set(THINKING):
                 resolved = ThinkingMode.resolve(requested)
                 current["thinking"] = resolved
-                current["settings"] = current["settings"].with_runtime(model=resolved.model_hint, max_tokens=resolved.max_tokens)
+                current["settings"] = current["settings"].with_runtime(
+                    max_tokens=resolved.max_tokens,
+                    thinking_enabled=resolved.api_thinking,
+                    reasoning_effort=resolved.reasoning_effort,
+                )
                 tui_state.thinking = resolved.name
                 tui_state.model = current["settings"].model
                 tui_state.status = "thinking changed"
@@ -575,6 +577,12 @@ def config_command(args) -> int:
         print(f"saved {path}")
         return 0
     return 1
+
+
+def persist_default(key: str, value: str) -> None:
+    data = load_file_config()
+    data[key] = value
+    save_file_config(data)
 
 
 def print_palette(settings) -> None:

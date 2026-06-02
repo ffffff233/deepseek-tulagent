@@ -1,5 +1,19 @@
 # 更新记录 / Changelog
 
+## v0.1.7
+
+中文：
+
+- 思考模式不再强制切换模型；`/think max` 只改思考参数和输出预算，保留当前模型。
+- `/model`、`/think`、`/mode` 会写入本地默认配置，下次启动继续使用。
+- 进入输入框前强制显示光标，减少从选择器返回后输入不可见的问题。
+
+English:
+
+- Thinking modes no longer force model changes; `/think max` changes thinking controls and output budget while keeping the current model.
+- `/model`, `/think`, and `/mode` persist local defaults for the next session.
+- Composer now forces cursor visibility before input to reduce invisible-input issues after pickers.
+
 ## v0.1.6
 
 中文：

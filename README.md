@@ -229,6 +229,8 @@ Discovered skill summaries are injected into the agent prompt at startup/run tim
 
 `fast` and higher modes send real DeepSeek API `thinking` controls. `balanced` and deeper modes also perform client-side internal deliberation passes: the client makes extra model calls for private planning, then uses those notes as context for the final answer.
 
+Changing thinking mode does not force a model change. `/model`, `/think`, and `/mode` selections are saved as local defaults for the next session.
+
 ## Configuration
 
 Environment variables:

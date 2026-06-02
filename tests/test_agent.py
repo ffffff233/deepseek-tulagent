@@ -395,6 +395,7 @@ def test_interactive_model_command_uses_picker(monkeypatch, tmp_path: Path, caps
     import deepseek_tulagent.cli as cli
 
     prompts = iter(["/model", "/exit"])
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config"))
 
     class FakeDeepSeekClient:
         def __init__(self, *_args, **_kwargs):
@@ -415,12 +416,14 @@ def test_interactive_model_command_uses_picker(monkeypatch, tmp_path: Path, caps
     out = capsys.readouterr().out
     assert code == 0
     assert "model set to deepseek-v4-pro" in out
+    assert get_settings().model == "deepseek-v4-pro"
 
 
 def test_interactive_think_command_uses_picker(monkeypatch, tmp_path: Path, capsys):
     import deepseek_tulagent.cli as cli
 
     prompts = iter(["/think", "/exit"])
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config"))
 
     class FakeDeepSeekClient:
         def __init__(self, *_args, **_kwargs):
@@ -438,7 +441,9 @@ def test_interactive_think_command_uses_picker(monkeypatch, tmp_path: Path, caps
     out = capsys.readouterr().out
     assert code == 0
     assert "thinking set to deep" in out
+    assert "model=deepseek-chat" in out
     assert "internal_passes=2" in out
+    assert get_settings().default_thinking == "deep"
 
 
 def test_auto_thinking_uses_model_choice(monkeypatch, tmp_path: Path):
