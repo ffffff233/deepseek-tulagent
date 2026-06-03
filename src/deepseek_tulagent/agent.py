@@ -116,9 +116,20 @@ class TuLAgent:
             model_messages = self._with_internal_thinking(model_messages, on_event=on_event)
             if stream:
                 parts: list[str] = []
+                held_parts: list[str] = []
+                holding_tool_like_output = True
                 for delta in self.client.stream_chat(model_messages):
                     parts.append(delta)
-                    if on_delta:
+                    if holding_tool_like_output:
+                        held_parts.append(delta)
+                        held_text = "".join(held_parts)
+                        if should_hold_stream_output(held_text):
+                            continue
+                        holding_tool_like_output = False
+                        if on_delta:
+                            on_delta(held_text)
+                        held_parts = []
+                    elif on_delta:
                         on_delta(delta)
                 assistant_text = "".join(parts)
             else:
@@ -126,6 +137,8 @@ class TuLAgent:
             tool_call = None if is_question_mark_only(prompt) else parse_tool_call(assistant_text)
             if not tool_call:
                 assistant_text = plainify_assistant_text(assistant_text)
+                if stream and held_parts and on_delta:
+                    on_delta(assistant_text)
                 session.append(Message("assistant", assistant_text))
                 if last_turn_had_tool_result and promises_more_work(assistant_text):
                     session.append(
@@ -512,6 +525,24 @@ def plainify_assistant_text(text: str) -> str:
         part = re.sub(r"(?m)^(\s*)\*\s+", r"\1- ", part)
         cleaned.append(part)
     return "".join(cleaned)
+
+
+def should_hold_stream_output(text: str) -> bool:
+    stripped = text.lstrip()
+    if not stripped:
+        return True
+    tool_prefixes = (
+        "{",
+        "```",
+        "tool:",
+        "工具:",
+        "Tool:",
+        "Arguments:",
+        "参数:",
+    )
+    if any(stripped.startswith(prefix) for prefix in tool_prefixes):
+        return len(stripped) < 32000
+    return False
 
 
 def compact_context_messages(

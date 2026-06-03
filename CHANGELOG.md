@@ -1,5 +1,19 @@
 # 更新记录 / Changelog
 
+## v0.1.44
+
+中文：
+
+- 修复流式模式下模型输出工具调用 JSON 时，原始 `{"tool":...}` / fenced JSON 会先被打印到正文的问题。
+- 现在疑似工具调用的流式开头会先缓冲；如果完整消息解析为工具调用，只显示工具事件，不显示原始 JSON。
+- 增加回归测试覆盖普通 JSON 工具调用和 fenced JSON 工具调用的流式过滤。
+
+English:
+
+- Fixed streamed tool-call JSON leaking into visible assistant text before being rendered as a tool event.
+- Streamed output that starts like a tool call is now buffered first; if the full message parses as a tool call, only the tool event is shown.
+- Added regression tests for both plain JSON and fenced JSON streamed tool-call filtering.
+
 ## v0.1.43
 
 中文：

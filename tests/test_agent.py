@@ -208,6 +208,60 @@ def test_agent_ask_user_feeds_answer_back_to_model(tmp_path: Path):
     assert answers[0]["options"][0]["label"] == "Python"
 
 
+def test_streamed_tool_json_is_not_printed_as_visible_delta(tmp_path: Path):
+    class StreamingToolClient:
+        def __init__(self):
+            self.calls = 0
+
+        def stream_chat(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                yield '{"tool":"read_file",'
+                yield '"arguments":{"path":"README.md"}}'
+            else:
+                yield "读取完成。"
+
+    (tmp_path / "README.md").write_text("hello", encoding="utf-8")
+    visible: list[str] = []
+    events: list[str] = []
+    client = StreamingToolClient()
+    result = TuLAgent(settings(tmp_path), mode="root", client=client).run(
+        "读取 README",
+        stream=True,
+        on_delta=visible.append,
+        on_event=events.append,
+    )
+    assert result.answer == "读取完成。"
+    assert "".join(visible) == "读取完成。"
+    assert any(event.startswith("tool read_file") for event in events)
+    assert '{"tool"' not in "".join(visible)
+
+
+def test_streamed_fenced_tool_json_is_not_printed_as_visible_delta(tmp_path: Path):
+    class StreamingFencedToolClient:
+        def __init__(self):
+            self.calls = 0
+
+        def stream_chat(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                yield '```json\n{"tool":"read_file",'
+                yield '"arguments":{"path":"README.md"}}\n```'
+            else:
+                yield "完成。"
+
+    (tmp_path / "README.md").write_text("hello", encoding="utf-8")
+    visible: list[str] = []
+    result = TuLAgent(settings(tmp_path), mode="root", client=StreamingFencedToolClient()).run(
+        "读取 README",
+        stream=True,
+        on_delta=visible.append,
+    )
+    assert result.answer == "完成。"
+    assert "".join(visible) == "完成。"
+    assert "```json" not in "".join(visible)
+
+
 def test_initial_messages_keep_large_system_prompt_cacheable(tmp_path: Path):
     SkillStore(tmp_path).create("repo-debug", "Debug this repository.", "Run tests.")
     agent = TuLAgent(settings(tmp_path), client=FakeClient(["done"]))
