@@ -1,5 +1,15 @@
 # 更新记录 / Changelog
 
+## v0.1.41
+
+中文：
+
+- 修复流式模式首个 token 后再次清行动画，导致部分终端吞掉回复开头的问题。
+
+English:
+
+- Fixed an extra spinner line clear after the first streamed token, which could erase the beginning of the assistant response in some terminals.
+
 ## v0.1.40
 
 中文：

@@ -1059,6 +1059,7 @@ def test_interactive_line_mode_uses_spinner_until_first_delta(monkeypatch, tmp_p
 
     assert cli.interactive(settings(tmp_path), "root", "fast", True) == 0
     assert events[:3] == ["enter:thinking:fast", "run", "stop"]
+    assert "clear" not in events[:4]
 
 
 def test_interactive_startup_prints_version(monkeypatch, tmp_path: Path, capsys):

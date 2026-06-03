@@ -430,7 +430,6 @@ def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str 
             print(format_agent_event(text), flush=True)
 
         def delta(text: str) -> None:
-            ThinkingSpinner.clear_active_line()
             print(text, end="", flush=True)
 
         approver = (lambda _name, _args: True) if yes or current_mode in {"yolo", "root"} else confirm_tool
