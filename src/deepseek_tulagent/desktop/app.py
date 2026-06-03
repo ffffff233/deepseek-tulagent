@@ -30,6 +30,8 @@ class DesktopApi:
         self.session: Session | None = None
         self.window: Any = None
         self._lock = threading.Lock()
+        self._running = False
+        self._cancel_requested = False
 
     def bind_window(self, window: Any) -> None:
         self.window = window
@@ -56,6 +58,7 @@ class DesktopApi:
             "skills": [asdict(skill) | {"path": str(skill.path)} for skill in SkillStore(self.settings.workspace).list()],
             "sessionId": self.session.session_id if self.session else None,
             "apiKeySet": bool(self.settings.api_key),
+            "running": self._running,
             "autoCompact": True,
             "compatFormats": ["deepseek", "openai-compatible"],
         }
@@ -145,6 +148,8 @@ class DesktopApi:
         return {"ok": True, "name": name, "path": str(path), "size": len(data)}
 
     def send(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._running:
+            return {"ok": False, "error": "turn already running"}
         prompt = str(payload.get("prompt") or "").strip()
         attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
         if attachments:
@@ -153,9 +158,18 @@ class DesktopApi:
             )
         if not prompt:
             return {"ok": False, "error": "empty prompt"}
+        self._cancel_requested = False
+        self._running = True
         thread = threading.Thread(target=self._run_agent_turn, args=(prompt,), daemon=True)
         thread.start()
         return {"ok": True}
+
+    def cancel(self) -> dict[str, Any]:
+        if not self._running:
+            return {"ok": True, "running": False}
+        self._cancel_requested = True
+        self._emit("turn:cancel", {"message": "正在取消当前回复；已发出的工具会等待当前调用返回。"})
+        return {"ok": True, "running": True}
 
     def _run_agent_turn(self, prompt: str) -> None:
         with self._lock:
@@ -163,9 +177,13 @@ class DesktopApi:
                 self._emit("turn:start", {"prompt": prompt, "thinking": self.thinking.name})
 
                 def delta(text: str) -> None:
+                    if self._cancel_requested:
+                        raise RuntimeError("turn cancelled")
                     self._emit("assistant:delta", {"text": text})
 
                 def event(text: str) -> None:
+                    if self._cancel_requested:
+                        raise RuntimeError("turn cancelled")
                     self._emit("agent:event", parse_agent_event(text))
 
                 result = TuLAgent(
@@ -177,8 +195,16 @@ class DesktopApi:
                 self.session = SessionStore(self.settings.workspace).load(result.session_id)
                 ensure_session_title(self.settings.workspace, self.session)
                 self._emit("turn:done", {"sessionId": result.session_id, "rounds": result.rounds})
+            except RuntimeError as exc:
+                if str(exc) == "turn cancelled":
+                    self._emit("turn:cancelled", {"message": "当前回复已取消"})
+                else:
+                    self._emit("turn:error", {"error": str(exc), "trace": traceback.format_exc(limit=8)})
             except Exception as exc:
                 self._emit("turn:error", {"error": str(exc), "trace": traceback.format_exc(limit=8)})
+            finally:
+                self._running = False
+                self._cancel_requested = False
 
     def _emit(self, event: str, payload: dict[str, Any]) -> None:
         if self.window is None:

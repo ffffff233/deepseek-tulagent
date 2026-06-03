@@ -309,7 +309,30 @@ def parse_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
         parsed = normalize_tool_call(data)
         if parsed:
             return parsed
+    labelled = parse_labelled_tool_call(stripped)
+    if labelled:
+        return labelled
     return parse_action_shell_block(stripped)
+
+
+def parse_labelled_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
+    tool_match = re.search(r"(?im)^\s*(?:tool|工具)\s*:\s*([A-Za-z_][\w-]*)\s*$", text)
+    if not tool_match:
+        return None
+    name = tool_match.group(1).strip()
+    tail = text[tool_match.end():]
+    args_match = re.search(r"(?is)(?:arguments|args|参数)\s*:\s*(\{.*\})", tail)
+    if not args_match:
+        return None
+    raw_args = args_match.group(1).strip()
+    for candidate in [raw_args, *extract_json_objects(raw_args)]:
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return name, data
+    return None
 
 
 def is_question_mark_only(text: str) -> bool:

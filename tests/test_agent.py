@@ -110,6 +110,16 @@ def test_parse_multiple_action_bash_blocks_as_one_shell_tool():
     assert call == ("run_shell", {"command": "ss -tuln\nss -tun"})
 
 
+def test_parse_labelled_tool_arguments():
+    call = parse_tool_call(
+        'Tool: clone_repo\nArguments: {"repo/url": "https://github.com/esengine/DeepSeek-Reasonix", "path": "/root/DeepSeek-Reasonix"}'
+    )
+    assert call == (
+        "clone_repo",
+        {"repo/url": "https://github.com/esengine/DeepSeek-Reasonix", "path": "/root/DeepSeek-Reasonix"},
+    )
+
+
 def test_agent_runs_read_tool_loop(tmp_path: Path):
     (tmp_path / "README.md").write_text("hello", encoding="utf-8")
     client = FakeClient([
@@ -701,6 +711,21 @@ def test_desktop_api_boot_and_runtime(monkeypatch, tmp_path: Path):
     assert updated["mode"] == "plan"
     assert updated["thinking"] == "deep"
     assert updated["model"] == "deepseek-v4-pro"
+    assert updated["running"] is False
+
+
+def test_desktop_api_rejects_parallel_turn(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    api._running = True
+    result = api.send({"prompt": "hello"})
+    assert result == {"ok": False, "error": "turn already running"}
+    cancelled = api.cancel()
+    assert cancelled["ok"] is True
+    assert cancelled["running"] is True
 
 
 def test_desktop_upload_saves_file(monkeypatch, tmp_path: Path):

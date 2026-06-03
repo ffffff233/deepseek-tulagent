@@ -3,6 +3,7 @@ const state = {
   currentAssistant: null,
   attachments: [],
   events: 0,
+  running: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -49,6 +50,7 @@ if (!window.pywebview) {
         setTimeout(() => window.DeepSeekDesktop.onNativeEvent({ event: "turn:done", payload: { sessionId: "demo-session-0001", rounds: 2 } }), 700);
         return { ok: true };
       },
+      cancel: async () => ({ ok: true }),
     },
   };
 }
@@ -57,6 +59,7 @@ window.DeepSeekDesktop = {
   onNativeEvent(message) {
     const { event, payload } = message;
     if (event === "turn:start") {
+      setRunning(true);
       setSaveState("running", "运行中", "正在执行工具和模型");
       addMessage("user", payload.prompt);
       state.currentAssistant = addMessage("assistant", "");
@@ -72,6 +75,7 @@ window.DeepSeekDesktop = {
     }
     if (event === "turn:done") {
       state.currentAssistant = null;
+      setRunning(false);
       refreshSessions();
       addEvent("done", "完成", `session ${payload.sessionId} · ${payload.rounds} rounds`);
       $("sessionState").textContent = payload.sessionId.slice(0, 8);
@@ -80,8 +84,19 @@ window.DeepSeekDesktop = {
     }
     if (event === "turn:error") {
       state.currentAssistant = null;
+      setRunning(false);
       addEvent("error", "错误", payload.error + "\n\n" + payload.trace);
       setSaveState("error", "出错", "查看事件流");
+    }
+    if (event === "turn:cancel") {
+      addEvent("event", "取消请求", payload.message || "");
+      setSaveState("running", "取消中", "等待当前调用返回");
+    }
+    if (event === "turn:cancelled") {
+      state.currentAssistant = null;
+      setRunning(false);
+      addEvent("done", "已取消", payload.message || "");
+      setSaveState("idle", "已取消", state.boot?.sessionId || "未保存");
     }
   }
 };
@@ -93,6 +108,7 @@ async function boot() {
   $("apiState").textContent = state.boot.apiKeySet ? "已配置" : "未配置";
   $("topRuntime").textContent = `${state.boot.model} · ${state.boot.mode}/${state.boot.thinking}`;
   setSaveState("idle", "新会话", state.boot.sessionId || "未保存");
+  setRunning(Boolean(state.boot.running));
   fillSelect("mode", state.boot.modes, state.boot.mode);
   fillSelect("thinking", state.boot.thinkingModes, state.boot.thinking);
   fillSelect("format", state.boot.compatFormats, state.boot.providerFormat || "deepseek");
@@ -129,6 +145,15 @@ function setSaveState(kind, label, detail) {
   box.className = `saveState ${kind}`;
   $("saveState").textContent = label;
   $("composerSession").textContent = detail || "";
+}
+
+function setRunning(running) {
+  state.running = running;
+  $("send").hidden = running;
+  $("cancel").hidden = !running;
+  $("prompt").disabled = running;
+  $("attach").disabled = running;
+  document.body.classList.toggle("is-running", running);
 }
 
 async function refreshModels() {
@@ -222,7 +247,10 @@ function addEvent(kind, name, detail) {
   $("eventCount").textContent = String(state.events);
   const details = document.createElement("details");
   details.className = `event ${kind}`;
-  details.innerHTML = `<summary>${labelFor(kind)} · ${escapeHtml(name || "")}</summary><pre>${escapeHtml(detail || "")}</pre>`;
+  const icon = iconFor(kind);
+  details.innerHTML = `
+    <summary><span class="eventIcon">${icon}</span><span>${labelFor(kind)}</span><strong>${escapeHtml(name || "")}</strong></summary>
+    <pre>${escapeHtml(detail || "")}</pre>`;
   $("activity").append(details);
   $("activity").scrollTop = $("activity").scrollHeight;
   const line = `[${labelFor(kind)}] ${name || ""} ${detail || ""}`.trim();
@@ -239,6 +267,18 @@ function labelFor(kind) {
     compact: "上下文压缩",
     error: "错误",
   }[kind] || "事件";
+}
+
+function iconFor(kind) {
+  return {
+    thinking: "◇",
+    tool: "⌘",
+    done: "✓",
+    subagent: "↳",
+    compact: "⇄",
+    error: "!",
+    skill: "✦",
+  }[kind] || "·";
 }
 
 function scrollMessages() {
@@ -267,6 +307,7 @@ async function updateRuntime() {
 }
 
 $("send").onclick = async () => {
+  if (state.running) return;
   const prompt = $("prompt").value.trim();
   if (!prompt && !state.attachments.length) return;
   $("prompt").value = "";
@@ -274,7 +315,13 @@ $("send").onclick = async () => {
   state.attachments = [];
   renderAttachments();
   await updateRuntime();
-  await window.pywebview.api.send({ prompt, attachments });
+  setRunning(true);
+  const result = await window.pywebview.api.send({ prompt, attachments });
+  if (!result.ok) {
+    setRunning(false);
+    addEvent("error", "发送失败", result.error || "unknown error");
+    $("prompt").value = prompt;
+  }
 };
 
 $("prompt").addEventListener("keydown", (event) => {
@@ -283,6 +330,10 @@ $("prompt").addEventListener("keydown", (event) => {
     $("send").click();
   }
 });
+
+$("cancel").onclick = async () => {
+  await window.pywebview.api.cancel();
+};
 
 ["model", "thinking", "mode"].forEach((id) => $(id).addEventListener("change", updateRuntime));
 $("mode").addEventListener("change", updateModeHelp);

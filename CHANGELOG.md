@@ -1,5 +1,23 @@
 # 更新记录 / Changelog
 
+## v0.1.38
+
+中文：
+
+- 桌面端新增运行中防重复发送，避免长文本或误触导致同一条消息提交两次。
+- 桌面端新增停止按钮和取消状态；执行中取消不会直接退出整个对话。
+- 桌面端工具/思考/子代理事件改成更清晰的折叠事件卡片，减少流水文本噪音。
+- 兼容模型输出的 `Tool: ...` / `Arguments: {...}` 工具调用格式，避免仓库拉取等工具调用被当成普通文本后中断。
+- 继续保持 `clone_repo` 对 `repo/url`、Windows 路径和 GitHub URL 规范化的兼容。
+
+English:
+
+- Added desktop in-flight send guarding to prevent duplicate submissions from long text or accidental repeated sends.
+- Added a desktop stop button and cancellation state; cancelling a running turn no longer exits the whole conversation.
+- Reworked desktop tool/thinking/subagent events into clearer collapsible event cards.
+- Added parser support for model outputs like `Tool: ...` / `Arguments: {...}` so repository cloning and similar calls do not stall as plain text.
+- Kept `clone_repo` compatibility for `repo/url`, Windows paths, and normalized GitHub URLs.
+
 ## v0.1.37
 
 中文：
