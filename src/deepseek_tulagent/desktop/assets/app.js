@@ -93,12 +93,12 @@ async function boot() {
   $("apiState").textContent = state.boot.apiKeySet ? "已配置" : "未配置";
   $("topRuntime").textContent = `${state.boot.model} · ${state.boot.mode}/${state.boot.thinking}`;
   setSaveState("idle", "新会话", state.boot.sessionId || "未保存");
-  updateModeHelp();
   fillSelect("mode", state.boot.modes, state.boot.mode);
   fillSelect("thinking", state.boot.thinkingModes, state.boot.thinking);
   fillSelect("format", state.boot.compatFormats, state.boot.providerFormat || "deepseek");
   fillSelect("providerFormat", state.boot.compatFormats, state.boot.providerFormat || "deepseek");
   fillSelect("model", [state.boot.model], state.boot.model);
+  updateModeHelp();
   $("baseUrl").value = state.boot.baseUrl || "";
   $("defaultModel").value = state.boot.model || "";
   renderSkills(state.boot.skills || []);

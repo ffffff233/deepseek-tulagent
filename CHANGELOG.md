@@ -1,5 +1,19 @@
 # 更新记录 / Changelog
 
+## v0.1.36
+
+中文：
+
+- 桌面设置面板改成右侧抽屉式结构，更接近成熟开发者桌面端。
+- 修复桌面启动时权限说明初始化顺序问题。
+- 新增 `NOTICE`，明确桌面 UI 参考 Reasonix Desktop，并保留 MIT attribution。
+
+English:
+
+- Reworked desktop settings into a right-side drawer, closer to a mature developer desktop app.
+- Fixed permission-help initialization order on desktop startup.
+- Added `NOTICE` with Reasonix Desktop MIT attribution for the UI inspiration.
+
 ## v0.1.35
 
 中文：
