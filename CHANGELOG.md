@@ -1,5 +1,23 @@
 # 更新记录 / Changelog
 
+## v0.1.48
+
+中文：
+
+- 修复工具失败后的自动恢复提示被保存成 `user` 消息，导致恢复会话时看起来像用户自己说了“previous tool failed...”的问题。
+- 自动恢复提示现在只作为临时模型上下文使用，不再写入 session；旧 session 中已有的内部提示也会在恢复上下文和 recent 历史中被过滤。
+- 修复流式模式下模型先输出自然语言前言再输出工具 JSON 时，前言和工具 JSON 被打印到可见正文的问题。
+- 恢复历史现在会隐藏“带前言的工具调用 assistant 消息”，避免出现“你说得对...```json`”这类噪音。
+- 同步 README 安装链接到 `v0.1.48`。
+
+English:
+
+- Fixed automatic recovery prompts after failed tools being persisted as `user` messages, which made resumed sessions look like the user had said "previous tool failed...".
+- Recovery prompts are now temporary model context only and are no longer written to session history; existing internal prompts in old sessions are filtered from resumed context and recent history.
+- Fixed streamed responses where the model emits natural-language preface text before tool-call JSON, causing both the preface and JSON to appear in visible output.
+- Resume history now hides assistant messages that contain tool calls even when they include a preface such as "you are right...".
+- Updated README install links to `v0.1.48`.
+
 ## v0.1.47
 
 中文：

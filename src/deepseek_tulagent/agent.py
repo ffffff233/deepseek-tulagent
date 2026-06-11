@@ -60,6 +60,18 @@ Rules:
 """
 
 
+CONTINUE_AFTER_PROMISE_PROMPT = (
+    "You said you would continue with more work, but you did not request a tool. "
+    "Continue now by returning the next required tool JSON. "
+    "If the task is actually complete, give the final answer instead."
+)
+
+RECOVER_AFTER_TOOL_FAILURE_PROMPT = (
+    "The previous tool failed, but you stopped without trying a recovery path. "
+    "Continue with one better tool call using the error details, or explicitly state that the task is blocked."
+)
+
+
 @dataclass(frozen=True)
 class AgentResult:
     session_id: str
@@ -108,29 +120,23 @@ class TuLAgent:
         rounds = 0
         last_turn_had_tool_result = False
         last_turn_had_tool_error = False
+        pending_internal_prompt: str | None = None
         round_limit = max_tool_rounds or self.settings.max_tool_rounds
         for rounds in range(1, round_limit + 1):
-            model_messages = compact_context_messages(session.messages, self.settings.model, on_event=on_event)
+            model_source_messages = filter_internal_automation_messages(session.messages)
+            if pending_internal_prompt:
+                model_source_messages = model_source_messages + [Message("user", pending_internal_prompt)]
+                pending_internal_prompt = None
+            model_messages = compact_context_messages(model_source_messages, self.settings.model, on_event=on_event)
             if rounds == 1 and is_complex_task(prompt):
                 model_messages = model_messages + [Message("user", private_execution_hint())]
             model_messages = self._with_internal_thinking(model_messages, on_event=on_event)
             if stream:
                 parts: list[str] = []
                 held_parts: list[str] = []
-                holding_tool_like_output = True
                 for delta in self.client.stream_chat(model_messages):
                     parts.append(delta)
-                    if holding_tool_like_output:
-                        held_parts.append(delta)
-                        held_text = "".join(held_parts)
-                        if should_hold_stream_output(held_text):
-                            continue
-                        holding_tool_like_output = False
-                        if on_delta:
-                            on_delta(held_text)
-                        held_parts = []
-                    elif on_delta:
-                        on_delta(delta)
+                    held_parts.append(delta)
                 assistant_text = "".join(parts)
             else:
                 assistant_text = self.client.chat(model_messages)
@@ -141,24 +147,11 @@ class TuLAgent:
                     on_delta(assistant_text)
                 session.append(Message("assistant", assistant_text))
                 if last_turn_had_tool_result and promises_more_work(assistant_text):
-                    session.append(
-                        Message(
-                            "user",
-                            "You said you would continue with more work, but you did not request a tool. "
-                            "Continue now by returning the next required tool JSON. "
-                            "If the task is actually complete, give the final answer instead.",
-                        )
-                    )
+                    pending_internal_prompt = CONTINUE_AFTER_PROMISE_PROMPT
                     last_turn_had_tool_result = False
                     continue
                 if last_turn_had_tool_error and not declares_blocked_or_complete(assistant_text):
-                    session.append(
-                        Message(
-                            "user",
-                            "The previous tool failed, but you stopped without trying a recovery path. "
-                            "Continue with one better tool call using the error details, or explicitly state that the task is blocked.",
-                        )
-                    )
+                    pending_internal_prompt = RECOVER_AFTER_TOOL_FAILURE_PROMPT
                     last_turn_had_tool_error = False
                     continue
                 if goal and not goal_answer_is_terminal(assistant_text):
@@ -455,6 +448,15 @@ def trim_tool_content(content: str, max_chars: int = 24000) -> str:
     tail_len = max_chars - head_len
     omitted = len(content) - head_len - tail_len
     return content[:head_len] + f"\n[tool output trimmed: {omitted} chars omitted]\n" + content[-tail_len:]
+
+
+def is_internal_automation_prompt(text: str) -> bool:
+    stripped = " ".join(text.strip().split())
+    return stripped in {CONTINUE_AFTER_PROMISE_PROMPT, RECOVER_AFTER_TOOL_FAILURE_PROMPT}
+
+
+def filter_internal_automation_messages(messages: list[Message]) -> list[Message]:
+    return [message for message in messages if not (message.role == "user" and is_internal_automation_prompt(message.content))]
 
 
 def is_failed_tool_result(content: str) -> bool:

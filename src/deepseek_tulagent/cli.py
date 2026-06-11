@@ -7,7 +7,7 @@ import sys
 import time
 
 from . import __version__
-from .agent import TuLAgent, compact_context_messages, estimate_message_tokens, parse_tool_call
+from .agent import TuLAgent, compact_context_messages, estimate_message_tokens, is_internal_automation_prompt, parse_tool_call
 from .config import get_settings, load_file_config, save_file_config
 from .messages import Message
 from .policy import ApprovalPolicy, ThinkingMode
@@ -754,7 +754,9 @@ def is_human_visible_history(text: str) -> bool:
     stripped = text.strip()
     if stripped.startswith("Tool result from ") or stripped.startswith("TOOL_RESULT ") or stripped.startswith("SUBAGENT_RESULT "):
         return False
-    if stripped.startswith('{"tool"') or stripped.startswith("```json"):
+    if is_internal_automation_prompt(stripped):
+        return False
+    if stripped.startswith('{"tool"') or stripped.startswith("```json") or parse_tool_call(stripped):
         return False
     return True
 

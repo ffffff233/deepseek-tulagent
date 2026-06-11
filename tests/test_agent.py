@@ -8,9 +8,10 @@ import re
 import subprocess
 import zipfile
 
-from deepseek_tulagent.agent import TuLAgent, compact_context_messages, is_question_mark_only, normalize_subagent_mode_and_thinking, normalize_subagent_specs, normalize_user_question, parse_tool_call, plainify_assistant_text, promises_more_work, trim_tool_content, tool_result_message
+from deepseek_tulagent.agent import RECOVER_AFTER_TOOL_FAILURE_PROMPT, TuLAgent, compact_context_messages, filter_internal_automation_messages, is_question_mark_only, normalize_subagent_mode_and_thinking, normalize_subagent_specs, normalize_user_question, parse_tool_call, plainify_assistant_text, promises_more_work, trim_tool_content, tool_result_message
 from deepseek_tulagent.cli import main
 from deepseek_tulagent.config import Settings, get_settings, merge_file_config, resolve_model
+from deepseek_tulagent.messages import Message
 from deepseek_tulagent.policy import ApprovalPolicy, ThinkingMode
 from deepseek_tulagent.provider import apply_thinking_payload
 from deepseek_tulagent.session import SessionStore
@@ -319,6 +320,32 @@ def test_streamed_fenced_tool_json_is_not_printed_as_visible_delta(tmp_path: Pat
     assert "```json" not in "".join(visible)
 
 
+def test_streamed_tool_call_with_preface_is_not_printed_as_visible_delta(tmp_path: Path):
+    class StreamingPrefaceToolClient:
+        def __init__(self):
+            self.calls = 0
+
+        def stream_chat(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                yield "我先继续检查。\n\n"
+                yield '```json\n{"tool":"read_file","arguments":{"path":"README.md"}}\n```'
+            else:
+                yield "完成。"
+
+    (tmp_path / "README.md").write_text("hello", encoding="utf-8")
+    visible: list[str] = []
+    result = TuLAgent(settings(tmp_path), mode="root", client=StreamingPrefaceToolClient()).run(
+        "读取 README",
+        stream=True,
+        on_delta=visible.append,
+    )
+    assert result.answer == "完成。"
+    assert "".join(visible) == "完成。"
+    assert "我先继续检查" not in "".join(visible)
+    assert '{"tool"' not in "".join(visible)
+
+
 def test_initial_messages_keep_large_system_prompt_cacheable(tmp_path: Path):
     SkillStore(tmp_path).create("repo-debug", "Debug this repository.", "Run tests.")
     agent = TuLAgent(settings(tmp_path), client=FakeClient(["done"]))
@@ -415,6 +442,18 @@ def test_agent_retries_after_tool_failure_when_model_stops(tmp_path: Path):
     result = TuLAgent(settings(tmp_path), mode="root", client=RetryClient()).run("读取 missing.txt，如果失败就检查目录")
     assert result.answer == "已改为列目录确认文件不存在。"
     assert result.rounds == 4
+    session_text = "\n".join(message.content for message in SessionStore(tmp_path).load(result.session_id).messages)
+    assert RECOVER_AFTER_TOOL_FAILURE_PROMPT not in session_text
+
+
+def test_internal_automation_prompts_are_filtered_from_context():
+    messages = [
+        Message("user", "真实用户输入"),
+        Message("user", RECOVER_AFTER_TOOL_FAILURE_PROMPT),
+        Message("assistant", "回答"),
+    ]
+    filtered = filter_internal_automation_messages(messages)
+    assert [message.content for message in filtered] == ["真实用户输入", "回答"]
 
 
 def test_complex_task_gets_private_execution_hint(tmp_path: Path):
@@ -1003,14 +1042,18 @@ def test_compact_history_hides_tool_noise(capsys):
     session = Session(Path("/tmp"), session_id="s")
     session.messages = [
         Message("assistant", '{"tool":"run_shell","arguments":{}}'),
+        Message("assistant", '你说得对，我继续检查。\n\n```json\n{"tool":"run_shell","arguments":{"command":"file app"}}\n```'),
         Message("user", "TOOL_RESULT name=run_shell\n{}"),
+        Message("user", RECOVER_AFTER_TOOL_FAILURE_PROMPT),
         Message("user", "在本机上开一个新端口。"),
         Message("assistant", "服务已经启动。"),
     ]
     print_recent_session_messages(session)
     out = capsys.readouterr().out
     assert "TOOL_RESULT" not in out
+    assert "previous tool failed" not in out.lower()
     assert '{"tool"' not in out
+    assert "你说得对" not in out
     assert "在本机上开一个新端口" in out
 
 
