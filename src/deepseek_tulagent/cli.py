@@ -305,7 +305,7 @@ def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str 
             return 0
         if prompt in {"/cancel", "/stop"}:
             active_goal = None
-            print("cancel   : cleared active goal/subagent prompt state; back to normal input")
+            print(f"cancel   : back to normal input; mode={current_mode}, think={thinking.name}")
             continue
         if prompt == "/":
             print()

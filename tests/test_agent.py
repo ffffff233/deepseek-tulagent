@@ -1222,6 +1222,7 @@ def test_interactive_cancel_command_returns_to_normal_prompt(monkeypatch, tmp_pa
     out = capsys.readouterr().out
     assert code == 0
     assert "back to normal input" in out
+    assert "mode=root, think=fast" in out
 
 
 def test_interactive_goal_command_passes_goal_to_agent(monkeypatch, tmp_path: Path, capsys):
@@ -1700,7 +1701,7 @@ def test_plain_ui_uses_ascii_for_windows_safe_layout(monkeypatch, capsys):
 
     assert format_agent_event("tool run_shell command=ls") == "  [tool] run_shell | command=ls"
     assert format_agent_event("done run_shell") == "  [done] run_shell"
-    assert composer_prompt("deepseek-v4-flash", "root", "fast", "abcdef123456") == "[deepseek-v4-flash root fast abcdef12] > "
+    assert composer_prompt("deepseek-v4-flash", "root", "fast", "abcdef123456") == "[deepseek-v4-flash mode=root think=fast abcdef12] > "
     assert tail_for_width("abcdef", 4) == "...f"
 
 

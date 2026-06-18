@@ -293,10 +293,10 @@ def composer_prompt(model: str, mode: str, thinking: str, session_id: str | None
         return (
             color("▌ ", CYAN + BOLD)
             + color(f"{model}", BRIGHT_GREEN if "flash" in model else BRIGHT_MAGENTA)
-            + color(f" {mode}/{thinking}{session}", GRAY)
+            + color(f" mode={mode} think={thinking}{session}", GRAY)
             + color(" › ", CYAN + BOLD)
         )
-    return f"[{model} {mode} {thinking}{session}] > "
+    return f"[{model} mode={mode} think={thinking}{session}] > "
 
 
 def read_composer(prompt: str, slash_items: list[tuple[str, str]] | None = None) -> str:

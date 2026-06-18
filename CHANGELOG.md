@@ -1,5 +1,19 @@
 # 更新记录 / Changelog
 
+## v0.1.51
+
+中文：
+
+- 改进终端输入提示，把 `agent/fast` 改为 `mode=agent think=fast`，避免把权限模式误看成“进入子代理模式”。
+- `/cancel` 提示现在明确显示已回普通输入，并保留当前 `mode` / `think` 状态。
+- 同步 README 安装链接到 `v0.1.51`。
+
+English:
+
+- Clarified the terminal prompt from `agent/fast` to `mode=agent think=fast`, so permission mode is not confused with a subagent mode.
+- `/cancel` now explicitly reports that normal input is restored while keeping the current `mode` / `think` state.
+- Updated README install links to `v0.1.51`.
+
 ## v0.1.50
 
 中文：
