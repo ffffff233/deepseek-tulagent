@@ -105,6 +105,7 @@ class TuLAgent:
         stream: bool = False,
         on_delta: Callable[[str], None] | None = None,
         on_event: Callable[[str], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
         session: Session | None = None,
         max_tool_rounds: int | None = None,
         stop_after_tool: bool = False,
@@ -123,6 +124,8 @@ class TuLAgent:
         pending_internal_prompt: str | None = None
         round_limit = max_tool_rounds or self.settings.max_tool_rounds
         for rounds in range(1, round_limit + 1):
+            if should_cancel and should_cancel():
+                raise RuntimeError("turn cancelled")
             model_source_messages = filter_internal_automation_messages(session.messages)
             if pending_internal_prompt:
                 model_source_messages = model_source_messages + [Message("user", pending_internal_prompt)]
@@ -135,11 +138,15 @@ class TuLAgent:
                 parts: list[str] = []
                 held_parts: list[str] = []
                 for delta in self.client.stream_chat(model_messages):
+                    if should_cancel and should_cancel():
+                        raise RuntimeError("turn cancelled")
                     parts.append(delta)
                     held_parts.append(delta)
                 assistant_text = "".join(parts)
             else:
                 assistant_text = self.client.chat(model_messages)
+            if should_cancel and should_cancel():
+                raise RuntimeError("turn cancelled")
             tool_call = None if is_question_mark_only(prompt) else parse_tool_call(assistant_text)
             if not tool_call:
                 assistant_text = plainify_assistant_text(assistant_text)
@@ -169,7 +176,7 @@ class TuLAgent:
                 if name == "ask_user":
                     content = self._ask_user(arguments)
                 elif name == "delegate_agent":
-                    content = self._run_subagent(arguments, on_event=on_event)
+                    content = self._run_subagent(arguments, on_event=on_event, should_cancel=should_cancel)
                 elif self._needs_confirmation(name) and not self._approved(name, arguments):
                     raise ToolError(f"confirmation required for tool: {name}")
                 else:
@@ -182,6 +189,8 @@ class TuLAgent:
             session.append(Message("user", tool_result_message(name, trim_tool_content(content))))
             last_turn_had_tool_result = True
             last_turn_had_tool_error = is_failed_tool_result(content)
+            if should_cancel and should_cancel():
+                raise RuntimeError("turn cancelled")
             if stop_after_tool:
                 return AgentResult(session.session_id, "", rounds)
         else:
@@ -249,11 +258,19 @@ class TuLAgent:
         dangerous = {"write_file", "run_shell", "apply_patch", "download_url", "clone_repo", "start_service", "stop_service"}
         return name in dangerous and self.policy.require_confirmation
 
-    def _run_subagent(self, arguments: dict[str, Any], on_event: Callable[[str], None] | None = None) -> str:
+    def _run_subagent(
+        self,
+        arguments: dict[str, Any],
+        on_event: Callable[[str], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> str:
         specs = normalize_subagent_specs(arguments)
         if not specs:
             raise ToolError("delegate_agent requires task or agents")
-        results = [self._run_one_subagent(spec, index, len(specs), on_event=on_event) for index, spec in enumerate(specs, start=1)]
+        results = [
+            self._run_one_subagent(spec, index, len(specs), on_event=on_event, should_cancel=should_cancel)
+            for index, spec in enumerate(specs, start=1)
+        ]
         if len(results) == 1:
             return json.dumps({"ok": True, **results[0]}, ensure_ascii=False)
         return json.dumps({"ok": True, "count": len(results), "agents": results}, ensure_ascii=False)
@@ -265,7 +282,10 @@ class TuLAgent:
         total: int,
         *,
         on_event: Callable[[str], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
+        if should_cancel and should_cancel():
+            raise RuntimeError("turn cancelled")
         task = str(spec.get("task") or "").strip()
         if not task:
             raise ToolError("delegate_agent requires task")
@@ -286,7 +306,7 @@ class TuLAgent:
             f"Task: {task}\n"
             "Return a concise result for the parent agent: findings, evidence, and recommended next step."
         )
-        result = subagent.run(sub_prompt, max_tool_rounds=max_rounds)
+        result = subagent.run(sub_prompt, max_tool_rounds=max_rounds, should_cancel=should_cancel)
         return {
             "name": name,
             "task": task,

@@ -17,7 +17,7 @@ from deepseek_tulagent.provider import apply_thinking_payload
 from deepseek_tulagent.session import SessionStore
 from deepseek_tulagent.skills import SkillStore
 from deepseek_tulagent.tui import ChatTui, TuiState
-from deepseek_tulagent.ui import ThinkingSpinner, composer_display_text, composer_prompt, display_width, filter_slash_items, format_agent_event, print_box, read_bracketed_paste, read_escape_suffix, read_raw_char, redraw_composer, selected_window_start, should_submit_newline, tail_for_width, slash_selection_insertion
+from deepseek_tulagent.ui import ThinkingSpinner, composer_display_text, composer_prompt, display_width, filter_slash_items, format_agent_event, palette_footer_text, print_box, read_bracketed_paste, read_escape_suffix, read_raw_char, redraw_composer, selected_window_start, should_submit_newline, tail_for_width, slash_selection_insertion
 from deepseek_tulagent.tools import ToolError, ToolRegistry, normalize_bing_url
 
 
@@ -230,6 +230,37 @@ def test_agent_delegates_to_multiple_subagents_in_one_tool_call(tmp_path: Path):
     assert result.answer == "主代理收到两个子代理结果。"
 
 
+def test_agent_delegate_respects_cancel_before_subagent_runs(tmp_path: Path):
+    class DelegateClient:
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                return '{"tool":"delegate_agent","arguments":{"name":"researcher","task":"检查 README","max_rounds":1}}'
+            return "子代理不应该运行。"
+
+    cancelled = {"value": False}
+
+    def should_cancel():
+        return cancelled["value"]
+
+    def on_event(_text: str):
+        cancelled["value"] = True
+
+    try:
+        TuLAgent(settings(tmp_path), mode="root", client=DelegateClient()).run(
+            "委派检查",
+            on_event=on_event,
+            should_cancel=should_cancel,
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "turn cancelled"
+    else:
+        raise AssertionError("delegate_agent did not honor cancellation")
+
+
 def test_normalize_subagent_mode_and_thinking_handles_swapped_mode():
     assert normalize_subagent_mode_and_thinking("fast", None, parent_mode="root", parent_thinking="careful") == ("root", "fast")
     assert normalize_subagent_mode_and_thinking("nonsense", "bad", parent_mode="root", parent_thinking="careful") == ("plan", "careful")
@@ -239,6 +270,21 @@ def test_normalize_subagent_specs_accepts_agents_and_tasks():
     specs = normalize_subagent_specs({"agents": [{"name": "one", "task": "a"}, "b"]})
     assert specs == [{"name": "one", "task": "a"}, {"task": "b", "name": "subagent-2"}]
     assert normalize_subagent_specs({"task": "single"}) == [{"task": "single"}]
+
+
+def test_subagents_slash_item_is_hidden_from_quick_palette(tmp_path: Path):
+    from deepseek_tulagent.cli import slash_items
+
+    labels = [label for label, _description in slash_items(settings(tmp_path))]
+    assert "/subagents" not in labels
+    assert slash_selection_insertion("/subagents") is None
+
+
+def test_palette_footer_explains_quit_keys():
+    footer = palette_footer_text()
+    assert "ctrl-c" in footer.lower()
+    assert "ctrl-d" in footer.lower()
+    assert "esc" in footer.lower()
 
 
 def test_agent_ask_user_feeds_answer_back_to_model(tmp_path: Path):
@@ -1129,6 +1175,30 @@ def test_interactive_think_command_uses_picker(monkeypatch, tmp_path: Path, caps
     assert "model=deepseek-v4-flash" in out
     assert "internal_passes=2" in out
     assert get_settings().default_thinking == "deep"
+
+
+def test_interactive_subagents_command_returns_to_prompt(monkeypatch, tmp_path: Path, capsys):
+    import deepseek_tulagent.cli as cli
+
+    prompts = iter(["/subagents", "/exit"])
+
+    class FakeDeepSeekClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ping(self):
+            return {"model_available": True}
+
+    monkeypatch.setattr(cli, "startup_animation", lambda enabled=True: None)
+    monkeypatch.setattr(cli, "maybe_prompt_update", lambda: None)
+    monkeypatch.setattr(cli, "read_composer", lambda *_args, **_kwargs: next(prompts))
+    monkeypatch.setattr(cli, "DeepSeekClient", FakeDeepSeekClient)
+
+    code = cli.interactive(settings(tmp_path), "root", "fast", True)
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Subagents" in out
+    assert "delegate_agent" in out
 
 
 def test_interactive_goal_command_passes_goal_to_agent(monkeypatch, tmp_path: Path, capsys):

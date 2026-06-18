@@ -517,8 +517,8 @@ def slash_select(items: list[tuple[str, str]], title: str = "commands") -> str |
                 query = query[:-1]
                 selected = 0
                 continue
-            if char == "\x03":
-                raise KeyboardInterrupt
+            if char in {"\x03", "\x04"}:
+                return None
             if char in {"k", "K"} and not query:
                 selected = max(0, selected - 1)
                 continue
@@ -577,10 +577,14 @@ def draw_slash_select(items: list[tuple[str, str]], query: str, selected: int, p
         sys.stdout.write(line + "\r\n")
     if not visible:
         sys.stdout.write(color("no matches", GRAY) + "\r\n")
-    footer = clip_visible("enter: run | up/down or j/k: select | esc/backspace: cancel", inner_width)
+    footer = clip_visible(palette_footer_text(), inner_width)
     sys.stdout.write(color(footer, GRAY) + "\r\n")
     sys.stdout.flush()
     return total_lines
+
+
+def palette_footer_text() -> str:
+    return "enter: run/insert | up/down or j/k: select | esc/backspace/ctrl-c/ctrl-d: cancel"
 
 
 def selected_window_start(total: int, selected: int, window_size: int) -> int:

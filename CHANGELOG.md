@@ -1,5 +1,23 @@
 # 更新记录 / Changelog
 
+## v0.1.49
+
+中文：
+
+- 修复终端 `/` 快捷命令面板中“子代理”入口容易让用户误进入委派链路的问题；快捷面板不再展示 `/subagents`，避免误触后看起来像进入无法退出的子代理模式。
+- 手动输入 `/subagents` 仍只显示子代理能力说明，不会切换会话模式或拦截后续用户消息。
+- 终端命令面板现在支持 `Ctrl-C` / `Ctrl-D` 取消并返回主输入，同时底部提示明确列出退出键。
+- `delegate_agent` 执行链路增加取消检查；上层交互请求取消时会传播到子代理循环，避免子代理执行时主会话长时间无法释放。
+- 同步 README 安装链接到 `v0.1.49`。
+
+English:
+
+- Fixed the terminal `/` quick command palette exposing a subagent entry that could make users accidentally enter a delegation flow that looked like an unescapable subagent mode.
+- Manually typing `/subagents` still only prints capability help and does not switch modes or intercept later user messages.
+- The terminal command palette now supports `Ctrl-C` / `Ctrl-D` cancellation back to the main input, and its footer documents the cancel keys.
+- Added cancellation checks through the `delegate_agent` path so parent interactive cancellation can propagate into subagent loops.
+- Updated README install links to `v0.1.49`.
+
 ## v0.1.48
 
 中文：

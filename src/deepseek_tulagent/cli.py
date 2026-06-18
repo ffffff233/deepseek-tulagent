@@ -691,7 +691,6 @@ def slash_items(settings) -> list[tuple[str, str]]:
         ("/goal ", "set active goal"),
         ("/goal", "show active goal"),
         ("/goal clear", "clear active goal"),
-        ("/subagents", "show subagent delegation capability"),
         ("/exit", "leave and print resume command"),
     ]
     for name in THINKING:
