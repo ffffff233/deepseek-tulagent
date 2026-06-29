@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+
 from dataclasses import dataclass
 import json
 import os
@@ -185,7 +187,9 @@ class TuLAgent:
             except (ToolError, ValueError, OSError, subprocess.SubprocessError) as exc:  # type: ignore[name-defined]
                 content = json.dumps({"ok": False, "output": str(exc)}, ensure_ascii=False)
             if on_event:
-                on_event(f"done {name}")
+                _trimmed = trim_tool_content(content)
+                _b64 = base64.b64encode(_trimmed.encode("utf-8")).decode("ascii")
+                on_event(f"done {name} {_b64}")
             session.append(Message("user", tool_result_message(name, trim_tool_content(content))))
             last_turn_had_tool_result = True
             last_turn_had_tool_error = is_failed_tool_result(content)

@@ -1,14 +1,17 @@
 const state = {
   boot: null,
   currentAssistant: null,
+  currentTool: null,
   attachments: [],
   events: 0,
   running: false,
 };
 
 const $ = (id) => document.getElementById(id);
+const b64 = (s) => btoa(unescape(encodeURIComponent(s)));
 
 if (!window.pywebview) {
+  const demoOut = "$ pytest -q\n........                                         [100%]\n8 passed in 0.42s";
   window.pywebview = {
     api: {
       boot: async () => ({
@@ -38,16 +41,19 @@ if (!window.pywebview) {
       resume: async (sessionId) => ({ ok: true, sessionId, messages: [{ role: "user", content: "检查项目并修复问题" }, { role: "assistant", content: "已读取项目结构，下一步运行测试。" }] }),
       rename_session: async () => ({ ok: true }),
       pin_session: async () => ({ ok: true }),
+      delete_session: async () => ({ ok: true }),
       set_runtime: async (data) => ({ ...(await window.pywebview.api.boot()), model: data.model, mode: data.mode, thinking: data.thinking }),
       configure: async () => window.pywebview.api.boot(),
       new_session: async () => ({ ok: true }),
       compact: async () => ({ ok: true, before: 12000, after: 4200, messages: [{ role: "assistant", content: "上下文已压缩，保留最近消息。" }] }),
       save_upload: async (file) => ({ ok: true, name: file.name, path: `/uploads/${file.name}`, size: 128 }),
       send: async ({ prompt }) => {
-        setTimeout(() => window.DeepSeekDesktop.onNativeEvent({ event: "turn:start", payload: { prompt, thinking: $("thinking").value } }), 80);
-        setTimeout(() => window.DeepSeekDesktop.onNativeEvent({ event: "agent:event", payload: { kind: "tool", name: "read_file", detail: "path=README.md" } }), 260);
-        setTimeout(() => window.DeepSeekDesktop.onNativeEvent({ event: "assistant:delta", payload: { text: "这是桌面端预览。工具调用、内部思考和子代理会折叠显示。" } }), 460);
-        setTimeout(() => window.DeepSeekDesktop.onNativeEvent({ event: "turn:done", payload: { sessionId: "demo-session-0001", rounds: 2 } }), 700);
+        const D = window.DeepSeekDesktop;
+        setTimeout(() => D.onNativeEvent({ event: "turn:start", payload: { prompt, thinking: $("thinking").value } }), 60);
+        setTimeout(() => D.onNativeEvent({ event: "agent:event", payload: { kind: "tool", name: "run_shell", detail: "cmd=pytest -q" } }), 220);
+        setTimeout(() => D.onNativeEvent({ event: "agent:event", payload: { kind: "done", name: "run_shell", detail: demoOut } }), 520);
+        setTimeout(() => D.onNativeEvent({ event: "assistant:delta", payload: { text: "测试全部通过，仓库状态正常。" } }), 720);
+        setTimeout(() => D.onNativeEvent({ event: "turn:done", payload: { sessionId: "demo-session-0001", rounds: 2 } }), 900);
         return { ok: true };
       },
       cancel: async () => ({ ok: true }),
@@ -63,6 +69,7 @@ window.DeepSeekDesktop = {
       setSaveState("running", "运行中", "正在执行工具和模型");
       addMessage("user", payload.prompt);
       state.currentAssistant = null;
+      state.currentTool = null;
       addEvent("thinking", "内部思考", `thinking mode: ${payload.thinking}`);
     }
     if (event === "assistant:delta") {
@@ -73,19 +80,26 @@ window.DeepSeekDesktop = {
       scrollMessages();
     }
     if (event === "agent:event") {
-      addEvent(payload.kind, payload.name, payload.detail);
+      if (payload.kind === "tool") {
+        state.currentTool = addToolEvent(payload.name, payload.detail);
+      } else if (payload.kind === "done") {
+        completeToolEvent(payload.name, payload.detail);
+      } else {
+        addEvent(payload.kind, payload.name, payload.detail);
+      }
     }
     if (event === "turn:done") {
       state.currentAssistant = null;
+      state.currentTool = null;
       setRunning(false);
       refreshSessions();
-      addEvent("done", "完成", `session ${payload.sessionId} · ${payload.rounds} rounds`);
       $("sessionState").textContent = payload.sessionId.slice(0, 8);
       setSaveState("saved", "已保存", payload.sessionId);
       $("composerSession").textContent = payload.sessionId;
     }
     if (event === "turn:error") {
       state.currentAssistant = null;
+      state.currentTool = null;
       setRunning(false);
       addEvent("error", "错误", payload.error + "\n\n" + payload.trace);
       setSaveState("error", "出错", "查看事件流");
@@ -96,6 +110,7 @@ window.DeepSeekDesktop = {
     }
     if (event === "turn:cancelled") {
       state.currentAssistant = null;
+      state.currentTool = null;
       setRunning(false);
       addEvent("done", "已取消", payload.message || "");
       setSaveState("idle", "已取消", state.boot?.sessionId || "未保存");
@@ -173,7 +188,7 @@ async function refreshSessions() {
     box.textContent = "暂无会话";
     return;
   }
-  sessions.slice(0, 18).forEach((session) => {
+  sessions.slice(0, 40).forEach((session) => {
     const row = document.createElement("div");
     row.className = `sessionItem${session.pinned ? " pinned" : ""}`;
     row.innerHTML = `
@@ -182,9 +197,9 @@ async function refreshSessions() {
         <small>${session.pinned ? "置顶 · " : ""}${escapeHtml(session.session_id.slice(0, 8))}</small>
       </button>
       <div class="sessionActions">
-        <button title="置顶">${session.pinned ? "●" : "○"}</button>
-        <button title="复制 ID">ID</button>
-        <button title="改标题">✎</button>
+        <button title="${session.pinned ? "取消置顶" : "置顶"}" class="actPin">${session.pinned ? "★" : "☆"}</button>
+        <button title="改标题" class="actRename">✎</button>
+        <button title="删除" class="actDelete">🗑</button>
       </div>`;
     row.querySelector(".sessionMain").onclick = async () => {
       const result = await window.pywebview.api.resume(session.session_id);
@@ -193,19 +208,22 @@ async function refreshSessions() {
       $("sessionState").textContent = result.sessionId.slice(0, 8);
       setSaveState("saved", "已恢复", result.sessionId);
     };
-    const [pinButton, copyButton, renameButton] = row.querySelectorAll(".sessionActions button");
-    pinButton.onclick = async () => {
+    row.querySelector(".actPin").onclick = async (e) => {
+      e.stopPropagation();
       await window.pywebview.api.pin_session(session.session_id, !session.pinned);
       await refreshSessions();
     };
-    copyButton.onclick = async () => {
-      await navigator.clipboard.writeText(session.session_id).catch(() => {});
-      addEvent("event", "复制会话 ID", session.session_id);
-    };
-    renameButton.onclick = async () => {
+    row.querySelector(".actRename").onclick = async (e) => {
+      e.stopPropagation();
       const title = prompt("新的会话标题", session.title || "");
       if (!title) return;
       await window.pywebview.api.rename_session(session.session_id, title);
+      await refreshSessions();
+    };
+    row.querySelector(".actDelete").onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm(`删除会话「${session.title || session.session_id.slice(0, 8)}」？此操作不可恢复。`)) return;
+      await window.pywebview.api.delete_session(session.session_id);
       await refreshSessions();
     };
     box.append(row);
@@ -222,7 +240,7 @@ function renderSkills(skills) {
   skills.forEach((skill) => {
     const button = document.createElement("button");
     button.className = "item";
-    button.innerHTML = `<span>${skill.name}</span><small>${skill.description || ""}</small>`;
+    button.innerHTML = `<span>${escapeHtml(skill.name)}</span><small>${escapeHtml(skill.description || "")}</small>`;
     button.onclick = () => {
       const prompt = $("prompt");
       prompt.value = `Use skill ${skill.name}: ` + prompt.value;
@@ -257,12 +275,100 @@ function renderBubble(bubble) {
   }
 }
 
+/* ---------- merged tool block: call (args) on top, output below ---------- */
+function addToolEvent(name, args) {
+  state.events += 1;
+  $("eventCount").textContent = String(state.events);
+  const intro = document.querySelector(".empty, .intro");
+  if (intro) intro.remove();
+  const details = document.createElement("details");
+  details.className = "threadEvent tool";
+  details.innerHTML = `
+    <summary><span class="eventIcon">⌘</span><span class="evLabel">工具调用</span><strong>${escapeHtml(name || "")}</strong><span class="evStatus">运行中</span><span class="evChevron">›</span></summary>
+    <div class="toolBody">
+      <div class="toolSection toolCall"><div class="secLabel">调用</div><pre><code>${highlightCode(String(args || "").trim(), guessLang(name, args))}</code></pre></div>
+      <div class="toolSection toolOut" hidden><div class="secLabel">输出</div><pre><code></code></pre></div>
+    </div>`;
+  $("messages").append(details);
+  scrollMessages();
+  mirror(`[工具调用] ${name || ""} ${args || ""}`);
+  return details;
+}
+
+function completeToolEvent(name, output) {
+  const block = state.currentTool || lastToolBlock();
+  if (!block) {
+    addEvent("done", name, output);
+    return;
+  }
+  const status = block.querySelector(".evStatus");
+  if (status) { status.textContent = "完成"; status.classList.add("ok"); }
+  const out = block.querySelector(".toolOut");
+  const code = out.querySelector("code");
+  const text = String(output || "").trim();
+  code.innerHTML = text ? highlightCode(text, "") : "<span class=\"t-com\">（无输出）</span>";
+  out.hidden = false;
+  scrollMessages();
+  mirror(`[工具完成] ${name || ""} ${(output || "").slice(0, 200)}`);
+}
+
+function lastToolBlock() {
+  const blocks = $("messages").querySelectorAll(".threadEvent.tool");
+  return blocks.length ? blocks[blocks.length - 1] : null;
+}
+
+function addEvent(kind, name, detail) {
+  state.events += 1;
+  $("eventCount").textContent = String(state.events);
+  const intro = document.querySelector(".empty, .intro");
+  if (intro) intro.remove();
+  const details = document.createElement("details");
+  details.className = `threadEvent ${kind}`;
+  const icon = iconFor(kind);
+  details.innerHTML = `
+    <summary><span class="eventIcon">${icon}</span><span class="evLabel">${labelFor(kind)}</span><strong>${escapeHtml(name || "")}</strong><span class="evChevron">›</span></summary>
+    <pre>${escapeHtml(detail || "")}</pre>`;
+  $("messages").append(details);
+  scrollMessages();
+  mirror(`[${labelFor(kind)}] ${name || ""} ${detail || ""}`.trim());
+}
+
+function mirror(line) {
+  const def = "工具、思考和子代理事件会显示在这里。";
+  $("eventMirror").textContent = ($("eventMirror").textContent === def ? "" : $("eventMirror").textContent + "\n") + line;
+  $("eventMirror").scrollTop = $("eventMirror").scrollHeight;
+}
+
+function labelFor(kind) {
+  return {
+    thinking: "内部思考", tool: "工具调用", done: "工具完成",
+    subagent: "子代理", compact: "上下文压缩", error: "错误",
+  }[kind] || "事件";
+}
+
+function iconFor(kind) {
+  return {
+    thinking: "◇", tool: "⌘", done: "✓", subagent: "↳",
+    compact: "⇄", error: "!", skill: "✦",
+  }[kind] || "·";
+}
+
+function scrollMessages() { $("messages").scrollTop = $("messages").scrollHeight; }
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[char]));
+}
+
+/* ---------- markdown + syntax highlight ---------- */
 function renderMarkdown(src) {
   src = String(src || "");
   const blocks = [];
   src = src.replace(/```([\w-]*)\n?([\s\S]*?)```/g, (m, lang, code) => {
     const i = blocks.length;
-    blocks.push(`<pre class="code"><div class="codeHead"><span>${escapeHtml(lang || "code")}</span></div><code>${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`);
+    const clean = code.replace(/\n$/, "");
+    blocks.push(`<pre class="code"><div class="codeHead"><span>${escapeHtml(lang || "code")}</span><button class="copyBtn" type="button">复制</button></div><code>${highlightCode(clean, lang)}</code></pre>`);
     return `@@FB${i}@@`;
   });
   const lines = src.split("\n");
@@ -296,59 +402,40 @@ function renderMarkdown(src) {
   }
 }
 
-function addEvent(kind, name, detail) {
-  state.events += 1;
-  $("eventCount").textContent = String(state.events);
-  const intro = document.querySelector(".empty, .intro");
-  if (intro) intro.remove();
-  const details = document.createElement("details");
-  details.className = `threadEvent ${kind}`;
-  const icon = iconFor(kind);
-  details.innerHTML = `
-    <summary><span class="eventIcon">${icon}</span><span class="evLabel">${labelFor(kind)}</span><strong>${escapeHtml(name || "")}</strong><span class="evChevron">›</span></summary>
-    <pre>${escapeHtml(detail || "")}</pre>`;
-  $("messages").append(details);
-  scrollMessages();
-  const line = `[${labelFor(kind)}] ${name || ""} ${detail || ""}`.trim();
-  $("eventMirror").textContent = ($("eventMirror").textContent === "工具、思考和子代理事件会显示在这里。" ? "" : $("eventMirror").textContent + "\n") + line;
-  $("eventMirror").scrollTop = $("eventMirror").scrollHeight;
+const HL_KEYWORDS = {
+  python: ["def","class","return","if","elif","else","for","while","import","from","as","with","try","except","finally","raise","in","not","and","or","is","None","True","False","lambda","yield","async","await","pass","break","continue","global","nonlocal","self","print"],
+  javascript: ["const","let","var","function","return","if","else","for","while","class","new","this","import","from","export","default","try","catch","finally","throw","await","async","typeof","instanceof","null","true","false","undefined","switch","case","break","continue","of","in"],
+  bash: ["if","then","else","elif","fi","for","in","do","done","while","case","esac","function","return","export","local","echo","cd","exit","set","source"],
+  json: ["true","false","null"],
+};
+const HL_ALIAS = { js: "javascript", ts: "javascript", jsx: "javascript", py: "python", sh: "bash", shell: "bash", zsh: "bash", console: "bash" };
+
+function guessLang(name, args) {
+  const n = (name || "").toLowerCase();
+  if (n.includes("shell") || n.includes("bash") || n.includes("exec") || n.includes("run")) return "bash";
+  if (n.includes("python")) return "python";
+  return "";
 }
 
-function labelFor(kind) {
-  return {
-    thinking: "内部思考",
-    tool: "工具调用",
-    done: "工具完成",
-    subagent: "子代理",
-    compact: "上下文压缩",
-    error: "错误",
-  }[kind] || "事件";
-}
-
-function iconFor(kind) {
-  return {
-    thinking: "◇",
-    tool: "⌘",
-    done: "✓",
-    subagent: "↳",
-    compact: "⇄",
-    error: "!",
-    skill: "✦",
-  }[kind] || "·";
-}
-
-function scrollMessages() {
-  $("messages").scrollTop = $("messages").scrollHeight;
-}
-
-function escapeHtml(text) {
-  return String(text).replace(/[&<>"']/g, (char) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  }[char]));
+function highlightCode(code, lang) {
+  code = String(code);
+  lang = (lang || "").toLowerCase();
+  lang = HL_ALIAS[lang] || lang;
+  const kw = new Set(HL_KEYWORDS[lang] || []);
+  const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const re = /("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)|(#[^\n]*|\/\/[^\n]*|\/\*[\s\S]*?\*\/)|(\b0x[0-9a-fA-F]+\b|\b\d+\.?\d*\b)|([A-Za-z_$][A-Za-z0-9_$]*)/g;
+  let out = "", last = 0, m;
+  while ((m = re.exec(code))) {
+    out += esc(code.slice(last, m.index));
+    const t = m[0];
+    if (m[1]) out += `<span class="t-str">${esc(t)}</span>`;
+    else if (m[2]) out += `<span class="t-com">${esc(t)}</span>`;
+    else if (m[3]) out += `<span class="t-num">${esc(t)}</span>`;
+    else if (m[4]) out += kw.has(t) ? `<span class="t-kw">${esc(t)}</span>` : esc(t);
+    last = re.lastIndex;
+  }
+  out += esc(code.slice(last));
+  return out;
 }
 
 async function updateRuntime() {
@@ -367,6 +454,7 @@ $("send").onclick = async () => {
   const prompt = $("prompt").value.trim();
   if (!prompt && !state.attachments.length) return;
   $("prompt").value = "";
+  autoGrow();
   const attachments = state.attachments;
   state.attachments = [];
   renderAttachments();
@@ -380,6 +468,12 @@ $("send").onclick = async () => {
   }
 };
 
+function autoGrow() {
+  const ta = $("prompt");
+  ta.style.height = "auto";
+  ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
+}
+$("prompt").addEventListener("input", autoGrow);
 $("prompt").addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
@@ -414,8 +508,7 @@ $("saveSettings").onclick = async (event) => {
 };
 $("newSession").onclick = async () => {
   await window.pywebview.api.new_session();
-  $("messages").innerHTML = '<div class="empty intro"><div class="introMark">Fathom</div><h1>新对话已创建</h1><p>输入任务开始。思考与工具详情默认折叠。</p></div>';
-  $("activity").innerHTML = "";
+  $("messages").innerHTML = '<div class="empty intro"><div class="introMark">Fathom</div><h1>新对话已创建</h1><p>输入任务开始。工具调用与输出会内联展开。</p></div>';
   $("eventMirror").textContent = "工具、思考和子代理事件会显示在这里。";
   $("sessionState").textContent = "新会话";
   setSaveState("idle", "新会话", "未保存");
@@ -446,6 +539,21 @@ $("fileInput").onchange = async (event) => {
   event.target.value = "";
   renderAttachments();
 };
+
+// collapse sidebar
+const toggleCollapse = () => document.querySelector(".app").classList.toggle("sidebarCollapsed");
+["toggleSidebar", "toggleSidebarTop"].forEach((id) => { const b = $(id); if (b) b.onclick = toggleCollapse; });
+
+// copy buttons in code blocks (event delegation)
+$("messages").addEventListener("click", (e) => {
+  const btn = e.target.closest(".copyBtn");
+  if (!btn) return;
+  const code = btn.closest(".code").querySelector("code");
+  navigator.clipboard.writeText(code.textContent).then(() => {
+    btn.textContent = "已复制";
+    setTimeout(() => (btn.textContent = "复制"), 1200);
+  }).catch(() => {});
+});
 
 function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {

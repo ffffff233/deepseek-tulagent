@@ -1,5 +1,23 @@
 # 更新记录 / Changelog
 
+## v0.1.54
+
+中文：
+
+- **工具调用与输出合并到同一卡片分层显示**：调用参数（蓝色左边条「调用」）在上，系统返回的输出（绿色左边条「输出」）在下，同属一个折叠块，不再拆成两条独立事件，可一眼看清「做了什么」与「返回了什么」。
+- **代码语法高亮**：代码块按语言（Python / JS / Bash / JSON）着色关键字、字符串、注释、数字，采用 VS Code Dark+ 配色；代码块带语言标签与「复制」按钮。
+- **侧栏会话可置顶、改名、删除**：每条会话 hover 显示 ☆ 置顶 / ✎ 改名 / 🗑 删除（删除二次确认，后端新增 `delete_session`）。
+- **侧栏可收起**：顶栏 ☰ 与品牌区 « 一键折叠/展开对话侧栏，腾出阅读空间。
+- **输入区按钮重设计**：胶囊式输入框内嵌圆形「＋ 添加文件」与圆形蓝色「发送」按钮；发送后发送键就地切换为红色「中断」键，点击即强行中断当前生成。
+
+English:
+
+- **Tool call and its output now share one layered card**: the invocation (blue-edged “调用”) sits on top, the returned system output (green-edged “输出”) below, inside a single collapsible block instead of two separate events — what was run and what came back at a glance.
+- **Code syntax highlighting**: code blocks colorize keywords/strings/comments/numbers per language (Python / JS / Bash / JSON) using a VS Code Dark+ palette; blocks carry a language label and a Copy button.
+- **Sidebar sessions can be pinned, renamed, and deleted**: each row reveals ☆ pin / ✎ rename / 🗑 delete on hover (delete is confirmed; new backend `delete_session`).
+- **Collapsible sidebar**: a ☰ in the toolbar and « in the brand area fold/expand the conversation sidebar.
+- **Redesigned composer buttons**: a pill input box with a round “＋ attach” and a round blue Send button; after sending, Send morphs in place into a red Stop button that force-interrupts the current generation.
+
 ## v0.1.53
 
 中文：

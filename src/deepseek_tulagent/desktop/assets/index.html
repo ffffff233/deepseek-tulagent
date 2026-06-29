@@ -17,8 +17,9 @@
           <strong>Fathom</strong>
           <span id="version">v0.0.0</span>
         </div>
+        <button id="toggleSidebar" class="collapseBtn" title="收起 / 展开侧栏" aria-label="折叠侧栏">«</button>
       </div>
-      <button id="newSession" class="primary wide">＋ 新对话</button>
+      <button id="newSession" class="primary wide newBtn"><span class="plusGlyph" aria-hidden="true">+</span> 新对话</button>
       <section class="panel">
         <div class="panelHead">
           <h2>会话</h2>
@@ -37,6 +38,7 @@
     <section class="chatPane">
       <header class="toolbar">
         <div class="topIdentity">
+          <button id="toggleSidebarTop" class="railBtn" title="侧栏" aria-label="侧栏">☰</button>
           <span class="pulse"></span>
           <strong>Fathom</strong>
           <small id="topRuntime">ready</small>
@@ -51,11 +53,9 @@
         <div class="empty intro">
           <div class="introMark">Fathom</div>
           <h1>深入每一寻的本地代理</h1>
-          <p>文件、技能、工具调用与内部思考汇聚于同一工作台。思考与工具详情默认折叠，按需展开。</p>
+          <p>文件、技能、工具调用与内部思考汇聚于同一工作台。工具的调用与输出在同一卡片内分层展开。</p>
         </div>
       </div>
-
-      <div id="activity" class="activity"></div>
 
       <footer class="composer">
         <div class="composerControl">
@@ -70,12 +70,18 @@
           </div>
         </div>
         <div id="attachments" class="attachments"></div>
-        <div class="composeRow">
+        <div class="composeBox">
           <input id="fileInput" type="file" multiple hidden>
-          <button id="attach" class="icon" title="添加文件">＋</button>
+          <button id="attach" class="composeIcon attach" title="添加文件" aria-label="添加文件">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
           <textarea id="prompt" rows="1" placeholder="输入任务，Enter 发送，Shift+Enter 换行"></textarea>
-          <button id="cancel" class="ghost cancel" type="button" hidden>停止</button>
-          <button id="send" class="primary">发送</button>
+          <button id="send" class="composeIcon send" title="发送" aria-label="发送">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
+          </button>
+          <button id="cancel" class="composeIcon stop" type="button" title="中断生成" aria-label="中断生成" hidden>
+            <svg viewBox="0 0 24 24" width="16" height="16"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+          </button>
         </div>
       </footer>
     </section>

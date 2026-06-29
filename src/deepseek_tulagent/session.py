@@ -90,6 +90,13 @@ class SessionStore:
                 return path
         return candidates[0]
 
+    def delete(self, session_id: str) -> None:
+        for path in (self.resolve_session_path(session_id), self.metadata_path(session_id)):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
     def metadata_path(self, session_id: str) -> Path:
         return self.sessions_dir / f"{session_id}.meta.json"
 

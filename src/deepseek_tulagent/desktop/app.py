@@ -119,6 +119,12 @@ class DesktopApi:
         SessionStore(self.settings.workspace).update_metadata(session_id, pinned=bool(pinned))
         return {"ok": True, "sessions": self.sessions()}
 
+    def delete_session(self, session_id: str) -> dict[str, Any]:
+        SessionStore(self.settings.workspace).delete(session_id)
+        if self.session is not None and self.session.session_id == session_id:
+            self.session = None
+        return {"ok": True, "sessions": self.sessions()}
+
     def resume(self, session_id: str) -> dict[str, Any]:
         self.session = SessionStore(self.settings.workspace).load(session_id)
         return {"ok": True, "sessionId": self.session.session_id, "messages": serialize_messages(self.session.messages)}
@@ -242,7 +248,15 @@ def parse_agent_event(text: str) -> dict[str, str]:
         name, _, args = rest.partition(" ")
         return {"kind": "tool", "name": name, "detail": args}
     if text.startswith("done "):
-        return {"kind": "done", "name": text.removeprefix("done ").strip(), "detail": ""}
+        rest = text.removeprefix("done ").strip()
+        name, _, b64 = rest.partition(" ")
+        output = ""
+        if b64:
+            try:
+                output = base64.b64decode(b64).decode("utf-8", "replace")
+            except Exception:
+                output = ""
+        return {"kind": "done", "name": name, "detail": output}
     if text.startswith("thinking pass "):
         return {"kind": "thinking", "name": "internal", "detail": text}
     if text.startswith("subagent "):

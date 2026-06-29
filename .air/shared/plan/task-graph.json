@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Repair slash command and subagent command UX",
+      "description": "Make `/` palette cancellation and `/subagents` behavior explicit and non-trapping; add focused tests.",
+      "status": "running",
+      "dependencies": [],
+      "write_scope": [
+        "src/deepseek_tulagent/ui.py",
+        "src/deepseek_tulagent/cli.py",
+        "tests/test_agent.py"
+      ],
+      "recommended_reasoning_effort": "medium"
+    },
+    {
+      "id": "T2",
+      "title": "Inspect adjacent project quality issues",
+      "description": "Review CLI/TUI/session/desktop for obvious issues and document defects or improvement items.",
+      "status": "pending",
+      "dependencies": [
+        "T1"
+      ],
+      "write_scope": [
+        ".air/local/evidence/T2-review.md"
+      ],
+      "recommended_reasoning_effort": "medium"
+    },
+    {
+      "id": "T3",
+      "title": "Verify and publish update record",
+      "description": "Run tests, update changelog/version/readme links, and use GitHub CLI to publish the project update.",
+      "status": "pending",
+      "dependencies": [
+        "T1",
+        "T2"
+      ],
+      "write_scope": [
+        "pyproject.toml",
+        "src/deepseek_tulagent/__init__.py",
+        "CHANGELOG.md",
+        "README.md",
+        "README.zh-CN.md"
+      ],
+      "recommended_reasoning_effort": "medium"
+    }
+  ],
+  "phases": [
+    {
+      "id": "P1",
+      "title": "Fix and validate local interaction",
+      "tasks": [
+        "T1",
+        "T2",
+        "T3"
+      ]
+    }
+  ],
+  "architect_dispatch_total": 3
+}
