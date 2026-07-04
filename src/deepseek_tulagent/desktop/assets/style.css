@@ -97,12 +97,16 @@ body {
 .sessionMain { flex: 1; text-align: left; background: none; border: none; color: var(--text-2); padding: 6px 8px; cursor: pointer; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .sessionMain span { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sessionMain small { color: var(--text-4); font-size: 10.5px; font-family: var(--mono); }
-.sessionItem.pinned .sessionMain span::before { content: "☆ "; color: var(--text-4); }
 .sessionActions { display: flex; align-items: center; opacity: .5; transition: opacity .12s; padding-right: 4px; }
 .sessionItem:hover .sessionActions { opacity: 1; }
-.sessionActions button { background: none; border: none; color: var(--text-4); cursor: pointer; padding: 0 5px; font-size: 12px; height: 100%; }
+.sessionActions button { background: none; border: none; color: var(--text-4); cursor: pointer; padding: 0 5px; height: 100%; display: inline-grid; place-items: center; }
 .sessionActions button:hover { color: var(--text); }
 .sessionActions .actDelete:hover { color: var(--danger); }
+.sessionActions .actPin.on { color: var(--warn); }
+.sessionActions .actPin.on .ic { fill: currentColor; }
+.ic { display: block; flex-shrink: 0; }
+.collapseBtn svg, .railBtn svg, .iconClose svg, .plusGlyph svg, .eventIcon svg, .evChevron svg { display: block; }
+.plusGlyph { display: inline-grid; place-items: center; }
 
 #skills .item { display: flex; flex-direction: column; gap: 1px; text-align: left; background: none; border: none; border-radius: var(--r-row); padding: 6px 8px; color: var(--text-2); cursor: pointer; transition: background .12s; }
 #skills .item:hover { background: var(--hover); }

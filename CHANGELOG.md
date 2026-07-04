@@ -1,5 +1,27 @@
 # 更新记录 / Changelog
 
+## v0.1.60
+
+中文：
+
+- **去掉所有 emoji，换成 Codex 那样的线性 SVG 图标**。会话行的置顶/改名/删除（★☆✎🗑）、
+  事件图标（工具 ⌘、思考 ◇、完成 ✓、子代理 ↳、压缩 ⇄、错误 !、技能 ✦）、折叠 «、侧栏 ☰、
+  新对话 +、关闭 ×、以及展开箭头 ›，全部改为统一的 Lucide 风格线性图标（`stroke=currentColor`，
+  随主题着色）。置顶后 pin 图标高亮填充。
+- **修复：切换接口格式后模型列表没刷新**。选到别的 provider（OpenAI/Gemini/Claude）时会重新拉取
+  该 provider 的模型列表，而不是继续显示上一个 provider 的模型。
+
+English:
+
+- **Removed all emoji, replaced with Codex-style line SVG icons.** Session row pin/rename/delete
+  (★☆✎🗑), event icons (tool ⌘, thinking ◇, done ✓, subagent ↳, compact ⇄, error !, skill ✦),
+  the collapse «, sidebar ☰, new-chat +, close ×, and the disclosure chevron › are now a single
+  set of Lucide-style line icons (`stroke=currentColor`, themed). The pin icon fills/highlights
+  when a session is pinned.
+- **Fixed: model list not refreshed after switching provider format.** Selecting another provider
+  (OpenAI/Gemini/Claude) now re-fetches that provider's models instead of keeping the previous
+  provider's list.
+
 ## v0.1.59
 
 中文：

@@ -15,6 +15,24 @@ const $ = (id) => document.getElementById(id);
 const setText = (id, value) => { const el = $(id); if (el) el.textContent = value; };
 const b64 = (s) => btoa(unescape(encodeURIComponent(s)));
 
+/* ---------- line-style SVG icons (Lucide-ish), replacing all emoji ---------- */
+const ICONS = {
+  pin: '<path d="M9 4h6l-1 6 4 3v2H6v-2l4-3-1-6z"/><path d="M12 15v5"/>',
+  edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+  trash: '<path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+  terminal: '<path d="M4 17l6-6-6-6"/><path d="M12 19h8"/>',
+  dots: '<circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none"/>',
+  check: '<path d="M20 6L9 17l-5-5"/>',
+  branch: '<path d="M4 4v8a3 3 0 0 0 3 3h13"/><path d="M16 11l4 4-4 4"/>',
+  compact: '<path d="M17 11l-5-5-5 5"/><path d="M17 13l-5 5-5-5"/>',
+  alert: '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  sparkle: '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/>',
+  chevron: '<path d="M9 6l6 6-6 6"/>',
+};
+function icon(name, size = 14) {
+  return `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
+}
+
 function installDemoApi() {
   const demoOut = "$ pytest -q\n........                                         [100%]\n8 passed in 0.42s";
   window.pywebview = {
@@ -219,9 +237,9 @@ async function refreshSessions() {
         <small>${escapeHtml(session.session_id.slice(0, 8))}</small>
       </button>
       <div class="sessionActions">
-        <button title="${session.pinned ? "取消置顶" : "置顶"}" class="actPin">${session.pinned ? "★" : "☆"}</button>
-        <button title="改标题" class="actRename">✎</button>
-        <button title="删除" class="actDelete">🗑</button>
+        <button title="${session.pinned ? "取消置顶" : "置顶"}" class="actPin${session.pinned ? " on" : ""}">${icon("pin")}</button>
+        <button title="改标题" class="actRename">${icon("edit")}</button>
+        <button title="删除" class="actDelete">${icon("trash")}</button>
       </div>`;
     row.querySelector(".sessionMain").onclick = async () => {
       const result = await window.pywebview.api.resume(session.session_id);
@@ -296,7 +314,7 @@ function addToolEvent(name, args) {
   details.className = "threadEvent tool";
   details.dataset.tool = name || "";
   details.innerHTML = `
-    <summary><span class="eventIcon">⌘</span><span class="evLabel">工具调用</span><strong>${escapeHtml(name || "")}</strong><span class="evStatus">运行中</span><span class="evChevron">›</span></summary>
+    <summary><span class="eventIcon">${icon("terminal")}</span><span class="evLabel">工具调用</span><strong>${escapeHtml(name || "")}</strong><span class="evStatus">运行中</span><span class="evChevron">${icon("chevron", 13)}</span></summary>
     <div class="toolBody">
       <div class="toolSection toolCall"><div class="secLabel">调用</div><pre><code>${highlightCode(String(args || "").trim(), guessLang(name, args))}</code></pre></div>
       <div class="toolSection toolOut" hidden><div class="secLabel">输出</div><pre><code></code></pre></div>
@@ -344,9 +362,9 @@ function addEvent(kind, name, detail) {
   if (intro) intro.remove();
   const details = document.createElement("details");
   details.className = `threadEvent ${kind}`;
-  const icon = iconFor(kind);
+  const icon_ = iconFor(kind);
   details.innerHTML = `
-    <summary><span class="eventIcon">${icon}</span><span class="evLabel">${labelFor(kind)}</span><strong>${escapeHtml(name || "")}</strong><span class="evChevron">›</span></summary>
+    <summary><span class="eventIcon">${icon_}</span><span class="evLabel">${labelFor(kind)}</span><strong>${escapeHtml(name || "")}</strong><span class="evChevron">${icon("chevron", 13)}</span></summary>
     <pre>${escapeHtml(detail || "")}</pre>`;
   $("messages").append(details);
   scrollMessages();
@@ -371,10 +389,10 @@ function labelFor(kind) {
 }
 
 function iconFor(kind) {
-  return {
-    thinking: "◇", tool: "⌘", done: "✓", subagent: "↳",
-    compact: "⇄", error: "!", skill: "✦",
-  }[kind] || "·";
+  return icon(({
+    thinking: "dots", tool: "terminal", done: "check", subagent: "branch",
+    compact: "compact", error: "alert", skill: "sparkle",
+  }[kind]) || "terminal");
 }
 
 function scrollMessages(force = false) {
@@ -661,6 +679,8 @@ $("format").addEventListener("change", async () => {
   $("providerFormat").value = $("format").value;
   await window.pywebview.api.configure({ providerFormat: $("format").value });
   state.boot = await window.pywebview.api.boot();
+  // the new provider serves a different model list — refresh it
+  await refreshModels().catch(() => {});
 });
 $("settingsBtn").onclick = () => $("settingsDialog").showModal();
 $("saveSettings").onclick = async (event) => {
