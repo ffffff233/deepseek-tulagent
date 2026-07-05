@@ -214,7 +214,6 @@ async function boot() {
   fillSelect("model", [state.boot.model], state.boot.model);
   updateModeHelp();
   $("baseUrl").value = state.boot.baseUrl || "";
-  $("defaultModel").value = state.boot.model || "";
   state.skills = state.boot.skills || [];
   await refreshModels();
   await refreshSessions();
@@ -260,6 +259,15 @@ async function refreshModels() {
   const result = await window.pywebview.api.models();
   const models = result.models && result.models.length ? result.models : [state.boot.model];
   const current = $("model").value || state.boot.model;
+  if (result.ok && models.length && !models.includes(current)) {
+    // stale model from another provider — switch to this provider's first model
+    // instead of silently keeping a name the API will reject
+    fillSelect("model", models, models[0]);
+    setText("apiState", "模型可用");
+    await updateRuntime();
+    toast(`模型已切换为 ${models[0]}`);
+    return;
+  }
   fillSelect("model", models, models.includes(current) ? current : state.boot.model);
   setText("apiState", result.ok ? "模型可用" : "模型列表失败");
 }
@@ -768,7 +776,6 @@ $("saveSettings").onclick = async (event) => {
   state.boot = await window.pywebview.api.configure({
     baseUrl: $("baseUrl").value,
     apiKey: $("apiKey").value,
-    model: $("defaultModel").value,
     providerFormat: $("providerFormat").value,
     defaultMode: $("mode").value,
     defaultThinking: $("thinking").value,

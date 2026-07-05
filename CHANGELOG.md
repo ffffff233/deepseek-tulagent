@@ -1,5 +1,23 @@
 # 更新记录 / Changelog
 
+## v0.1.65
+
+中文：
+
+- **去掉设置里的「默认模型」输入框**——它总把上一个接口的旧模型名自动填进去、保存后换了接口就报
+  「模型不存在」。现在模型只从底部下拉选择，设置弹窗不再填模型。
+- **过期模型自动纠正**：切换接口格式后，如果当前模型不在新接口的模型列表里，自动切到该接口的
+  第一个可用模型并提示「模型已切换为 …」，不再拿旧模型名去请求然后报错。
+
+English:
+
+- **Removed the "default model" input from settings** — it kept auto-filling the previous
+  provider's model name, which then errored ("model not found") after switching providers.
+  The model is now chosen only from the composer dropdown.
+- **Stale-model auto-correction**: after switching provider format, if the current model isn't in
+  the new provider's model list, the first available model is selected automatically (with a
+  "模型已切换为 …" toast) instead of sending a name the API will reject.
+
 ## v0.1.64
 
 中文（对照 Codex 的 composer.permissionsDropdown / approvalRequestCard）：
