@@ -1,5 +1,26 @@
 # 更新记录 / Changelog
 
+## v0.1.64
+
+中文（对照 Codex 的 composer.permissionsDropdown / approvalRequestCard）：
+
+- **权限模式改成 Codex 那样的三档**：**只读 / 受限 / 完全访问**（内部映射 plan/agent/root，
+  旧的 review/trusted/yolo 自动归入受限或完全访问）。下拉直接显示中文档名。
+- **「受限」现在会真的弹批准**：受限模式下，写文件 / 执行命令 / 联网等危险操作会在对话里弹出
+  **批准请求卡片**（显示工具名和参数），点「批准」才执行、「拒绝」则不执行——之前是直接拦掉不问，
+  现在跟 Codex 一样人为确认。后端用阻塞式 approve 回调 + `resolve_approval` 桥接，取消会自动放行结束。
+
+English (against Codex's composer.permissionsDropdown / approvalRequestCard):
+
+- **Permission modes are now Codex's three tiers**: **Read-only / Restricted / Full access**
+  (mapped to plan/agent/root internally; legacy review/trusted/yolo fold into restricted or full).
+  The dropdown shows the tier names directly.
+- **"Restricted" now actually prompts**: in restricted mode, dangerous actions (write file / run
+  command / network) raise an in-conversation **approval request card** (tool name + arguments);
+  the tool runs only after you click Approve, and is skipped on Deny — previously these were just
+  blocked without asking. Backend uses a blocking approve callback bridged by `resolve_approval`;
+  cancelling releases any pending approval.
+
 ## v0.1.63
 
 中文（对照 Codex 桌面端源码实现）：

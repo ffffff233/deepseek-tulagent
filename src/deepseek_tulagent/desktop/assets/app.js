@@ -49,16 +49,14 @@ function installDemoApi() {
         mode: "root",
         thinking: "fast",
         providerFormat: "deepseek",
-        modes: ["plan", "review", "agent", "trusted", "yolo", "root"],
+        modes: ["plan", "agent", "root"],
+        modeLabels: { plan: "只读", agent: "受限", root: "完全访问" },
         thinkingModes: ["instant", "fast", "balanced", "deep", "ultra"],
         thinkingLabels: { instant: "Minimal", fast: "Low", balanced: "Medium", deep: "High", ultra: "Extra High" },
         modeDescriptions: {
-          plan: "只读规划，不写文件，不跑 shell",
-          review: "读取和诊断，危险动作需要确认",
-          agent: "少量权限，写文件/shell 需要确认",
-          trusted: "可信工作区，网络和写入仍有确认",
-          yolo: "自动确认受限工具",
-          root: "最高权限，直接执行",
+          plan: "只读：可以阅读文件和回答，不写文件、不执行命令",
+          agent: "受限：危险操作会弹出批准请求，同意后才执行",
+          root: "完全访问：不受限制地执行命令、读写文件和访问网络",
         },
         compatFormats: ["deepseek", "openai", "openai-responses", "gemini", "anthropic"],
         formatLabels: { deepseek: "DeepSeek", openai: "OpenAI (Chat)", "openai-responses": "OpenAI (Responses·最新)", gemini: "Google Gemini", anthropic: "Anthropic Claude" },
@@ -89,6 +87,7 @@ function installDemoApi() {
         return { ok: true };
       },
       cancel: async () => ({ ok: true }),
+      resolve_approval: async () => ({ ok: true }),
       branch: async () => ({ ok: true, sessionId: "branch-0001", messages: [
         { role: "user", content: "检查项目并修复问题" }, { role: "assistant", content: "已读取项目结构，下一步运行测试。" },
       ] }),
@@ -158,10 +157,14 @@ window.DeepSeekDesktop = {
         addEvent(payload.kind, payload.name, payload.detail);
       }
     }
+    if (event === "approval:request") {
+      showApproval(payload);
+    }
     if (event === "turn:done") {
       state.currentAssistant = null;
       state.currentTool = null;
       setRunning(false);
+      dismissApproval();
       refreshSessions();
       const sid = String(payload.sessionId || "");
       setText("sessionState", sid ? sid.slice(0, 8) : "新会话");
@@ -175,17 +178,20 @@ window.DeepSeekDesktop = {
       state.currentAssistant = null;
       state.currentTool = null;
       setRunning(false);
+      dismissApproval();
       addEvent("error", "错误", payload.error + "\n\n" + payload.trace);
       setSaveState("error", "出错", "查看事件流");
     }
     if (event === "turn:cancel") {
       addEvent("event", "取消请求", payload.message || "");
+      dismissApproval();
       setSaveState("running", "取消中", "等待当前调用返回");
     }
     if (event === "turn:cancelled") {
       state.currentAssistant = null;
       state.currentTool = null;
       setRunning(false);
+      dismissApproval();
       addEvent("done", "已取消", payload.message || "");
       setSaveState("idle", "已取消", state.boot?.sessionId || "未保存");
     }
@@ -201,7 +207,7 @@ async function boot() {
   setSaveState("idle", "新会话", state.boot.sessionId || "未保存");
   setRunning(Boolean(state.boot.running));
   const labels = state.boot.formatLabels || {};
-  fillSelect("mode", state.boot.modes, state.boot.mode);
+  fillSelect("mode", state.boot.modes, state.boot.mode, state.boot.modeLabels || {});
   fillSelect("thinking", state.boot.thinkingModes, state.boot.thinking, state.boot.thinkingLabels || {});
   fillSelect("format", state.boot.compatFormats, state.boot.providerFormat || "deepseek", labels);
   fillSelect("providerFormat", state.boot.compatFormats, state.boot.providerFormat || "deepseek", labels);
@@ -893,6 +899,39 @@ function removeLastExchange() {
   while (node) { const next = node.nextSibling; node.remove(); node = next; }
   state.currentAssistant = null;
   state.currentTool = null;
+}
+
+/* ---------- approval request card (Codex approvalRequestCard: 受限模式弹批准) ---------- */
+function showApproval(payload) {
+  dismissApproval();
+  const intro = document.querySelector(".empty, .intro");
+  if (intro) intro.remove();
+  const card = document.createElement("div");
+  card.className = "approvalCard";
+  card.dataset.approvalId = payload.id || "";
+  card.innerHTML =
+    `<div class="apHead">${icon("alert", 14)}<span>请求批准</span><strong>${escapeHtml(payload.tool || "")}</strong></div>` +
+    `<pre class="apArgs">${escapeHtml(payload.summary || "")}</pre>` +
+    `<div class="apActions"><button class="ghost apDeny">拒绝</button><button class="primary apAllow">批准</button></div>`;
+  card.querySelector(".apAllow").onclick = () => resolveApproval(card, true);
+  card.querySelector(".apDeny").onclick = () => resolveApproval(card, false);
+  $("messages").append(card);
+  state.stickToBottom = true;
+  scrollMessages(true);
+}
+
+async function resolveApproval(card, approved) {
+  card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  try { await window.pywebview.api.resolve_approval({ id: card.dataset.approvalId, approved }); } catch (_) {}
+  card.classList.add(approved ? "allowed" : "denied");
+  const actions = card.querySelector(".apActions");
+  actions.innerHTML = `<span class="apResult">${approved ? "已批准" : "已拒绝"}</span>`;
+}
+
+function dismissApproval() {
+  document.querySelectorAll(".approvalCard").forEach((card) => {
+    if (!card.classList.contains("allowed") && !card.classList.contains("denied")) card.remove();
+  });
 }
 
 async function doRetry() {

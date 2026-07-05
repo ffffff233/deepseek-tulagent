@@ -7,9 +7,10 @@ from pathlib import Path
 import threading
 import traceback
 from typing import Any
+from uuid import uuid4
 
 from .. import __version__
-from ..agent import TuLAgent, compact_context_messages, estimate_message_tokens
+from ..agent import TuLAgent, compact_context_messages, estimate_message_tokens, summarize_arguments
 from ..config import Settings, get_settings, merge_file_config
 from ..messages import Message
 from ..policy import ThinkingMode
@@ -20,6 +21,26 @@ from ..skills import SkillStore
 
 ASSET_DIR = Path(__file__).resolve().parent / "assets"
 MODES = ["plan", "review", "agent", "trusted", "yolo", "root"]
+# Codex-style permission tiers exposed in the desktop UI (composer.permissionsDropdown:
+# read-only / default-with-approval / full access), mapped onto the internal modes.
+PERMISSION_TIERS = ["plan", "agent", "root"]
+PERMISSION_LABELS = {
+    "plan": "只读",
+    "agent": "受限",
+    "root": "完全访问",
+}
+PERMISSION_DESCRIPTIONS = {
+    "plan": "只读：可以阅读文件和回答，不写文件、不执行命令",
+    "agent": "受限：危险操作（写文件 / 执行命令 / 联网）会弹出批准请求，同意后才执行",
+    "root": "完全访问：不受限制地执行命令、读写文件和访问网络",
+}
+
+
+def coerce_permission_tier(mode: str) -> str:
+    """Map any legacy internal mode onto the three Codex-style tiers."""
+    if mode in PERMISSION_TIERS:
+        return mode
+    return {"review": "agent", "trusted": "agent", "yolo": "root"}.get(mode, "root")
 # Codex-style reasoning effort tiers exposed in the desktop UI, mapped onto the
 # richer internal ThinkingMode set (CLI keeps the full list).
 THINKING_TIERS = ["instant", "fast", "balanced", "deep", "ultra"]
@@ -35,13 +56,14 @@ THINKING_LABELS = {
 class DesktopApi:
     def __init__(self) -> None:
         self.settings = get_settings()
-        self.mode = self.settings.default_mode
+        self.mode = coerce_permission_tier(self.settings.default_mode)
         self.thinking = ThinkingMode.resolve(self.settings.default_thinking)
         self.session: Session | None = None
         self.window: Any = None
         self._lock = threading.Lock()
         self._running = False
         self._cancel_requested = False
+        self._approvals: dict[str, dict[str, Any]] = {}
 
     def bind_window(self, window: Any) -> None:
         self.window = window
@@ -53,17 +75,11 @@ class DesktopApi:
             "baseUrl": self.settings.base_url,
             "model": self.settings.model,
             "providerFormat": self.settings.provider_format,
-            "mode": self.mode,
+            "mode": self.mode if self.mode in PERMISSION_TIERS else "root",
             "thinking": self.thinking.name,
-            "modes": list(MODES),
-            "modeDescriptions": {
-                "plan": "只读规划，不写文件，不跑 shell",
-                "review": "读取和诊断，危险动作需要确认",
-                "agent": "少量权限，写文件/shell 需要确认",
-                "trusted": "可信工作区，网络和写入仍有确认",
-                "yolo": "自动确认受限工具",
-                "root": "最高权限，直接执行",
-            },
+            "modes": list(PERMISSION_TIERS),
+            "modeLabels": PERMISSION_LABELS,
+            "modeDescriptions": PERMISSION_DESCRIPTIONS,
             "thinkingModes": [t for t in THINKING_TIERS if t in ThinkingMode.names()] or ThinkingMode.names(),
             "thinkingLabels": THINKING_LABELS,
             "skills": [asdict(skill) | {"path": str(skill.path)} for skill in SkillStore(self.settings.workspace).list()],
@@ -103,7 +119,7 @@ class DesktopApi:
     def set_runtime(self, data: dict[str, Any]) -> dict[str, Any]:
         mode = str(data.get("mode") or self.mode)
         if mode in MODES:
-            self.mode = mode
+            self.mode = coerce_permission_tier(mode)
         thinking_name = str(data.get("thinking") or self.thinking.name)
         if thinking_name in ThinkingMode.names():
             self.thinking = ThinkingMode.resolve(thinking_name)
@@ -264,8 +280,43 @@ class DesktopApi:
         if not self._running:
             return {"ok": True, "running": False}
         self._cancel_requested = True
+        # unblock any pending approval so the turn can wind down
+        for pending in list(self._approvals.values()):
+            pending["decision"] = False
+            pending["event"].set()
         self._emit("turn:cancel", {"message": "正在取消当前回复；已发出的工具会等待当前调用返回。"})
         return {"ok": True, "running": True}
+
+    def _request_approval(self, name: str, arguments: dict[str, Any]) -> bool:
+        """Blocking approval bridge: emit a request to the UI, wait for the user's
+        decision. Runs on the agent worker thread; the UI resolves via resolve_approval.
+        """
+        if self._cancel_requested:
+            return False
+        request_id = uuid4().hex
+        gate = threading.Event()
+        self._approvals[request_id] = {"event": gate, "decision": False}
+        self._emit("approval:request", {
+            "id": request_id,
+            "tool": name,
+            "summary": approval_summary(name, arguments),
+        })
+        # wait, but stay responsive to cancellation
+        while not gate.wait(timeout=0.25):
+            if self._cancel_requested:
+                self._approvals.pop(request_id, None)
+                return False
+        pending = self._approvals.pop(request_id, None)
+        return bool(pending and pending["decision"])
+
+    def resolve_approval(self, data: dict[str, Any]) -> dict[str, Any]:
+        request_id = str(data.get("id") or "")
+        pending = self._approvals.get(request_id)
+        if not pending:
+            return {"ok": False, "error": "no pending approval"}
+        pending["decision"] = bool(data.get("approved"))
+        pending["event"].set()
+        return {"ok": True}
 
     def _run_agent_turn(self, prompt: str) -> None:
         with self._lock:
@@ -291,7 +342,7 @@ class DesktopApi:
                     self.settings,
                     mode=self.mode,
                     thinking=self.thinking.name,
-                    approve=(lambda _name, _args: True) if self.mode in {"root", "yolo"} else None,
+                    approve=(lambda _n, _a: True) if self.mode in {"root", "yolo"} else self._request_approval,
                 ).run(prompt, stream=True, on_delta=delta, on_final=final, on_event=event, session=self.session)
                 self.session = SessionStore(self.settings.workspace).load(result.session_id)
                 ensure_session_title(self.settings.workspace, self.session)
@@ -318,6 +369,11 @@ class DesktopApi:
             self.window.evaluate_js(f"window.DeepSeekDesktop.onNativeEvent({data});")
         except Exception:
             pass
+
+
+def approval_summary(name: str, arguments: dict[str, Any]) -> str:
+    text = summarize_arguments(arguments)
+    return text[:500] if text else "（无参数）"
 
 
 def serialize_messages(messages: list[Message]) -> list[dict[str, str]]:

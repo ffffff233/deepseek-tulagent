@@ -194,6 +194,17 @@ body.is-running .pulse { animation: pulseDot 1s ease-in-out infinite; }
 .vBtn.prev svg { transform: rotate(180deg); }
 .vCount { min-width: 26px; text-align: center; }
 
+/* approval request card (受限模式) */
+.approvalCard { max-width: 760px; width: calc(100% - 48px); margin: 8px auto; padding: 12px 14px; background: var(--elevated); border: 1px solid var(--warn); border-radius: var(--r-card); display: flex; flex-direction: column; gap: 8px; }
+.approvalCard.allowed { border-color: var(--ok); }
+.approvalCard.denied { border-color: var(--line-heavy); opacity: .7; }
+.apHead { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--warn); }
+.approvalCard.allowed .apHead { color: var(--ok); }
+.apHead strong { font-family: var(--mono); font-size: 12px; color: var(--text); font-weight: 500; }
+.apArgs { margin: 0; padding: 8px 11px; background: var(--bg-under); border: 1px solid var(--line); border-radius: var(--r-row); font-family: var(--mono); font-size: 11.5px; color: var(--text-2); white-space: pre-wrap; word-break: break-word; max-height: 140px; overflow-y: auto; }
+.apActions { display: flex; justify-content: flex-end; gap: 8px; }
+.apResult { font-size: 12px; color: var(--text-3); }
+
 /* markdown */
 .bubble p { margin: 0 0 9px; }
 .bubble p:last-child { margin-bottom: 0; }
