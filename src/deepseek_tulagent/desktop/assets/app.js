@@ -95,6 +95,7 @@ function installDemoApi() {
       },
       cancel: async () => ({ ok: true }),
       resolve_approval: async () => ({ ok: true }),
+      test_connection: async () => ({ ok: true, count: 3, models: ["deepseek-v4-flash", "gpt-4o", "claude-opus-4-8"], resolved: "https://api.deepseek.com/v1" }),
       branch: async () => ({ ok: true, sessionId: "branch-0001", messages: [
         { role: "user", content: "检查项目并修复问题" }, { role: "assistant", content: "已读取项目结构，下一步运行测试。" },
       ] }),
@@ -642,15 +643,9 @@ $("send").onclick = async () => {
   renderAttachments();
   state.stickToBottom = true;
   setRunning(true);
-  const editing = state.editing;
-  const editSrc = state.editSrc;
-  state.editing = false;
-  state.editSrc = null;
   try {
     await updateRuntime();
-    const result = editing
-      ? await window.pywebview.api.edit_resend(editSrc != null ? { prompt: outgoing, srcIndex: editSrc } : { prompt: outgoing })
-      : await window.pywebview.api.send({ prompt: outgoing, attachments });
+    const result = await window.pywebview.api.send({ prompt: outgoing, attachments });
     if (!result.ok) throw new Error(result.error || "unknown error");
   } catch (error) {
     setRunning(false);
@@ -813,6 +808,29 @@ $("format").addEventListener("change", async () => {
   await refreshModels().catch(() => {});
 });
 $("settingsBtn").onclick = () => $("settingsDialog").showModal();
+$("testConn").onclick = async () => {
+  const box = $("testResult");
+  box.hidden = false;
+  box.className = "testResult testing";
+  box.textContent = "正在测试连接…";
+  try {
+    const r = await window.pywebview.api.test_connection({
+      baseUrl: $("baseUrl").value,
+      apiKey: $("apiKey").value,
+      providerFormat: $("providerFormat").value,
+    });
+    if (r.ok) {
+      box.className = "testResult ok";
+      box.textContent = `连接成功 · ${r.count} 个模型 · ${r.resolved}` + (r.models && r.models.length ? `\n${r.models.join("、")}` : "");
+    } else {
+      box.className = "testResult err";
+      box.textContent = `连接失败：${r.error || "未知错误"}`;
+    }
+  } catch (e) {
+    box.className = "testResult err";
+    box.textContent = `连接失败：${String(e.message || e)}`;
+  }
+};
 $("saveSettings").onclick = async (event) => {
   event.preventDefault();
   state.boot = await window.pywebview.api.configure({
@@ -1119,14 +1137,50 @@ async function doBranch(src) {
   }
 }
 
+// Codex-style inline edit: the user message becomes an editable box with 取消/保存.
+// Nothing is deleted until you save; Cancel restores the original.
 function doEdit(text, src, msg) {
-  if (state.running) return;
-  removeTurnFrom(msg || [...$("messages").querySelectorAll(".message.user")].pop());
-  state.editing = true;
-  state.editSrc = src != null ? src : null;
-  $("prompt").value = text;
-  autoGrow();
-  $("prompt").focus();
+  if (state.running || !msg || msg.querySelector(".editBox")) return;
+  const bubble = msg.querySelector(".bubble");
+  const actions = msg.querySelector(".msgActions");
+  bubble.style.display = "none";
+  if (actions) actions.style.display = "none";
+  const box = document.createElement("div");
+  box.className = "editBox";
+  box.innerHTML =
+    `<textarea class="editArea"></textarea>` +
+    `<div class="editBtns"><button class="ghost editCancel">取消</button>` +
+    `<button class="primary editSave">保存并重发</button></div>`;
+  const area = box.querySelector(".editArea");
+  area.value = text;
+  msg.append(box);
+  const grow = () => { area.style.height = "auto"; area.style.height = Math.min(area.scrollHeight, 240) + "px"; };
+  area.addEventListener("input", grow);
+  const restore = () => { box.remove(); bubble.style.display = ""; if (actions) actions.style.display = ""; };
+  box.querySelector(".editCancel").onclick = restore;
+  box.querySelector(".editSave").onclick = async () => {
+    const next = area.value.trim();
+    if (!next) return;
+    restore();
+    removeTurnFrom(msg);
+    state.stickToBottom = true;
+    setRunning(true);
+    try {
+      await updateRuntime();
+      const result = await window.pywebview.api.edit_resend(
+        src != null ? { prompt: next, srcIndex: src } : { prompt: next });
+      if (!result.ok) throw new Error(result.error || "unknown error");
+    } catch (error) {
+      setRunning(false);
+      addEvent("error", "编辑重发失败", String(error.message || error));
+    }
+  };
+  area.focus();
+  grow();
+  area.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); restore(); }
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); box.querySelector(".editSave").click(); }
+  });
 }
 
 // mark the latest turn so its actions stay visible without hover (others hover-reveal)

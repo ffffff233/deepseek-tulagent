@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace as replace_settings
 import base64
 import json
 from pathlib import Path
@@ -144,6 +144,21 @@ class DesktopApi:
             return {"ok": True, "models": models}
         except Exception as exc:
             return {"ok": False, "error": str(exc), "models": [self.settings.model]}
+
+    def test_connection(self, data: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Probe the endpoint with the dialog's (possibly unsaved) values, without
+        persisting them — used by the Settings 测试连接 button."""
+        data = data or {}
+        base = str(data.get("baseUrl") or self.settings.base_url or "").strip().rstrip("/")
+        key = str(data.get("apiKey") or "").strip() or self.settings.api_key
+        fmt = str(data.get("providerFormat") or self.settings.provider_format)
+        probe = self.settings.with_runtime()
+        probe = replace_settings(probe, base_url=base, api_key=key, provider_format=fmt)
+        try:
+            models = DeepSeekClient(probe).models()
+            return {"ok": True, "count": len(models), "models": models[:12], "resolved": DeepSeekClient(probe)._base_url()}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
 
     def sessions(self) -> list[dict[str, Any]]:
         return SessionStore(self.settings.workspace).list()

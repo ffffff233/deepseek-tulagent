@@ -1,5 +1,25 @@
 # 更新记录 / Changelog
 
+## v0.1.69
+
+中文（继续对齐 Codex）：
+
+- **编辑消息改成 Codex 那样的内联编辑**：点用户消息的编辑，消息**原地变成可编辑框 + 取消 / 保存并重发**，
+  不再一点就把后面全删、也不再塞回输入框。**取消**可放弃恢复原样；**保存**才截断并重跑（Cmd/Ctrl+Enter
+  保存、Esc 取消）。不再莫名其妙多开会话。
+- **设置里新增「测试连接」按钮**：用当前填写的 Base URL / Key / 接口格式实测拉一次模型列表（不落盘），
+  成功显示模型数量和实际请求地址，失败显示具体错误。已对第三方接口实测可用。
+
+English (further Codex alignment):
+
+- **Message editing is now Codex-style inline editing**: clicking edit turns the message into an
+  in-place editor with 取消 / 保存并重发 — it no longer deletes everything after on click, nor dumps the
+  text back into the composer. Cancel restores the original; only Save truncates and re-runs
+  (Cmd/Ctrl+Enter to save, Esc to cancel). No more spurious extra conversations.
+- **Added a "测试连接" button in Settings**: probes the currently-entered Base URL / key / format by
+  fetching the model list (without saving), showing model count + resolved URL on success or the exact
+  error on failure. Verified against a third-party endpoint.
+
 ## v0.1.68
 
 中文：
