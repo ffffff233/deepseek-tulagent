@@ -149,6 +149,7 @@ class TuLAgent:
                 # Callers with on_delta only (CLI/TUI) keep the buffer-then-flush behavior.
                 stream_live = on_final is not None
                 emitted = 0
+                held_notified = False
                 for delta in self.client.stream_chat(model_messages):
                     if should_cancel and should_cancel():
                         raise RuntimeError("turn cancelled")
@@ -157,6 +158,13 @@ class TuLAgent:
                     if stream_live and on_delta:
                         joined = "".join(parts)
                         if should_hold_stream_output(joined):
+                            # the emerging output looks like a tool call; its JSON is
+                            # held back from the chat. Signal the UI once so it can show
+                            # a "preparing tool" indicator instead of a dead pause until
+                            # the call is fully parsed at end-of-stream.
+                            if not held_notified and on_event:
+                                on_event("toolpending")
+                                held_notified = True
                             continue
                         safe = safe_stream_emit_length(joined)
                         if safe > emitted:
@@ -347,7 +355,10 @@ class TuLAgent:
         )
         result = subagent.run(sub_prompt, max_tool_rounds=max_rounds, should_cancel=should_cancel, on_event=sub_on_event)
         if on_event:
-            on_event(f"subagentdone {name} rounds={result.rounds}")
+            # carry the subagent's full final summary so its card shows the complete
+            # result, not just "rounds=N"
+            summary_b64 = base64.b64encode((result.answer or "").encode("utf-8")).decode("ascii")
+            on_event(f"subagentdone {name}␟rounds={result.rounds}␟{summary_b64}")
         return {
             "name": name,
             "task": task,

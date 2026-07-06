@@ -1,5 +1,19 @@
 # 更新记录 / Changelog
 
+## v0.1.75
+
+中文（对照 Codex 的 thinking-shimmer 加载指示）：
+
+- **新增：发送后立刻有加载动画（思考微光）**。之前发出去到第一个字冒出来之间是**一片死寂、毫无反馈**。现在照 Codex 的 `thinking-shimmer` 做了一个扫光的“思考中”指示，发送即出现，第一个 token 到达就消失；工具跑完进入下一轮时也会再亮起。
+- **修复：工具调用要等整段流式输出完才“变成”调用**。根因：模型把工具调用当正文吐出来，我们为了不让 JSON 泄露进聊天会**把这段先扣住**，扣住期间界面什么都不显示，直到流结束解析出工具卡片才“啪”地出现——看着莫名其妙。现在一旦检测到在扣工具 JSON，就发一个 `toolpending` 信号，把微光切成“准备调用工具…”，不再是死等。
+- **修复：子代理信息返回不全**。之前 `subagentdone` 只带了 `rounds=N`，子代理的**最终结论/摘要没传回来**，卡片里只有工具轨迹。现在把子代理的完整最终结果一起回传，收尾时作为“↳ 结果”追加进它的卡片。
+
+English (matching Codex's thinking-shimmer loading indicator):
+
+- **Added: a loading indicator the moment you send (thinking shimmer)**. There used to be **dead silence** between sending and the first token. Now, like Codex's `thinking-shimmer`, a sweeping "思考中" shimmer appears immediately on send and disappears when the first token arrives; it also re-appears between tool rounds.
+- **Fixed: tool calls only "became" calls after the whole stream finished**. Root cause: the model emits a tool call as prose, and to keep its JSON out of the chat we **hold that output back** — during the hold the UI showed nothing until the stream ended and the tool card popped in out of nowhere. Now, as soon as tool-call JSON starts being held, a `toolpending` signal switches the shimmer to "准备调用工具…" instead of a dead pause.
+- **Fixed: incomplete subagent info**. `subagentdone` used to carry only `rounds=N` — the subagent's **final result/summary never came back**, so its card had only the tool trace. Now the subagent's full final result is forwarded and appended to its card as "↳ 结果" when it finishes.
+
 ## v0.1.74
 
 中文（对照 Codex 的图片持久化与上下文压缩）：

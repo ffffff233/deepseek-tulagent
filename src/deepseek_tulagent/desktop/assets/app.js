@@ -136,9 +136,11 @@ window.DeepSeekDesktop = {
       else { addMessage("user", payload.prompt); }
       state.currentAssistant = null;
       state.currentTool = null;
-      addEvent("thinking", "", `thinking mode: ${payload.thinking}`);
+      // Codex-style: show a loading shimmer immediately, before the first token arrives
+      showThinking("思考中");
     }
     if (event === "assistant:delta") {
+      hideThinking();
       if (!state.currentAssistant) state.currentAssistant = addMessage("assistant", "");
       const bubble = state.currentAssistant.querySelector(".bubble");
       bubble.dataset.raw = (bubble.dataset.raw || "") + payload.text;
@@ -153,6 +155,7 @@ window.DeepSeekDesktop = {
         if (state.currentAssistant) { state.currentAssistant.remove(); state.currentAssistant = null; }
         return;
       }
+      hideThinking();
       if (!state.currentAssistant) state.currentAssistant = addMessage("assistant", "");
       const bubble = state.currentAssistant.querySelector(".bubble");
       bubble.dataset.raw = text;
@@ -163,12 +166,19 @@ window.DeepSeekDesktop = {
     }
     if (event === "agent:event") {
       const sub = payload.sub;  // set when this event came from inside a subagent
-      if (payload.kind === "subagentdone") {
-        markSubagentDone(payload.name);
+      if (payload.kind === "toolpending" && !sub) {
+        // model is emitting a tool call; its JSON is held back from the chat, so keep
+        // the shimmer alive but tell the user what's happening instead of a dead pause
+        showThinking("准备调用工具…");
+      } else if (payload.kind === "toolpending") {
+        // a subagent is preparing a tool — its own card already shows activity
+      } else if (payload.kind === "subagentdone") {
+        markSubagentDone(payload.name, payload.detail);
       } else if (sub) {
         // nest the subagent's own activity under its group so you can watch it work
         addSubEvent(sub, payload);
       } else if (payload.kind === "tool") {
+        hideThinking();
         // a tool card starts a new visual block — text after it must open a NEW
         // bubble below the card, not append to the bubble above it
         state.currentAssistant = null;
@@ -176,14 +186,21 @@ window.DeepSeekDesktop = {
       } else if (payload.kind === "done") {
         completeToolEvent(payload.name, payload.detail);
         state.currentAssistant = null;
+        // another model round follows a tool result — show the shimmer again
+        showThinking("思考中");
+      } else if (payload.kind === "subagent") {
+        showThinking("子代理运行中…");
+        addEvent(payload.kind, payload.name, payload.detail);
       } else {
         addEvent(payload.kind, payload.name, payload.detail);
       }
     }
     if (event === "approval:request") {
+      hideThinking();
       showApproval(payload);
     }
     if (event === "turn:done") {
+      hideThinking();
       state.currentAssistant = null;
       state.currentTool = null;
       const wasSuppressed = state.suppressStream;
@@ -202,6 +219,7 @@ window.DeepSeekDesktop = {
       if (!wasSuppressed) attachVersionPager();
     }
     if (event === "turn:error") {
+      hideThinking();
       state.currentAssistant = null;
       state.currentTool = null;
       state.suppressStream = false;
@@ -214,6 +232,7 @@ window.DeepSeekDesktop = {
       dismissApproval();
     }
     if (event === "turn:cancelled") {
+      hideThinking();
       state.currentAssistant = null;
       state.currentTool = null;
       const wasSuppressed = state.suppressStream;
@@ -522,6 +541,7 @@ function addSubEvent(name, payload) {
   row.className = `subRow ${payload.kind}`;
   const label = payload.kind === "tool" ? `⌘ ${payload.name || ""}`
     : payload.kind === "done" ? `✓ ${payload.name || ""}`
+    : payload.kind === "subanswer" ? "↳ 输出"
     : `${labelFor(payload.kind)} ${payload.name || ""}`;
   row.innerHTML = `<span class="subLabel">${escapeHtml(label.trim())}</span>` +
     (payload.detail ? `<pre class="subDetail">${escapeHtml(truncateForDisplay(String(payload.detail)))}</pre>` : "");
@@ -530,9 +550,19 @@ function addSubEvent(name, payload) {
   mirror(`[子代理:${name}] ${label} ${payload.detail || ""}`.trim());
 }
 
-function markSubagentDone(name) {
+function markSubagentDone(name, summary) {
   const card = $("messages").querySelector(`.subagentCard[data-sub="${cssEscape(name)}"]:not(.done)`);
   if (!card) return;
+  // append the subagent's final result so the card carries its complete output, not
+  // just the tool trace
+  if (summary && String(summary).trim()) {
+    const body = card.querySelector(".subBody");
+    const row = document.createElement("div");
+    row.className = "subRow subanswer";
+    row.innerHTML = `<span class="subLabel">↳ 结果</span>` +
+      `<pre class="subDetail">${escapeHtml(truncateForDisplay(String(summary).trim()))}</pre>`;
+    body.append(row);
+  }
   card.classList.add("done");
   const status = card.querySelector(".evStatus");
   if (status) { status.textContent = "完成"; status.classList.add("ok"); }
@@ -570,6 +600,28 @@ function iconFor(kind) {
 function scrollMessages(force = false) {
   const box = $("messages");
   if (force || state.stickToBottom) box.scrollTop = box.scrollHeight;
+}
+
+/* ---------- thinking shimmer: shown immediately on send, hidden once content flows ---------- */
+function showThinking(message) {
+  let el = $("messages").querySelector(".thinkingShimmer");
+  if (!el) {
+    const intro = document.querySelector(".empty, .intro");
+    if (intro) intro.remove();
+    el = document.createElement("div");
+    el.className = "thinkingShimmer";
+    el.innerHTML = `<span class="shimmerDots"><i></i><i></i><i></i></span><span class="shimmerText"></span>`;
+    $("messages").append(el);
+  }
+  el.querySelector(".shimmerText").textContent = message || "思考中";
+  // keep the shimmer as the last child so it always sits below the newest content
+  $("messages").append(el);
+  scrollMessages();
+}
+
+function hideThinking() {
+  const el = $("messages").querySelector(".thinkingShimmer");
+  if (el) el.remove();
 }
 $("messages").addEventListener("scroll", () => {
   const box = $("messages");
@@ -919,6 +971,7 @@ $("cancel").onclick = async () => {
   // backend wind down the in-flight request/tool in the background
   state.suppressStream = true;
   setRunning(false);
+  hideThinking();
   setSaveState("idle", "已中断", state.currentSessionId || "未保存");
   addEvent("done", "已中断", "已停止当前回复");
   state.currentAssistant = null;

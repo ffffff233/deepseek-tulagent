@@ -455,3 +455,59 @@ dialog.miniModal menu { display: flex; justify-content: flex-end; gap: 8px; marg
   .app { grid-template-columns: 220px minmax(0, 1fr); }
   .app.sidebarCollapsed { grid-template-columns: 0 minmax(0, 1fr); }
 }
+
+/* ---------- thinking shimmer: Codex-style loading indicator while the model works ---------- */
+.thinkingShimmer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 2px 8px;
+  padding: 2px 0;
+  font-size: 13px;
+  line-height: 1.4;
+  user-select: none;
+}
+.thinkingShimmer .shimmerText {
+  background: linear-gradient(
+    90deg,
+    var(--text-4) 0%,
+    var(--text-4) 35%,
+    var(--text) 50%,
+    var(--text-4) 65%,
+    var(--text-4) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmerSweep 1.7s linear infinite;
+}
+.thinkingShimmer .shimmerDots {
+  display: inline-flex;
+  gap: 3px;
+}
+.thinkingShimmer .shimmerDots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--text-3);
+  animation: shimmerBlink 1.4s ease-in-out infinite;
+}
+.thinkingShimmer .shimmerDots i:nth-child(2) { animation-delay: 0.2s; }
+.thinkingShimmer .shimmerDots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes shimmerSweep {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@keyframes shimmerBlink {
+  0%, 100% { opacity: 0.25; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-1px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .thinkingShimmer .shimmerText { animation: none; color: var(--text-3); }
+  .thinkingShimmer .shimmerDots i { animation: none; }
+}
+
+/* subagent final result row inside its card */
+.subRow.subanswer .subLabel { color: var(--ok); }
+.subRow.subanswer .subDetail { border-left: 2px solid var(--ok); padding-left: 8px; }

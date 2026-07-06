@@ -504,6 +504,15 @@ def parse_agent_event(text: str) -> dict[str, str]:
             except Exception:
                 note = ""
         return {"kind": "thinking", "name": f"内部思考 {label}", "detail": note}
+    if text.startswith("subanswer "):
+        rest = text.removeprefix("subanswer ").strip()
+        note = ""
+        if rest:
+            try:
+                note = base64.b64decode(rest).decode("utf-8", "replace")
+            except Exception:
+                note = ""
+        return {"kind": "subanswer", "name": "", "detail": note}
     if text.startswith("subevent "):
         rest = text.removeprefix("subevent ")
         sub_name, _, inner = rest.partition("␟")
@@ -511,7 +520,20 @@ def parse_agent_event(text: str) -> dict[str, str]:
         inner_event["sub"] = sub_name
         return inner_event
     if text.startswith("subagentdone "):
-        return {"kind": "subagentdone", "name": text.removeprefix("subagentdone ").split(" ")[0], "detail": text}
+        rest = text.removeprefix("subagentdone ")
+        name, _, tail = rest.partition("␟")
+        summary = ""
+        if tail:
+            # tail is "rounds=N␟<base64 summary>"; take the last ␟-separated field
+            b64 = tail.rpartition("␟")[2].strip()
+            if b64:
+                try:
+                    summary = base64.b64decode(b64).decode("utf-8", "replace")
+                except Exception:
+                    summary = ""
+        return {"kind": "subagentdone", "name": name.strip(), "detail": summary}
+    if text == "toolpending":
+        return {"kind": "toolpending", "name": "", "detail": ""}
     if text.startswith("subagent "):
         return {"kind": "subagent", "name": "subagent", "detail": text}
     if text.startswith("skill "):

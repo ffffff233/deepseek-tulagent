@@ -1066,6 +1066,22 @@ def test_desktop_event_parser():
     assert parse_agent_event("skill repo-debug")["kind"] == "skill"
     assert parse_agent_event("done read_file") == {"kind": "done", "name": "read_file", "detail": ""}
 
+    import base64
+
+    # subagentdone now carries the subagent's full final summary (base64) so its card
+    # can show the complete result, not just "rounds=N"
+    enc = base64.b64encode("结论X".encode()).decode()
+    done = parse_agent_event(f"subagentdone helper␟rounds=3␟{enc}")
+    assert done == {"kind": "subagentdone", "name": "helper", "detail": "结论X"}
+
+    # held tool-call output raises a pending signal for the loading indicator
+    assert parse_agent_event("toolpending") == {"kind": "toolpending", "name": "", "detail": ""}
+
+    # a subagent's own narration is nested under its group
+    note = base64.b64encode("子代理输出".encode()).decode()
+    inner = parse_agent_event(f"subevent helper␟subanswer {note}")
+    assert inner["kind"] == "subanswer" and inner["sub"] == "helper" and inner["detail"] == "子代理输出"
+
 
 def test_session_handoff_prints_resume_command(capsys):
     from deepseek_tulagent.cli import print_session_handoff
