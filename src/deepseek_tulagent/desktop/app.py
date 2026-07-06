@@ -14,7 +14,7 @@ from ..agent import TuLAgent, compact_context_messages, estimate_message_tokens,
 from ..config import Settings, get_settings, merge_file_config
 from ..messages import Message
 from ..policy import ThinkingMode
-from ..provider import DeepSeekClient
+from ..provider import DeepSeekClient, apply_thinking_payload
 from ..session import Session, SessionStore
 from ..skills import SkillStore
 
@@ -147,18 +147,41 @@ class DesktopApi:
 
     def test_connection(self, data: dict[str, Any] | None = None) -> dict[str, Any]:
         """Probe the endpoint with the dialog's (possibly unsaved) values, without
-        persisting them — used by the Settings 测试连接 button."""
+        persisting them. Unlike models() (a plain GET /models), this sends a real minimal
+        chat request that exercises the thinking/reasoning parameter, so it verifies the
+        endpoint actually completes AND that the reasoning param is accepted upstream."""
         data = data or {}
         base = str(data.get("baseUrl") or self.settings.base_url or "").strip().rstrip("/")
         key = str(data.get("apiKey") or "").strip() or self.settings.api_key
         fmt = str(data.get("providerFormat") or self.settings.provider_format)
-        probe = self.settings.with_runtime()
+        model = str(data.get("model") or self.settings.model)
+        # carry the current thinking selection so the probe reflects real reasoning params
+        probe = self.settings.with_runtime(
+            model=model,
+            max_tokens=1200,
+            thinking_enabled=self.thinking.api_thinking,
+            reasoning_effort=self.thinking.reasoning_effort,
+        )
         probe = replace_settings(probe, base_url=base, api_key=key, provider_format=fmt)
+        # show exactly which reasoning parameter this request will send upstream
+        sample: dict[str, Any] = {"max_tokens": probe.max_tokens}
+        apply_thinking_payload(sample, probe)
+        reasoning_sent = {k: sample[k] for k in ("reasoning_effort", "reasoning", "thinking") if k in sample}
+        if "generationConfig" in sample and sample["generationConfig"].get("thinkingConfig"):
+            reasoning_sent["thinkingConfig"] = sample["generationConfig"]["thinkingConfig"]
+        client = DeepSeekClient(probe)
         try:
-            models = DeepSeekClient(probe).models()
-            return {"ok": True, "count": len(models), "models": models[:12], "resolved": DeepSeekClient(probe)._base_url()}
+            reply = client.chat([Message("user", "连接测试：只回复 ok。")])
+            return {
+                "ok": True,
+                "reply": (reply or "").strip()[:200],
+                "model": model,
+                "thinking": self.thinking.name,
+                "reasoning": reasoning_sent,
+                "resolved": client._base_url(),
+            }
         except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+            return {"ok": False, "error": str(exc), "reasoning": reasoning_sent, "resolved": client._base_url()}
 
     def sessions(self) -> list[dict[str, Any]]:
         return SessionStore(self.settings.workspace).list()

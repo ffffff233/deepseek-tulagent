@@ -708,6 +708,34 @@ def test_deepseek_payload_includes_thinking_controls(tmp_path: Path):
     assert payload == {}
 
 
+def test_thinking_payload_per_format_shapes(tmp_path: Path):
+    """Each provider format must send reasoning in its own native shape, not just chat."""
+    from dataclasses import replace as _replace
+
+    def probe(fmt):
+        s = settings(tmp_path).with_runtime(thinking_enabled=True, reasoning_effort="high")
+        s = _replace(s, provider_format=fmt)
+        payload = {"max_tokens": 1200}
+        if fmt == "gemini":
+            payload["generationConfig"] = {"maxOutputTokens": 1200}
+        apply_thinking_payload(payload, s)
+        return payload
+
+    # OpenAI Responses API wants the nested reasoning:{effort}, not top-level
+    resp = probe("openai-responses")
+    assert resp["reasoning"] == {"effort": "high"}
+    assert "reasoning_effort" not in resp
+
+    # Anthropic extended thinking: budget_tokens, strictly below max_tokens
+    ant = probe("anthropic")
+    assert ant["thinking"]["type"] == "enabled"
+    assert 1024 <= ant["thinking"]["budget_tokens"] < 1200
+
+    # Gemini: generationConfig.thinkingConfig.thinkingBudget
+    gem = probe("gemini")
+    assert gem["generationConfig"]["thinkingConfig"]["thinkingBudget"] > 0
+
+
 def test_codex_style_workspace_tools(tmp_path: Path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("print('deepseek')\n", encoding="utf-8")

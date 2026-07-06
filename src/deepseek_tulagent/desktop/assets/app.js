@@ -96,7 +96,7 @@ function installDemoApi() {
       },
       cancel: async () => ({ ok: true }),
       resolve_approval: async () => ({ ok: true }),
-      test_connection: async () => ({ ok: true, count: 3, models: ["deepseek-v4-flash", "gpt-4o", "claude-opus-4-8"], resolved: "https://api.deepseek.com/v1" }),
+      test_connection: async () => ({ ok: true, reply: "ok", model: "deepseek-v4-flash", thinking: "deep", reasoning: { reasoning_effort: "high" }, resolved: "https://api.deepseek.com/v1" }),
       branch: async () => ({ ok: true, sessionId: "branch-0001", messages: [
         { role: "user", content: "检查项目并修复问题" }, { role: "assistant", content: "已读取项目结构，下一步运行测试。" },
       ] }),
@@ -996,19 +996,30 @@ $("testConn").onclick = async () => {
   const box = $("testResult");
   box.hidden = false;
   box.className = "testResult testing";
-  box.textContent = "正在测试连接…";
+  box.textContent = "正在测试连接（发送真实请求）…";
+  const fmtReasoning = (r) => {
+    if (!r || !Object.keys(r).length) return "无（思考关闭）";
+    try { return JSON.stringify(r); } catch (_) { return String(r); }
+  };
   try {
     const r = await window.pywebview.api.test_connection({
       baseUrl: $("baseUrl").value,
       apiKey: $("apiKey").value,
       providerFormat: $("providerFormat").value,
+      model: $("model") ? $("model").value : undefined,
     });
     if (r.ok) {
       box.className = "testResult ok";
-      box.textContent = `连接成功 · ${r.count} 个模型 · ${r.resolved}` + (r.models && r.models.length ? `\n${r.models.join("、")}` : "");
+      box.textContent =
+        `连接成功 · 模型 ${r.model} · ${r.resolved}\n` +
+        `思考档位：${r.thinking} · 上游 reasoning 参数：${fmtReasoning(r.reasoning)}\n` +
+        `模型回复：${r.reply || "（空）"}`;
     } else {
       box.className = "testResult err";
-      box.textContent = `连接失败：${r.error || "未知错误"}`;
+      box.textContent =
+        `连接失败：${r.error || "未知错误"}\n` +
+        `本次尝试发送的 reasoning 参数：${fmtReasoning(r.reasoning)}` +
+        (r.resolved ? `\n端点：${r.resolved}` : "");
     }
   } catch (e) {
     box.className = "testResult err";

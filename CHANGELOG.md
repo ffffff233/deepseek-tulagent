@@ -1,5 +1,22 @@
 # 更新记录 / Changelog
 
+## v0.1.78
+
+中文：
+
+- **修复：思考参数只在 chat 格式传给了上游，其它格式根本没传**。根因：`apply_thinking_payload` 之前**只在 OpenAI chat 那条路径里被调用**，Responses / Anthropic / Gemini 三条路径压根没带思考参数；而且就算带了，Responses 用的也是错的形状。现在按各家**原生形状**分别传，并在四条路径全部接上：
+  - DeepSeek：`thinking:{type}` + `reasoning_effort`
+  - OpenAI chat：顶层 `reasoning_effort`
+  - OpenAI Responses：嵌套 `reasoning:{effort}`（Codex 用的就是这个；顶层 `reasoning_effort` 在 Responses 会被忽略）
+  - Anthropic：`thinking:{type:enabled, budget_tokens:N}`（预算按档位换算，且严格小于 max_tokens）
+  - Gemini：`generationConfig.thinkingConfig.thinkingBudget`
+- **修复：“测试连接”其实只是在获取模型列表**。之前点测试连接只发了个 `GET /models`，既不验证真能补全、也不验证思考参数会不会被上游拒。现在**发一条真实的最小对话请求**（会带上当前档位的思考参数），成功时显示：用了哪个模型、思考档位、本次上游实际发的 reasoning 参数、以及模型的真实回复；失败时把错误和本次尝试发送的 reasoning 参数一起显示，方便定位。已用你的网关实测：成功返回 `ok`，`reasoning_effort:high` 被上游接受。
+
+English:
+
+- **Fixed: the thinking parameter only reached the wire on the chat format**. Root cause: `apply_thinking_payload` was **only called in the OpenAI-chat path** — Responses / Anthropic / Gemini never sent thinking at all, and the Responses shape was wrong anyway. It now emits each provider's **native shape** and is wired into all four paths (DeepSeek `thinking`+`reasoning_effort`; OpenAI chat top-level `reasoning_effort`; OpenAI Responses nested `reasoning:{effort}`; Anthropic `thinking:{budget_tokens}`; Gemini `generationConfig.thinkingConfig`).
+- **Fixed: "测试连接" was really just fetching the model list**. It used to send only `GET /models`, verifying neither that completions work nor that the reasoning param is accepted. It now sends a **real minimal chat request** (carrying the current thinking params) and reports the model used, thinking tier, the exact reasoning parameter sent upstream, and the model's actual reply; on failure it shows the error alongside the reasoning param it tried to send. Verified live against your gateway: replies `ok`, `reasoning_effort:high` accepted.
+
 ## v0.1.77
 
 中文：

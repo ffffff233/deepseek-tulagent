@@ -297,6 +297,7 @@ class DeepSeekClient:
         }
         if system:
             payload["instructions"] = system
+        apply_thinking_payload(payload, self.settings)
         headers = {
             "Authorization": f"Bearer {self.settings.api_key}",
             "Content-Type": "application/json",
@@ -353,6 +354,7 @@ class DeepSeekClient:
         }
         if system:
             payload["system"] = system
+        apply_thinking_payload(payload, self.settings)
         headers = {
             "x-api-key": self.settings.api_key or "",
             "anthropic-version": "2023-06-01",
@@ -414,6 +416,7 @@ class DeepSeekClient:
         }
         if system:
             payload["systemInstruction"] = {"parts": [{"text": system}]}
+        apply_thinking_payload(payload, self.settings)
         base = f"{self._base_url()}/v1beta/models/{self.settings.model}"
         headers = {"Content-Type": "application/json"}
         if not stream:
@@ -525,14 +528,47 @@ def extract_error_message(body: str) -> str:
     return str(data.get("message") or "")
 
 
+def _effort_budget_tokens(effort: str | None) -> int:
+    """Map a reasoning-effort label to a thinking-token budget for providers that take
+    an explicit budget (Anthropic, Gemini) instead of an effort string."""
+    return {"low": 2048, "medium": 8192, "high": 16384, "max": 24576}.get((effort or "").lower(), 8192)
+
+
 def apply_thinking_payload(payload: dict, settings: Settings) -> None:
+    """Insert the upstream reasoning/thinking parameter in each provider's native shape.
+
+    Codex-style: reasoning is an upstream API parameter, not a separate local turn. Each
+    provider spells it differently, so this must run for every format — not just chat."""
     fmt = normalize_format(getattr(settings, "provider_format", "deepseek"))
+    enabled = bool(settings.thinking_enabled)
+    effort = settings.reasoning_effort
+
     if fmt == "deepseek":
-        payload["thinking"] = {"type": "enabled" if settings.thinking_enabled else "disabled"}
-        if settings.thinking_enabled and settings.reasoning_effort:
-            payload["reasoning_effort"] = settings.reasoning_effort
-    elif fmt in {"openai", "openai-responses"}:
-        # OpenAI-compatible gateways commonly accept a top-level reasoning_effort; many
-        # ignore unknown params, so this is safe to send when thinking is on.
-        if settings.thinking_enabled and settings.reasoning_effort:
-            payload["reasoning_effort"] = settings.reasoning_effort
+        payload["thinking"] = {"type": "enabled" if enabled else "disabled"}
+        if enabled and effort:
+            payload["reasoning_effort"] = effort
+    elif fmt == "openai":
+        # OpenAI chat completions (o-series / gpt-5): top-level reasoning_effort.
+        if enabled and effort:
+            payload["reasoning_effort"] = effort
+    elif fmt == "openai-responses":
+        # OpenAI Responses API wants the nested shape reasoning:{effort}. This is what
+        # Codex sends; top-level reasoning_effort is silently ignored here.
+        if enabled and effort:
+            payload["reasoning"] = {"effort": effort}
+    elif fmt == "anthropic":
+        # Anthropic extended thinking: thinking:{type:enabled, budget_tokens:N}, budget
+        # must be >=1024 and strictly less than max_tokens.
+        if enabled and effort:
+            max_tokens = int(payload.get("max_tokens") or 0)
+            budget = _effort_budget_tokens(effort)
+            if max_tokens:
+                budget = min(budget, max_tokens - 1)
+            if budget >= 1024:
+                payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
+    elif fmt == "gemini":
+        # Gemini 2.5 thinking: generationConfig.thinkingConfig.thinkingBudget.
+        gen = payload.setdefault("generationConfig", {})
+        if enabled and effort:
+            gen["thinkingConfig"] = {"thinkingBudget": _effort_budget_tokens(effort), "includeThoughts": False}
+
