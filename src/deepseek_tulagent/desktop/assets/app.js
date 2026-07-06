@@ -120,7 +120,12 @@ function installDemoApi() {
 window.DeepSeekDesktop = {
   onNativeEvent(message) {
     const { event, payload } = message;
+    // after a user cancel, ignore this turn's late stream/tool events until it ends
+    if (state.suppressStream && event !== "turn:done" && event !== "turn:cancelled" && event !== "turn:error" && event !== "turn:start") {
+      return;
+    }
     if (event === "turn:start") {
+      state.suppressStream = false;
       setRunning(true);
       state.stickToBottom = true;
       setSaveState("running", "运行中", "正在执行工具和模型");
@@ -171,6 +176,8 @@ window.DeepSeekDesktop = {
     if (event === "turn:done") {
       state.currentAssistant = null;
       state.currentTool = null;
+      const wasSuppressed = state.suppressStream;
+      state.suppressStream = false;
       setRunning(false);
       dismissApproval();
       refreshSessions();
@@ -178,32 +185,35 @@ window.DeepSeekDesktop = {
       state.currentSessionId = sid;
       if (state.boot) state.boot.sessionId = sid;
       setText("sessionState", sid ? sid.slice(0, 8) : "新会话");
-      setSaveState("saved", "已保存", sid || "未保存");
+      if (!wasSuppressed) setSaveState("saved", "已保存", sid || "未保存");
       markMessageActions();
-      // if this turn was a retry, attach the ‹ i/n › version pager to the new answer
-      const assistants = $("messages").querySelectorAll(".message.assistant");
-      if (assistants.length) attachVersionPager(assistants[assistants.length - 1]);
+      // if this turn was a retry, attach the ‹ i/n › version pager to the retried
+      // USER message (Codex-style: versions live on your message, not the reply)
+      if (!wasSuppressed) attachVersionPager();
     }
     if (event === "turn:error") {
       state.currentAssistant = null;
       state.currentTool = null;
+      state.suppressStream = false;
       setRunning(false);
       dismissApproval();
       addEvent("error", "错误", payload.error + "\n\n" + payload.trace);
       setSaveState("error", "出错", "查看事件流");
     }
     if (event === "turn:cancel") {
-      addEvent("event", "取消请求", payload.message || "");
       dismissApproval();
-      setSaveState("running", "取消中", "等待当前调用返回");
     }
     if (event === "turn:cancelled") {
       state.currentAssistant = null;
       state.currentTool = null;
+      const wasSuppressed = state.suppressStream;
+      state.suppressStream = false;
       setRunning(false);
       dismissApproval();
-      addEvent("done", "已取消", payload.message || "");
-      setSaveState("idle", "已取消", state.boot?.sessionId || "未保存");
+      if (!wasSuppressed) {  // only if not already handled by the instant-cancel path
+        addEvent("done", "已取消", payload.message || "");
+        setSaveState("idle", "已取消", state.currentSessionId || "未保存");
+      }
     }
   }
 };
@@ -794,7 +804,15 @@ $("prompt").addEventListener("keydown", (event) => {
 });
 
 $("cancel").onclick = async () => {
-  await window.pywebview.api.cancel();
+  // respond instantly: free the UI now, ignore late events from this turn, let the
+  // backend wind down the in-flight request/tool in the background
+  state.suppressStream = true;
+  setRunning(false);
+  setSaveState("idle", "已中断", state.currentSessionId || "未保存");
+  addEvent("done", "已中断", "已停止当前回复");
+  state.currentAssistant = null;
+  state.currentTool = null;
+  try { await window.pywebview.api.cancel(); } catch (_) {}
 };
 
 ["thinking", "mode"].forEach((id) => $(id).addEventListener("change", updateRuntime));
@@ -847,6 +865,8 @@ $("newSession").onclick = async () => {
   await window.pywebview.api.new_session();
   state.currentAssistant = null;
   state.currentTool = null;
+  state.currentSessionId = "";
+  if (state.boot) state.boot.sessionId = null;
   state.events = 0;
   state.stickToBottom = true;
   setText("eventCount", "0");
@@ -854,8 +874,12 @@ $("newSession").onclick = async () => {
   setText("eventMirror", "工具、思考和子代理事件会显示在这里。");
   setText("sessionState", "新会话");
   setSaveState("idle", "新会话", "未保存");
+  refreshSessions();
 };
 $("refreshSessions").onclick = refreshSessions;
+// keep the sidebar list fresh without a manual click
+window.addEventListener("focus", () => { if (!state.running) refreshSessions(); });
+setInterval(() => { if (!state.running && !document.hidden) refreshSessions(); }, 8000);
 
 /* ---------- conversation menu (top-right ⋮ — copy ID / rename / branch / new / delete) ---------- */
 function currentSessionId() {
@@ -1065,13 +1089,21 @@ function removeTurnFrom(msg) {
 
 async function doRetry(src) {
   if (state.running) return;
-  const msg = src != null ? $("messages").querySelector(`.message.assistant[data-src="${src}"]`) : null;
-  const target = msg || [...$("messages").querySelectorAll(".message.assistant")].pop();
+  const box = $("messages");
+  const target = src != null ? box.querySelector(`.message.assistant[data-src="${src}"]`)
+                             : [...box.querySelectorAll(".message.assistant")].pop();
   if (!target) return;
-  // capture the answer being replaced so the version pager (‹ ›) can flip back
+  // snapshot the (userPrompt, answer) pair being replaced so the version pager on the
+  // USER message can flip back to it. Find the user message that starts this turn.
+  let userEl = target.previousElementSibling;
+  while (userEl && !(userEl.classList && userEl.classList.contains("message") && userEl.classList.contains("user"))) userEl = userEl.previousElementSibling;
   let versions = [];
-  try { versions = JSON.parse(target.dataset.versions || "[]"); } catch (_) {}
-  state.pendingVersions = versions.concat([target.querySelector(".bubble").dataset.raw || ""]);
+  try { versions = JSON.parse((userEl && userEl.dataset.versions) || "[]"); } catch (_) {}
+  state.pendingVersions = {
+    userPrompt: userEl ? (userEl.querySelector(".bubble").dataset.raw || "") : "",
+    prior: versions,
+    replacedAnswer: target.querySelector(".bubble").dataset.raw || "",
+  };
   removeTurnFrom(target);
   state.stickToBottom = true;
   setRunning(true);
@@ -1086,34 +1118,48 @@ async function doRetry(src) {
   }
 }
 
-/* Codex-style response versions: after a retry, the newest assistant message gets
-   ‹ i/n › arrows to flip between the regenerated answer and the previous ones. */
-function attachVersionPager(msg) {
-  const versions = state.pendingVersions;
+/* Codex-style response versions: after a retry, the ‹ i/n › arrows live on the USER
+   message; flipping shows that attempt's answer (and, since answers may differ in
+   count, hides/reveals the messages of the newest attempt). Each version stores the
+   answer text so we swap the answer bubble in place. */
+function attachVersionPager() {
+  const snap = state.pendingVersions;
   state.pendingVersions = null;
-  if (!versions || !versions.length || !msg) return;
-  const bubble = msg.querySelector(".bubble");
-  const all = versions.concat([bubble.dataset.raw || ""]);
-  msg.dataset.versions = JSON.stringify(versions);
-  let index = all.length - 1;
-  const pager = document.createElement("span");
-  pager.className = "versionPager";
+  if (!snap) return;
+  const box = $("messages");
+  // the just-produced answer is the last assistant bubble
+  const answerEl = [...box.querySelectorAll(".message.assistant")].pop();
+  if (!answerEl) return;
+  // the user message that owns this turn: nearest preceding user bubble
+  let userEl = answerEl.previousElementSibling;
+  while (userEl && !(userEl.classList && userEl.classList.contains("message") && userEl.classList.contains("user"))) userEl = userEl.previousElementSibling;
+  if (!userEl) return;
+  const answers = (snap.prior || []).concat([answerEl.querySelector(".bubble").dataset.raw || ""]);
+  // prior[] were previous answers; the current answer is the newest
+  userEl.dataset.versions = JSON.stringify(snap.prior || []);
+  let index = answers.length - 1;
+  let pager = userEl.querySelector(".versionPager");
+  if (!pager) {
+    pager = document.createElement("span");
+    pager.className = "versionPager";
+    userEl.querySelector(".msgActions").prepend(pager);
+  }
+  const answerBubble = answerEl.querySelector(".bubble");
   const render = () => {
     pager.innerHTML =
       `<button class="vBtn prev" title="上一版本"${index === 0 ? " disabled" : ""}>${icon("chevron", 12)}</button>` +
-      `<span class="vCount">${index + 1}/${all.length}</span>` +
-      `<button class="vBtn next" title="下一版本"${index === all.length - 1 ? " disabled" : ""}>${icon("chevron", 12)}</button>`;
+      `<span class="vCount">${index + 1}/${answers.length}</span>` +
+      `<button class="vBtn next" title="下一版本"${index === answers.length - 1 ? " disabled" : ""}>${icon("chevron", 12)}</button>`;
   };
-  pager.addEventListener("click", (e) => {
+  pager.onclick = (e) => {
     const btn = e.target.closest(".vBtn");
     if (!btn || btn.disabled) return;
     index += btn.classList.contains("prev") ? -1 : 1;
-    bubble.dataset.raw = all[index];
-    renderBubble(bubble);
+    answerBubble.dataset.raw = answers[index];
+    renderBubble(answerBubble);
     render();
-  });
+  };
   render();
-  msg.querySelector(".msgActions").prepend(pager);
 }
 
 async function doBranch(src) {

@@ -1,5 +1,26 @@
 # 更新记录 / Changelog
 
+## v0.1.70
+
+中文（继续对齐 Codex）：
+
+- **重试的左右箭头挪到「你发的消息」上**：以前 ‹ 1/2 › 放在 AI 回复那排（错的），现在放在**你发送的
+  消息**下方——像 Codex 一样，第 1 版 / 第 2 版切换的是你这条消息的不同回答，翻页时对应的 AI 回复也跟着换。
+- **中断立即生效**：点中断后 UI 立刻停转、恢复输入、标为「已中断」，并忽略这个已取消回合后续迟到的
+  流式/工具事件（后端在后台收尾），不用再干等。
+- **侧栏对话列表自动刷新**：新建对话后、窗口重新聚焦时、以及每 8 秒空闲时自动刷新，往期对话不用再手动点刷新。
+
+English (further Codex alignment):
+
+- **Retry version arrows moved onto YOUR message**: the ‹ 1/2 › pager used to sit on the AI reply (wrong);
+  it now lives under the **message you sent** — like Codex, it flips between the different answers to that
+  message, swapping the reply in place.
+- **Instant interrupt**: clicking stop frees the UI immediately (spinner off, input restored, marked
+  "已中断") and ignores this cancelled turn's late stream/tool events while the backend winds down — no
+  more waiting.
+- **Sidebar conversation list auto-refreshes**: after creating a conversation, on window focus, and every
+  8s while idle — past conversations no longer need a manual refresh.
+
 ## v0.1.69
 
 中文（继续对齐 Codex）：
