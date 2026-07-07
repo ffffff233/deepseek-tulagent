@@ -323,6 +323,35 @@ pre.code code { display: block; padding: 12px 14px; font-family: var(--mono); fo
 
 /* ---------- composer：单张浮起卡片 ---------- */
 .composer { flex-shrink: 0; padding: 8px 24px 16px; display: flex; flex-direction: column; gap: 8px; max-width: 808px; width: 100%; margin: 0 auto; }
+.contextBadge {
+  --ctx: 0deg;
+  position: fixed;
+  right: 22px;
+  bottom: 18px;
+  z-index: 45;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 126px;
+  padding: 7px 10px 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--elevated) 88%, transparent);
+  color: var(--text-3);
+  box-shadow: 0 10px 32px rgba(0,0,0,.32);
+  backdrop-filter: blur(14px);
+  cursor: default;
+}
+.ctxRing { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: conic-gradient(var(--ok) var(--ctx), var(--line-heavy) 0); }
+.ctxRing i { width: 14px; height: 14px; border-radius: 50%; background: var(--elevated); box-shadow: inset 0 0 0 1px var(--line); }
+.ctxText { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.05; }
+.ctxText strong { font-family: var(--mono); font-size: 11.5px; font-weight: 600; color: var(--text-2); }
+.ctxText small { margin-top: 3px; font-family: var(--mono); font-size: 10px; color: var(--text-4); }
+.contextBadge.warn .ctxRing { background: conic-gradient(var(--warn) var(--ctx), var(--line-heavy) 0); }
+.contextBadge.danger .ctxRing { background: conic-gradient(var(--danger) var(--ctx), var(--line-heavy) 0); }
+.contextBadge.active .ctxRing { background: conic-gradient(var(--link) 0 90deg, var(--line-heavy) 0); animation: ctxSpin 1.1s linear infinite; }
+.contextBadge.active .ctxText strong { color: var(--link); }
+@keyframes ctxSpin { to { transform: rotate(360deg); } }
 .attachments { display: flex; flex-wrap: wrap; gap: 6px; }
 .attachments:empty { display: none; }
 .chip { background: var(--elevated); border: 1px solid var(--line); color: var(--text-2); border-radius: 999px; padding: 3px 6px 3px 11px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }

@@ -7,12 +7,20 @@
 - **修复：子代理默认被降级到 `plan` 导致 shell 被禁用**。`delegate_agent` 现在在未显式指定 `mode` 时继承父会话权限；父会话是 `root/yolo` 时，子代理也具备对应 shell/write/network 能力，不会再误报“受到 shell 策略限制”。
 - **新增：子代理可单独设置权限和思考档位**。`delegate_agent` 支持 `mode`/`permission(s)` 和 `thinking`/`think`，也支持 `agents=[...]` 一次派遣多个子代理；每个子代理都可单独指定 `mode`、`thinking`、`max_rounds`。`mode:"fast"` 这类旧写法仍兼容为 thinking 档位。
 - **调整：工具前置叙述不再显示复制/重试/分支按钮**。中间态消息不是最终回复，不再出现额外 Copy 按钮，也减少工具卡片前的动作行空隙。
+- **新增：桌面右下角上下文/缓存显示**。显示当前估算 token、模型上下文窗口、自动压缩阈值、缓存估算；手动/自动压缩和运行中状态会同步更新。
+- **更新：模型上下文窗口识别覆盖最新国际和国内主流模型**。支持从模型名解析 `32k/128k/200k/256k/1m`，并补充 GPT-5.x、Claude 5/4.x、Gemini 3/2.5、DeepSeek V4、Qwen3.7/3.6、Kimi K2.6、GLM-5.2/5.1/4.7、MiniMax M3/M2.x、Doubao、Hunyuan、ERNIE、Yi、Baichuan、InternLM、StepFun 等映射。
+- **优化：桌面端会话重放和事件缓存提高**。恢复对话时最多重放 320 条可见消息，事件镜像保留 600 行，减少长对话切换后的上下文视图丢失感。
+- **同步：包版本和 README 安装链接更新到 `v0.1.90`**。
 
 English:
 
 - **Fixed: delegated subagents defaulted to `plan`, disabling shell access**. `delegate_agent` now inherits the parent permission mode when `mode` is omitted; a parent running in `root/yolo` delegates subagents with matching shell/write/network capability instead of triggering a false shell-policy limitation.
 - **Added: per-subagent permission and reasoning controls**. `delegate_agent` accepts `mode`/`permission(s)` and `thinking`/`think`, including `agents=[...]` batch delegation; each subagent can set its own `mode`, `thinking`, and `max_rounds`. Legacy `mode:"fast"` style thinking selection remains compatible.
 - **Changed: pre-tool narration no longer shows copy/retry/branch actions**. Intermediate narration is not a final answer, so it no longer creates an extra Copy button or action-row gap before the tool card.
+- **Added: desktop bottom-right context/cache indicator**. It shows estimated tokens, model context window, auto-compaction threshold, and cache estimate; running and compaction states update live.
+- **Updated: model context-window detection for current global and China model families**. Model names with `32k/128k/200k/256k/1m` are parsed directly, with mappings for GPT-5.x, Claude 5/4.x, Gemini 3/2.5, DeepSeek V4, Qwen3.7/3.6, Kimi K2.6, GLM-5.2/5.1/4.7, MiniMax M3/M2.x, Doubao, Hunyuan, ERNIE, Yi, Baichuan, InternLM, StepFun, and more.
+- **Improved: desktop transcript/event cache limits**. Resumed conversations now replay up to 320 visible messages and the event mirror keeps 600 lines.
+- **Synced: package version and README install links are now `v0.1.90`**.
 
 ## v0.1.89
 

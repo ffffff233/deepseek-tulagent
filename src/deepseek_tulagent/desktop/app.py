@@ -10,7 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from .. import __version__
-from ..agent import TuLAgent, compact_context_messages, estimate_message_tokens, summarize_arguments
+from ..agent import TuLAgent, compact_context_messages, context_window_info, estimate_message_tokens, summarize_arguments
 from ..config import Settings, get_settings, merge_file_config
 from ..messages import Message
 from ..policy import ThinkingMode
@@ -97,6 +97,7 @@ class DesktopApi:
                 "gemini": "Google Gemini",
                 "anthropic": "Anthropic Claude",
             },
+            "context": self.context_status(),
         }
 
     def configure(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -221,7 +222,31 @@ class DesktopApi:
             self.session.messages, self.settings.model, force=True, client=DeepSeekClient(self.settings)
         )
         after = estimate_message_tokens(self.session.messages)
-        return {"ok": True, "before": before, "after": after, "messages": serialize_messages(self.session.messages)}
+        return {"ok": True, "before": before, "after": after, "messages": serialize_messages(self.session.messages), "context": self.context_status()}
+
+    def context_status(self) -> dict[str, Any]:
+        messages = self.session.messages if self.session else []
+        tokens = estimate_message_tokens(messages) if messages else 0
+        cached_tokens = estimate_cached_context_tokens(messages)
+        info = context_window_info(self.settings.model)
+        limit = int(info["tokens"])
+        threshold = int(limit * 0.92)
+        percent = round((tokens / limit * 100), 1) if limit else 0
+        cache_percent = round((cached_tokens / tokens * 100), 1) if tokens else 0
+        return {
+            "ok": True,
+            "tokens": tokens,
+            "cachedTokens": cached_tokens,
+            "cachePercent": cache_percent,
+            "limit": limit,
+            "threshold": threshold,
+            "percent": percent,
+            "source": info.get("source", "fallback"),
+            "model": self.settings.model,
+            "autoCompact": True,
+            "nearLimit": tokens >= int(limit * 0.75),
+            "needsCompact": tokens >= threshold,
+        }
 
     def save_upload(self, file: dict[str, Any]) -> dict[str, Any]:
         name = safe_upload_name(str(file.get("name") or "upload.bin"))
@@ -519,7 +544,24 @@ def serialize_messages(messages: list[Message]) -> list[dict[str, Any]]:
                 continue
         pending_tool = None
         visible.append({"role": message.role, "content": content, "srcIndex": idx})
-    return visible[-120:]
+    return visible[-320:]
+
+
+def estimate_cached_context_tokens(messages: list[Message]) -> int:
+    if not messages:
+        return 0
+    cacheable: list[Message] = []
+    for message in messages:
+        if message.role == "system":
+            cacheable.append(message)
+            continue
+        if message.content.startswith(("TOOL_RESULT", "SUBAGENT_RESULT")):
+            continue
+        if message.role in {"user", "assistant"} and len(message.content) >= 800:
+            cacheable.append(message)
+    # Recent messages are likely to stay stable across immediate retries/tool rounds.
+    cacheable.extend(m for m in messages[-12:] if m not in cacheable and m.role in {"user", "assistant"})
+    return min(estimate_message_tokens(cacheable), estimate_message_tokens(messages))
 
 
 def ensure_session_title(workspace: Path, session: Session) -> None:

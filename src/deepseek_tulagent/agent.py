@@ -945,14 +945,73 @@ def summarize_messages_with_model(
 
 
 def context_window_tokens(model: str) -> int:
+    return context_window_info(model)["tokens"]
+
+
+def context_window_info(model: str) -> dict[str, Any]:
     lowered = model.lower()
-    if "v4" in lowered:
-        return 1_000_000
-    if "pro" in lowered:
-        return 128_000
-    if "flash" in lowered:
-        return 128_000
-    return 64_000
+    explicit = explicit_context_window_tokens(lowered)
+    if explicit:
+        return {"tokens": explicit, "source": "model-name"}
+
+    # Provider/model family heuristics. Third-party OpenAI-compatible endpoints often
+    # only expose a model string, so prefer recognizable current families and fall back
+    # conservatively when the provider does not publish metadata via /models.
+    rules: list[tuple[tuple[str, ...], int, str]] = [
+        (("gpt-5.5", "gpt-5.4", "gpt-5 ", "gpt-5-", "gpt-5.", "gpt-5"), 1_000_000, "openai"),
+        (("gpt-5.4-mini", "gpt-5-mini", "gpt-5.4-nano", "gpt-5-nano"), 400_000, "openai"),
+        (("gpt-4.1", "gpt-4.5", "o3", "o4"), 1_000_000, "openai"),
+        (("gpt-4o", "chatgpt-4o", "gpt-4-turbo"), 128_000, "openai"),
+        (("claude-fable-5", "claude-mythos-5", "claude-opus-4", "claude-sonnet-5", "claude-sonnet-4"), 1_000_000, "anthropic"),
+        (("claude-haiku-4", "claude-3-7", "claude-3.7", "claude-3-5", "claude-3.5", "claude-3-opus", "claude-3-sonnet"), 200_000, "anthropic"),
+        (("gemini-3", "gemini-2.5", "gemini-2.0", "gemini-pro-latest", "gemini-flash-latest"), 1_000_000, "google"),
+        (("gemini-1.5-pro",), 2_000_000, "google"),
+        (("gemini-1.5",), 1_000_000, "google"),
+        (("deepseek-v4",), 1_000_000, "deepseek"),
+        (("deepseek-chat", "deepseek-reasoner"), 1_000_000, "deepseek"),
+        (("deepseek-v3.1", "deepseek-v3-1", "deepseek-r1", "deepseek-v3"), 128_000, "deepseek"),
+        (("qwen3.7", "qwen3-7", "qwen3.6", "qwen3-6", "qwen3.5", "qwen3-5", "qwen3-max", "qwen3-plus", "qwen-max", "qwen-plus", "qwen-long"), 1_000_000, "qwen"),
+        (("qwen3-coder", "qwen3-turbo", "qwen3", "qwen-3", "qwen2.5", "qwen-2.5"), 128_000, "qwen"),
+        (("kimi-k2.7", "kimi-k2-7", "kimi-k2.6", "kimi-k2-6"), 256_000, "moonshot"),
+        (("kimi-k2", "kimi-k1.5", "moonshot-v1", "moonshot", "kimi"), 128_000, "moonshot"),
+        (("glm-5.2", "glm-5-2"), 1_000_000, "zhipu"),
+        (("glm-5.1", "glm-5-1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4-7", "glm-4.6", "glm-4-6"), 200_000, "zhipu"),
+        (("glm-4.5", "glm-4-plus", "glm-4-air", "glm-4", "chatglm", "zhipu"), 128_000, "zhipu"),
+        (("minimax-m3",), 1_000_000, "minimax"),
+        (("minimax-m2.7", "minimax-m2.5", "minimax-m2.1", "minimax-m2", "abab6.5", "abab6", "minimax"), 204_800, "minimax"),
+        (("doubao-1.6", "doubao-1.5", "doubao-pro", "doubao-seed", "doubao", "豆包"), 256_000, "volcengine"),
+        (("hunyuan-turbos", "hunyuan-turbo", "hunyuan-large", "hunyuan", "混元"), 256_000, "tencent"),
+        (("ernie-4.5", "ernie-x1", "ernie-speed", "ernie", "文心", "千帆"), 128_000, "baidu"),
+        (("yi-large", "yi-lightning", "yi-1.5", "yi-", "零一"), 200_000, "01ai"),
+        (("baichuan4", "baichuan3", "baichuan", "百川"), 128_000, "baichuan"),
+        (("internlm3", "internlm2.5", "internlm", "书生"), 200_000, "internlm"),
+        (("step-2", "step-1", "stepfun", "阶跃"), 128_000, "stepfun"),
+        (("sensechat", "日日新", "商汤"), 128_000, "sense"),
+        (("spark-max", "spark-pro", "讯飞星火", "xinghuo"), 128_000, "iflytek"),
+        (("llama-4", "llama4", "llama-3.3", "llama-3.1"), 128_000, "llama"),
+        (("mistral-large", "pixtral-large", "codestral"), 128_000, "mistral"),
+        (("grok-4", "grok-3", "grok-2"), 128_000, "xai"),
+    ]
+    for needles, tokens, source in rules:
+        if any(needle in lowered for needle in needles):
+            return {"tokens": tokens, "source": source}
+    return {"tokens": 64_000, "source": "fallback"}
+
+
+def explicit_context_window_tokens(model: str) -> int | None:
+    patterns = [
+        r"(?<!\d)(\d+(?:\.\d+)?)\s*(m|k)\b",
+        r"(?:context|ctx|window)[-_ ]?(\d+(?:\.\d+)?)\s*(m|k)\b",
+        r"(\d+(?:\.\d+)?)\s*(m|k)[-_ ]?(?:context|ctx|window)",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, model, flags=re.IGNORECASE):
+            number = float(match.group(1))
+            unit = match.group(2).lower()
+            tokens = int(number * (1_000_000 if unit == "m" else 1_000))
+            if 4_000 <= tokens <= 10_000_000:
+                return tokens
+    return None
 
 
 def estimate_message_tokens(messages: list[Message]) -> int:

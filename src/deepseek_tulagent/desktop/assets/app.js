@@ -70,6 +70,7 @@ function installDemoApi() {
         },
         compatFormats: ["deepseek", "openai", "openai-responses", "gemini", "anthropic"],
         formatLabels: { deepseek: "DeepSeek", openai: "OpenAI (Chat)", "openai-responses": "OpenAI (Responses·最新)", gemini: "Google Gemini", anthropic: "Anthropic Claude" },
+        context: { ok: true, tokens: 4200, cachedTokens: 2800, cachePercent: 66.7, limit: 1000000, threshold: 920000, percent: 0.4, source: "deepseek", model: "deepseek-v4-flash", autoCompact: true },
         skills: [
           { name: "repo-debug", description: "调试仓库时先运行测试" },
           { name: "code-review", description: "审阅改动，找出缺陷" },
@@ -89,7 +90,8 @@ function installDemoApi() {
       set_runtime: async (data) => ({ ...(await window.pywebview.api.boot()), model: data.model, mode: data.mode, thinking: data.thinking }),
       configure: async () => window.pywebview.api.boot(),
       new_session: async () => ({ ok: true }),
-      compact: async () => ({ ok: true, before: 12000, after: 4200, messages: [{ role: "assistant", content: "上下文已压缩，保留最近消息。" }] }),
+      compact: async () => ({ ok: true, before: 12000, after: 4200, context: { ok: true, tokens: 4200, cachedTokens: 2800, cachePercent: 66.7, limit: 1000000, threshold: 920000, percent: 0.4, source: "deepseek", model: "deepseek-v4-flash", autoCompact: true }, messages: [{ role: "assistant", content: "上下文已压缩，保留最近消息。" }] }),
+      context_status: async () => ({ ok: true, tokens: 4200, cachedTokens: 2800, cachePercent: 66.7, limit: 1000000, threshold: 920000, percent: 0.4, source: "deepseek", model: $("model")?.value || "deepseek-v4-flash", autoCompact: true }),
       save_upload: async (file) => ({ ok: true, name: file.name, path: `/uploads/${file.name}`, size: 128 }),
       send: async ({ prompt }) => {
         const D = window.DeepSeekDesktop;
@@ -154,6 +156,7 @@ window.DeepSeekDesktop = {
       return;
     }
     if (event === "turn:start") {
+      updateContextBadge({ status: "active", label: "运行中" });
       if (tid) state.activeTurnId = tid;
       state.pendingOutbound = false;
       if (sid) {
@@ -233,6 +236,7 @@ window.DeepSeekDesktop = {
       } else {
         addEvent(payload.kind, payload.name, payload.detail);
       }
+      refreshContextBadge().catch(() => {});
     }
     if (event === "approval:request") {
       hideThinking();
@@ -258,6 +262,7 @@ window.DeepSeekDesktop = {
       // if this turn was a retry, attach the ‹ i/n › version pager to the retried
       // USER message (Codex-style: versions live on your message, not the reply)
       if (!wasSuppressed) attachVersionPager();
+      refreshContextBadge().catch(() => {});
     }
     if (event === "turn:error") {
       hideThinking();
@@ -299,6 +304,7 @@ async function boot() {
   $("workspace").textContent = state.boot.workspace || "";
   setText("apiState", state.boot.apiKeySet ? "已配置" : "未配置");
   $("topRuntime").textContent = `${state.boot.model} · ${state.boot.mode}/${state.boot.thinking}`;
+  updateContextBadge(state.boot.context || null);
   setSaveState("idle", "新会话", state.boot.sessionId || "未保存");
   setRunning(Boolean(state.boot.running));
   const labels = state.boot.formatLabels || {};
@@ -314,6 +320,7 @@ async function boot() {
   // here made every load wait on a slow GET /models round-trip.
   refreshModels().catch(() => {});
   refreshSessions().catch(() => {});
+  refreshContextBadge().catch(() => {});
 }
 
 // pywebview may attach method proxies incrementally, so a method can be missing for a
@@ -346,6 +353,45 @@ function updateModeHelp() {
   if (!help) return;
   const descriptions = state.boot?.modeDescriptions || {};
   help.textContent = descriptions[$("mode").value] || "当前权限模式";
+}
+
+function fmtTokens(n) {
+  n = Number(n || 0);
+  if (n >= 1000000) return `${(n / 1000000).toFixed(n >= 10000000 ? 0 : 1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}K`;
+  return String(Math.round(n));
+}
+
+function updateContextBadge(ctx) {
+  const badge = $("contextBadge");
+  if (!badge) return;
+  if (!ctx || ctx.ok === false) {
+    badge.className = "contextBadge idle";
+    badge.style.setProperty("--ctx", "0deg");
+    setText("ctxPct", "0%");
+    setText("ctxDetail", "上下文");
+    return;
+  }
+  if (ctx.status === "active") {
+    badge.className = "contextBadge active";
+    setText("ctxPct", ctx.label || "运行中");
+    setText("ctxDetail", "统计中");
+    return;
+  }
+  const pct = Math.max(0, Math.min(100, Number(ctx.percent || 0)));
+  const level = ctx.needsCompact || pct >= 92 ? "danger" : (ctx.nearLimit || pct >= 75 ? "warn" : "ok");
+  badge.className = `contextBadge ${level}`;
+  badge.style.setProperty("--ctx", `${pct * 3.6}deg`);
+  setText("ctxPct", `${pct.toFixed(pct >= 10 ? 0 : 1)}%`);
+  setText("ctxDetail", `${fmtTokens(ctx.tokens)} / ${fmtTokens(ctx.limit)} · cache ${fmtTokens(ctx.cachedTokens)}`);
+  badge.title = `上下文 ${fmtTokens(ctx.tokens)} / ${fmtTokens(ctx.limit)} (${ctx.percent}%)\n缓存估算：${fmtTokens(ctx.cachedTokens)} (${ctx.cachePercent || 0}%)\n模型：${ctx.model || ""}\n窗口来源：${ctx.source || "fallback"}\n自动压缩阈值：${fmtTokens(ctx.threshold)}`;
+}
+
+async function refreshContextBadge() {
+  try {
+    const fn = await apiMethod("context_status", 2000);
+    updateContextBadge(await fn());
+  } catch (_) {}
 }
 
 function setSaveState(kind, label, detail) {
@@ -651,7 +697,7 @@ function mirror(line) {
   const def = "工具、思考和子代理事件会显示在这里。";
   const current = box.textContent === def ? "" : box.textContent;
   const lines = (current ? current + "\n" : "").concat(line).split("\n");
-  box.textContent = lines.slice(-300).join("\n");
+  box.textContent = lines.slice(-600).join("\n");
   box.scrollTop = box.scrollHeight;
 }
 
@@ -1319,6 +1365,7 @@ convMenu.addEventListener("click", async (e) => {
   }
 });
 $("manualCompact").onclick = async () => {
+  updateContextBadge({ status: "active", label: "压缩中" });
   const result = await window.pywebview.api.compact();
   if (!result.ok) {
     addEvent("compact", "手动压缩", result.error || "no active session");
@@ -1327,6 +1374,7 @@ $("manualCompact").onclick = async () => {
   $("messages").innerHTML = "";
   result.messages.forEach(replayMessage);
   addEvent("compact", "手动压缩", `${result.before} -> ${result.after} estimated tokens`);
+  updateContextBadge(result.context || null);
 };
 $("attach").onclick = () => $("fileInput").click();
 $("fileInput").onchange = async (event) => {

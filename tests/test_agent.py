@@ -8,7 +8,7 @@ import re
 import subprocess
 import zipfile
 
-from deepseek_tulagent.agent import RECOVER_AFTER_TOOL_FAILURE_PROMPT, TuLAgent, compact_context_messages, filter_internal_automation_messages, is_question_mark_only, normalize_subagent_mode_and_thinking, normalize_subagent_specs, normalize_user_question, parse_tool_call, plainify_assistant_text, promises_more_work, trim_tool_content, tool_result_message
+from deepseek_tulagent.agent import RECOVER_AFTER_TOOL_FAILURE_PROMPT, TuLAgent, compact_context_messages, context_window_info, context_window_tokens, filter_internal_automation_messages, is_question_mark_only, normalize_subagent_mode_and_thinking, normalize_subagent_specs, normalize_user_question, parse_tool_call, plainify_assistant_text, promises_more_work, trim_tool_content, tool_result_message
 from deepseek_tulagent.cli import main
 from deepseek_tulagent.config import Settings, get_settings, merge_file_config, resolve_model
 from deepseek_tulagent.messages import Message
@@ -1211,6 +1211,30 @@ def test_desktop_manual_compact(monkeypatch, tmp_path: Path):
     assert len(api.session.messages) < 21
     assert "handoff summary" in api.session.messages[1].content
     assert isinstance(result["messages"], list)
+    assert result["context"]["tokens"] == result["after"]
+
+
+def test_desktop_context_status_reports_usage(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.messages import Message
+    from deepseek_tulagent.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    api.settings = api.settings.with_runtime(model="custom-32k")
+    api.session = Session(tmp_path, session_id="s")
+    api.session.messages = [Message("system", "system"), Message("user", "x" * 8000)]
+
+    status = api.context_status()
+    assert status["ok"] is True
+    assert status["tokens"] > 1000
+    assert status["cachedTokens"] > 0
+    assert status["cachePercent"] > 0
+    assert status["limit"] == 32_000
+    assert status["threshold"] == int(32_000 * 0.92)
+    assert 0 < status["percent"] < 100
+    assert status["source"] == "model-name"
 
 
 def test_desktop_turn_events_stay_bound_to_origin_session(monkeypatch, tmp_path: Path):
@@ -1784,6 +1808,24 @@ def test_context_compaction_keeps_recent_messages(monkeypatch):
     assert len(compacted) < len(messages)
     assert "handoff summary" in compacted[1].content
     assert "old 19" in compacted[-1].content
+
+
+def test_context_window_info_handles_current_global_and_china_models():
+    assert context_window_tokens("custom-32k") == 32_000
+    assert context_window_tokens("context-1m-2025-08-07") == 1_000_000
+    assert context_window_info("gpt-5.4")["tokens"] == 1_000_000
+    assert context_window_info("gpt-4o")["tokens"] == 128_000
+    assert context_window_info("claude-sonnet-5")["tokens"] == 1_000_000
+    assert context_window_info("gemini-2.5-pro")["tokens"] == 1_000_000
+    assert context_window_info("deepseek-v4-flash")["tokens"] == 1_000_000
+    assert context_window_info("qwen3.7-plus")["tokens"] == 1_000_000
+    assert context_window_info("kimi-k2.6")["tokens"] == 256_000
+    assert context_window_info("glm-5.2")["tokens"] == 1_000_000
+    assert context_window_info("glm-4.7")["tokens"] == 200_000
+    assert context_window_info("glm-4.6")["tokens"] == 200_000
+    assert context_window_info("minimax-m3")["tokens"] == 1_000_000
+    assert context_window_info("doubao-1.6-pro-256k")["tokens"] == 256_000
+    assert context_window_info("unknown-model")["source"] == "fallback"
 
 
 def test_context_compaction_uses_model_handoff_summary(monkeypatch):
