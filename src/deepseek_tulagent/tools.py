@@ -250,10 +250,11 @@ class ToolRegistry:
             capture_output=True,
             timeout=int(arguments.get("timeout", 60)),
         )
-        output = completed.stdout
-        if completed.stderr:
-            output += "\n[stderr]\n" + completed.stderr
-        return ToolResult(completed.returncode == 0, output[-30000:])
+        output = completed.stdout or ""
+        stderr = completed.stderr or ""
+        if stderr:
+            output += "\n[stderr]\n" + stderr
+        return ToolResult(completed.returncode == 0, (output.strip() or "clean")[-30000:])
 
     def apply_patch(self, arguments: dict[str, Any]) -> ToolResult:
         if not self.allow_write:

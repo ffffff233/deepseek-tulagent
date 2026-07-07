@@ -1,5 +1,21 @@
 # 更新记录 / Changelog
 
+## v0.1.91
+
+中文：
+
+- **修复：`run_shell` 在空 stdout/stderr 下崩溃**。部分 Windows/打包环境或异常 subprocess 返回会给出 `None` 输出；现在统一归一化为空字符串，空结果显示 `clean`，不再触发 `NoneType is not subscriptable`。
+- **优化：桌面错误展示改为用户可读摘要**。运行失败时默认显示短摘要，不再直接把整段 Python traceback 糊到事件流前面；调试详情仍保留在事件里。
+- **优化：上游错误解析兼容更多网关格式**。除标准 `error.message` 外，新增支持 `detail[]`、`detail.msg`、`msg`、`error_description` 等常见 OpenAI-compatible 错误结构。
+- **同步：包版本和 README 安装链接更新到 `v0.1.91`**。
+
+English:
+
+- **Fixed: `run_shell` crashed when stdout/stderr were `None`**. Some Windows/packaged subprocess paths can return `None`; outputs are now normalized to strings and empty success output reports `clean`.
+- **Improved: desktop errors now show a readable summary first**. Failures no longer front-load a full Python traceback in the event stream; debug details remain available in the event body.
+- **Improved: upstream error extraction supports more gateway shapes**. In addition to standard `error.message`, compatible `detail[]`, `detail.msg`, `msg`, and `error_description` payloads are summarized.
+- **Synced: package version and README install links are now `v0.1.91`**.
+
 ## v0.1.90
 
 中文：

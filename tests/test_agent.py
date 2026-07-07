@@ -13,7 +13,7 @@ from deepseek_tulagent.cli import main
 from deepseek_tulagent.config import Settings, get_settings, merge_file_config, resolve_model
 from deepseek_tulagent.messages import Message
 from deepseek_tulagent.policy import ApprovalPolicy, ThinkingMode
-from deepseek_tulagent.provider import UsageStats, apply_thinking_payload, parse_usage_stats
+from deepseek_tulagent.provider import UsageStats, apply_thinking_payload, extract_error_message, parse_usage_stats
 from deepseek_tulagent.session import SessionStore
 from deepseek_tulagent.skills import SkillStore
 from deepseek_tulagent.tui import ChatTui, TuiState
@@ -118,6 +118,12 @@ def test_parse_provider_usage_stats():
     assert gemini.input_tokens == 70
     assert gemini.output_tokens == 8
     assert gemini.total_tokens == 78
+
+
+def test_extract_provider_error_message_from_compatible_shapes():
+    assert extract_error_message('{"error":{"message":"bad request","code":"invalid"}}') == "bad request (invalid)"
+    assert extract_error_message('{"detail":[{"msg":"field required"},{"message":"bad type"}]}') == "field required; bad type"
+    assert extract_error_message('{"error_description":"quota exceeded"}') == "quota exceeded"
 
 
 def test_parse_tool_json_with_trailing_fence_noise():
@@ -946,6 +952,24 @@ def test_run_shell_background_command_starts_service(tmp_path: Path):
     assert "Started test-http" in result.output
     assert (tmp_path / ".deepseek-tulagent" / "services" / "test-http.pid").exists()
     tools.run("stop_service", {"name": "test-http"})
+
+
+def test_run_shell_handles_none_stdout_and_stderr(monkeypatch, tmp_path: Path):
+    def fake_run(*_args, **_kwargs):
+        return type("Completed", (), {"returncode": 0, "stdout": None, "stderr": None})()
+
+    monkeypatch.setattr("deepseek_tulagent.tools.subprocess.run", fake_run)
+    tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
+    result = tools.run("run_shell", {"command": "echo ok"})
+    assert result.ok is True
+    assert result.output == "clean"
+
+
+def test_desktop_error_summary_hides_trace_noise():
+    from deepseek_tulagent.desktop.app import user_error_summary
+
+    assert user_error_summary("API error 400: invalid model") == "上游 API 返回错误：400: invalid model"
+    assert "旧版本处理空输出时崩溃" in user_error_summary("'NoneType' object is not subscriptable")
 
 
 def test_agent_mode_requires_confirmation_for_shell(tmp_path: Path):

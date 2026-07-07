@@ -618,7 +618,26 @@ def extract_error_message(body: str) -> str:
         return f"{message}" + (f" ({code})" if code and message else "")
     if isinstance(err, str):
         return err
-    return str(data.get("message") or "")
+    detail = data.get("detail")
+    if isinstance(detail, list):
+        messages = []
+        for item in detail:
+            if isinstance(item, dict):
+                message = item.get("message") or item.get("msg") or item.get("detail")
+                if message:
+                    messages.append(str(message))
+            elif item:
+                messages.append(str(item))
+        return "; ".join(messages[:3])
+    if isinstance(detail, dict):
+        return str(detail.get("message") or detail.get("msg") or detail.get("detail") or "")
+    if isinstance(detail, str):
+        return detail
+    for key in ("message", "msg", "error_description"):
+        value = data.get(key)
+        if value:
+            return str(value)
+    return ""
 
 
 def _effort_budget_tokens(effort: str | None) -> int:

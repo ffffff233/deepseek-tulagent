@@ -506,9 +506,9 @@ class DesktopApi:
                 if str(exc) == "turn cancelled":
                     emit_turn("turn:cancelled", {"message": "当前回复已取消"})
                 else:
-                    emit_turn("turn:error", {"error": str(exc), "trace": traceback.format_exc(limit=8)})
+                    emit_turn("turn:error", desktop_error_payload(exc))
             except Exception as exc:
-                emit_turn("turn:error", {"error": str(exc), "trace": traceback.format_exc(limit=8)})
+                emit_turn("turn:error", desktop_error_payload(exc))
             finally:
                 self._running = False
                 self._cancel_requested = False
@@ -538,6 +538,25 @@ class DesktopApi:
 def approval_summary(name: str, arguments: dict[str, Any]) -> str:
     text = summarize_arguments(arguments)
     return text[:500] if text else "（无参数）"
+
+
+def desktop_error_payload(exc: BaseException) -> dict[str, str]:
+    error = str(exc).strip() or exc.__class__.__name__
+    summary = user_error_summary(error)
+    return {"error": error, "summary": summary, "trace": traceback.format_exc(limit=8)}
+
+
+def user_error_summary(error: str) -> str:
+    text = " ".join((error or "").strip().split())
+    if not text:
+        return "运行失败，但没有返回具体错误。"
+    if text.startswith("API error "):
+        return "上游 API 返回错误：" + text.removeprefix("API error ").strip()
+    if "上游返回的是网页而不是 API 响应" in text:
+        return text
+    if "NoneType" in text and "not subscriptable" in text:
+        return "工具返回了空输出，旧版本处理空输出时崩溃。请更新到最新版本后重试。"
+    return text[:500]
 
 
 def serialize_messages(messages: list[Message]) -> list[dict[str, Any]]:

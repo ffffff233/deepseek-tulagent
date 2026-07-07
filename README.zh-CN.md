@@ -43,14 +43,14 @@ deepseekTul desktop
 Windows 安装后也可以直接运行：
 
 ```powershell
-py -3 -m pip install --upgrade "deepseek-tulagent[desktop] @ https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.90.tar.gz"
+py -3 -m pip install --upgrade "deepseek-tulagent[desktop] @ https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.91.tar.gz"
 deepseekTulDesktop
 ```
 
 Windows PowerShell 原生安装：
 
 ```powershell
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.90.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.91.tar.gz
 deepseekTul config set --base-url https://api.deepseek.com --api-key sk-你的key --model deepseek-v4-flash
 deepseekTul doctor --live
 deepseekTul
@@ -59,7 +59,7 @@ deepseekTul
 Windows CMD：
 
 ```bat
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.90.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.91.tar.gz
 deepseekTul version
 deepseekTul
 ```
@@ -70,7 +70,7 @@ Windows 原生可以使用 `deepseekTul run`、`config`、`update`、`sessions` 
 如果用户机器上的 `git clone` 因代理、端口写法或 git 配置失败，可以不依赖 git，直接安装 GitHub tag 源码包：
 
 ```bash
-python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.90.tar.gz
+python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.91.tar.gz
 ```
 
 代理环境示例：
@@ -78,7 +78,7 @@ python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/
 ```bash
 export HTTPS_PROXY=http://127.0.0.1:7890
 export HTTP_PROXY=http://127.0.0.1:7890
-python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.90.tar.gz
+python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.91.tar.gz
 ```
 
 Windows PowerShell 代理示例：
@@ -86,7 +86,7 @@ Windows PowerShell 代理示例：
 ```powershell
 $env:HTTPS_PROXY="http://127.0.0.1:7890"
 $env:HTTP_PROXY="http://127.0.0.1:7890"
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.90.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.91.tar.gz
 ```
 
 Windows CMD 代理示例：
@@ -94,7 +94,7 @@ Windows CMD 代理示例：
 ```bat
 set HTTPS_PROXY=http://127.0.0.1:7890
 set HTTP_PROXY=http://127.0.0.1:7890
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.90.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.91.tar.gz
 ```
 
 让 agent 拉取其他 GitHub 仓库时，可以直接说“把 `owner/repo` 拉到 `path`”。它会优先使用 `clone_repo` 工具，自动尝试直连、镜像和 GitHub archive 下载，不会反复手写同一批失败的 `git clone` 命令。全部失败后才会提示你配置 `HTTP_PROXY` / `HTTPS_PROXY` 或 git proxy。

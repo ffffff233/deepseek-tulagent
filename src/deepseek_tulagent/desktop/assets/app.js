@@ -273,8 +273,11 @@ window.DeepSeekDesktop = {
       state.pendingOutbound = false;
       setRunning(false);
       dismissApproval();
-      addEvent("error", "错误", payload.error + "\n\n" + payload.trace);
-      setSaveState("error", "出错", "查看事件流");
+      const summary = payload.summary || payload.error || "运行失败";
+      const detail = payload.trace ? `${summary}\n\n调试详情：\n${payload.trace}` : summary;
+      addEvent("error", "错误", detail);
+      setSaveState("error", "出错", summary);
+      toast(summary);
     }
     if (event === "turn:cancel") {
       dismissApproval();

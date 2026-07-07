@@ -1,6 +1,6 @@
 [project]
 name = "deepseek-tulagent"
-version = "0.1.90"
+version = "0.1.91"
 description = "A lightweight TuL-style coding agent tailored for DeepSeek's OpenAI-compatible API."
 readme = "README.md"
 requires-python = ">=3.11"
