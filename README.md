@@ -54,14 +54,14 @@ deepseekTul desktop
 On Windows after installation:
 
 ```powershell
-py -3 -m pip install --upgrade "deepseek-tulagent[desktop] @ https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.93.tar.gz"
+py -3 -m pip install --upgrade "deepseek-tulagent[desktop] @ https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.94.tar.gz"
 deepseekTulDesktop
 ```
 
 Native Windows PowerShell:
 
 ```powershell
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.93.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.94.tar.gz
 deepseekTul config set --base-url https://api.deepseek.com --api-key sk-... --model deepseek-v4-flash
 deepseekTul doctor --live
 deepseekTul
@@ -70,7 +70,7 @@ deepseekTul
 Windows CMD:
 
 ```bat
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.93.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.94.tar.gz
 deepseekTul version
 deepseekTul
 ```
@@ -81,7 +81,7 @@ The desktop app uses `pywebview` and is suitable for native Windows use.
 If `git clone` is blocked by local proxy/git configuration, install directly from the tagged source tarball instead:
 
 ```bash
-python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.93.tar.gz
+python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.94.tar.gz
 ```
 
 Proxy-compatible examples:
@@ -89,7 +89,7 @@ Proxy-compatible examples:
 ```bash
 export HTTPS_PROXY=http://127.0.0.1:7890
 export HTTP_PROXY=http://127.0.0.1:7890
-python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.93.tar.gz
+python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.94.tar.gz
 ```
 
 Windows PowerShell proxy example:
@@ -97,7 +97,7 @@ Windows PowerShell proxy example:
 ```powershell
 $env:HTTPS_PROXY="http://127.0.0.1:7890"
 $env:HTTP_PROXY="http://127.0.0.1:7890"
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.93.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.94.tar.gz
 ```
 
 Windows CMD proxy example:
@@ -105,7 +105,7 @@ Windows CMD proxy example:
 ```bat
 set HTTPS_PROXY=http://127.0.0.1:7890
 set HTTP_PROXY=http://127.0.0.1:7890
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.93.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.94.tar.gz
 ```
 
 When asking the agent to fetch another GitHub repository, say something like `clone owner/repo into path`. The agent should use `clone_repo`, which tries direct git, mirror URLs, and GitHub archive download before asking you to configure `HTTP_PROXY`, `HTTPS_PROXY`, or git proxy settings.
@@ -361,6 +361,7 @@ Environment variables:
 | `DSTUL_MAX_TOOL_ROUNDS` | `256` | Max tool loop iterations |
 | `DSTUL_MAX_TOKENS` | `8192` | Max model output tokens |
 | `DSTUL_REQUEST_TIMEOUT` | `180` | DeepSeek request timeout seconds |
+| `DSTUL_SEARCH_URL` | auto-detect localhost | Local search engine endpoint, e.g. SearXNG `/search` or YaCy `/yacysearch.json` |
 
 Model aliases:
 
@@ -381,7 +382,7 @@ Available tools:
 
 - `list_files`: list workspace files with noisy directories skipped
 - `search_text`: search text inside workspace files
-- `web_search`: search the web and return result snippets
+- `web_search`: query a local SearXNG/YaCy-compatible search engine; supports `search_url`, `language`, `categories`, `time_range`, and `fetch_pages`
 - `git_status`: show short git status
 - `run_shell`: run a command in the workspace
 - `read_file`: read a UTF-8 text file

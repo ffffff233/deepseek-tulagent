@@ -34,7 +34,7 @@ Available tools:
 - apply_patch(patch, timeout?)
 - download_url(url, path, max_bytes?, timeout?)
 - clone_repo(repo or url, path, branch?, timeout?)
-- web_search(query, max_results?, timeout?)
+- web_search(query, max_results?, timeout?, search_url?, language?, categories?, time_range?, fetch_pages?): query the configured local search engine (SearXNG/YaCy-compatible JSON) and return result snippets; set fetch_pages to enrich top results with page text
 - start_service(name, command)
 - stop_service(name)
 - service_status(name)
@@ -56,7 +56,7 @@ Rules:
 - For text search, prefer a narrow path and small max_matches. Broad searches can time out.
 - Use delegate_agent proactively for multi-branch investigation, independent review, verification, research, or long workflows that can be split into focused subtasks. For multiple independent tasks, call delegate_agent once with an agents array (up to 8 subagents). Good subagent names: researcher, reviewer, verifier, implementer, debugger.
 - When delegating, give each subagent a narrow task and ask for evidence plus a recommended next step. Set mode/thinking per subagent when it needs different permissions or reasoning depth. Do not delegate trivial one-step tasks.
-- If a web_search result is empty, irrelevant, or failed and the user asked to search, request one more web_search with a clearer query instead of saying you will search again.
+- If a web_search result is empty, irrelevant, or failed and the user asked to search, request one more web_search with a clearer query. If it reports no local search engine, tell the user to start/configure local search instead of silently using third-party search.
 - If no tool is needed, answer directly.
 - After tool results, continue until the task is complete or clearly blocked.
 """

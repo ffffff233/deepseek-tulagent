@@ -1,5 +1,23 @@
 # 更新记录 / Changelog
 
+## v0.1.94
+
+中文：
+
+- **重做：`web_search` 改为本地搜索引擎优先/唯一入口**。不再默认打 Bing/DuckDuckGo；现在调用本机 SearXNG/YaCy 兼容 JSON 搜索引擎，支持 `DSTUL_SEARCH_URL` 或工具参数 `search_url` 指定地址。
+- **新增：本地搜索自动探测和多后端适配**。默认探测 `127.0.0.1/localhost` 的 SearXNG 常见端口，以及 YaCy `yacysearch.json`；解析 SearXNG `results` 和 YaCy `channels.items`。
+- **新增：搜索参数增强**。`web_search` 支持 `language`、`categories`、`time_range`、`fetch_pages`、`page_chars`；`fetch_pages` 可抓取前几个结果页正文摘要，减少只看搜索片段不够用的问题。
+- **优化：搜索失败诊断更明确**。本地搜索没启动或没结果时会列出尝试过的本地端点，并提示配置 `DSTUL_SEARCH_URL`，不再给一堆第三方 HTML 解析失败。
+- **同步：包版本和 README 安装链接更新到 `v0.1.94`**。
+
+English:
+
+- **Reworked: `web_search` now uses a local search engine as the primary/only search entry**. It no longer defaults to Bing/DuckDuckGo; it queries a local SearXNG/YaCy-compatible JSON endpoint configured by `DSTUL_SEARCH_URL` or the tool `search_url` argument.
+- **Added: local search auto-detection and multi-backend parsing**. Common localhost SearXNG ports and YaCy `yacysearch.json` are probed; both SearXNG `results` and YaCy `channels.items` are parsed.
+- **Added: richer search parameters**. `web_search` supports `language`, `categories`, `time_range`, `fetch_pages`, and `page_chars`; `fetch_pages` fetches top result pages for body excerpts.
+- **Improved: clearer failure diagnostics**. If local search is not running or returns nothing, the tool reports the local endpoints tried and tells you to configure `DSTUL_SEARCH_URL` instead of failing with third-party HTML parser noise.
+- **Synced: package version and README install links are now `v0.1.94`**.
+
 ## v0.1.93
 
 中文：

@@ -6,6 +6,7 @@ import io
 import os
 import re
 import subprocess
+import urllib.parse
 import zipfile
 
 from deepseek_tulagent.agent import RECOVER_AFTER_TOOL_FAILURE_PROMPT, TuLAgent, compact_context_messages, context_window_info, context_window_tokens, filter_internal_automation_messages, is_question_mark_only, normalize_subagent_mode_and_thinking, normalize_subagent_specs, normalize_user_question, parse_tool_call, plainify_assistant_text, promises_more_work, trim_tool_content, tool_result_message
@@ -18,7 +19,7 @@ from deepseek_tulagent.session import SessionStore
 from deepseek_tulagent.skills import SkillStore
 from deepseek_tulagent.tui import ChatTui, TuiState
 from deepseek_tulagent.ui import ThinkingSpinner, composer_display_text, composer_prompt, display_width, filter_slash_items, format_agent_event, palette_footer_text, print_box, read_bracketed_paste, read_escape_suffix, read_raw_char, redraw_composer, selected_window_start, should_submit_newline, tail_for_width, slash_selection_insertion
-from deepseek_tulagent.tools import ToolError, ToolRegistry, normalize_bing_url
+from deepseek_tulagent.tools import ToolError, ToolRegistry, normalize_bing_url, normalize_duckduckgo_url
 
 
 class FakeClient:
@@ -1170,6 +1171,199 @@ def test_system_prompt_mentions_clone_repo(tmp_path: Path):
 def test_normalize_bing_redirect_url():
     url = "https://www.bing.com/ck/a?u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS9uZXdzP2E9MQ"
     assert normalize_bing_url(url) == "https://example.com/news?a=1"
+
+
+def test_normalize_duckduckgo_redirect_url():
+    url = "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fnews%3Fa%3D1"
+    assert normalize_duckduckgo_url(url) == "https://example.com/news?a=1"
+
+
+def test_web_search_uses_local_searxng(monkeypatch, tmp_path: Path):
+    requested: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, body: str):
+            self.body = body.encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit=-1):
+            return self.body
+
+    def fake_urlopen(request, timeout=10):
+        url = request.full_url
+        requested.append(url)
+        assert url.startswith("http://127.0.0.1:9999/search?")
+        assert "format=json" in url
+        return FakeResponse(
+            json.dumps({"results": [{"title": "标题", "url": "https://example.com/a", "content": "摘要"}]}, ensure_ascii=False)
+        )
+
+    monkeypatch.setattr("deepseek_tulagent.tools.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setenv("DSTUL_SEARCH_URL", "http://127.0.0.1:9999/search")
+    tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
+    result = tools.run("web_search", {"query": "测试", "max_results": 3})
+    assert result.ok is True
+    assert "Local Search" in result.output
+    assert "https://example.com/a" in result.output
+    assert len(requested) == 1
+
+
+def test_web_search_accepts_search_url_argument(monkeypatch, tmp_path: Path):
+    requested: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, body: str):
+            self.body = body.encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit=-1):
+            return self.body
+
+    def fake_urlopen(request, timeout=10):
+        url = request.full_url
+        requested.append(url)
+        assert url.startswith("http://localhost:7777/search?")
+        return FakeResponse(json.dumps({"results": [{"title": "本地结果", "url": "https://example.com/b", "content": "本地摘要"}]}, ensure_ascii=False))
+
+    monkeypatch.setattr("deepseek_tulagent.tools.urllib.request.urlopen", fake_urlopen)
+    tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
+    result = tools.run("web_search", {"query": "测试", "max_results": 3, "search_url": "http://localhost:7777"})
+    assert result.ok is True
+    assert "Local Search" in result.output
+    assert "https://example.com/b" in result.output
+    assert len(requested) == 1
+
+
+def test_web_search_passes_local_engine_options(monkeypatch, tmp_path: Path):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit=-1):
+            return json.dumps({"results": [{"title": "新闻", "url": "https://example.com/news", "content": "摘要"}]}, ensure_ascii=False).encode()
+
+    def fake_urlopen(request, timeout=10):
+        parsed = urllib.parse.urlparse(request.full_url)
+        captured.update(urllib.parse.parse_qs(parsed.query))
+        return FakeResponse()
+
+    monkeypatch.setattr("deepseek_tulagent.tools.urllib.request.urlopen", fake_urlopen)
+    tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
+    result = tools.run(
+        "web_search",
+        {
+            "query": "测试",
+            "search_url": "http://localhost:7777/search",
+            "language": "zh-TW",
+            "categories": "news,it",
+            "time_range": "day",
+        },
+    )
+    assert result.ok is True
+    assert captured["language"] == ["zh-TW"]
+    assert captured["categories"] == ["news,it"]
+    assert captured["time_range"] == ["day"]
+
+
+def test_web_search_supports_yacy_json(monkeypatch, tmp_path: Path):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit=-1):
+            return json.dumps(
+                {"channels": [{"items": [{"title": "YaCy 结果", "link": "https://example.com/y", "description": "YaCy 摘要"}]}]},
+                ensure_ascii=False,
+            ).encode()
+
+    monkeypatch.setattr("deepseek_tulagent.tools.urllib.request.urlopen", lambda *_args, **_kwargs: FakeResponse())
+    tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
+    result = tools.run("web_search", {"query": "测试", "search_url": "http://localhost:8090/yacysearch.json"})
+    assert result.ok is True
+    assert "YaCy 结果" in result.output
+    assert "https://example.com/y" in result.output
+
+
+def test_web_search_can_fetch_top_result_pages(monkeypatch, tmp_path: Path):
+    requested: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, body: str):
+            self.body = body.encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit=-1):
+            return self.body
+
+    def fake_urlopen(request, timeout=10):
+        url = request.full_url
+        requested.append(url)
+        if "localhost:7777" in url:
+            return FakeResponse(json.dumps({"results": [{"title": "A", "url": "https://example.com/a", "content": "摘要"}]}))
+        return FakeResponse("<html><title>A page</title><body><main>正文内容 " + ("x" * 200) + "</main></body></html>")
+
+    monkeypatch.setattr("deepseek_tulagent.tools.urllib.request.urlopen", fake_urlopen)
+    tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
+    result = tools.run("web_search", {"query": "测试", "search_url": "http://localhost:7777/search", "fetch_pages": 1})
+    assert result.ok is True
+    assert "[Fetched Page]" in result.output
+    assert "正文内容" in result.output
+    assert any(url == "https://example.com/a" for url in requested)
+
+
+def test_web_search_fails_without_local_engine(monkeypatch, tmp_path: Path):
+    def fake_urlopen(request, timeout=10):
+        raise OSError("connection refused")
+
+    monkeypatch.delenv("DSTUL_SEARCH_URL", raising=False)
+    monkeypatch.setattr("deepseek_tulagent.tools.urllib.request.urlopen", fake_urlopen)
+    tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
+    result = tools.run("web_search", {"query": "测试", "max_results": 3})
+    assert result.ok is False
+    assert "local search engine unavailable" in result.output
+    assert "DSTUL_SEARCH_URL" in result.output
+
+
+def test_web_search_reads_direct_url(monkeypatch, tmp_path: Path):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit=-1):
+            return b"<html><head><title>Page Title</title></head><body><h1>Hello</h1><p>Body text</p></body></html>"
+
+    monkeypatch.setattr("deepseek_tulagent.tools.urllib.request.urlopen", lambda *_args, **_kwargs: FakeResponse())
+    tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
+    result = tools.run("web_search", {"query": "https://example.com/page"})
+    assert result.ok is True
+    assert "Page Title" in result.output
+    assert "Body text" in result.output
 
 
 def test_skill_store_discovers_and_creates_workspace_skills(tmp_path: Path):

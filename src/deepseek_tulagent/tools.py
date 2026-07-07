@@ -45,7 +45,7 @@ TOOL_DESCRIPTIONS = {
     "apply_patch": "gated write: apply a unified diff with git apply",
     "download_url": "gated network+write: download URL into workspace",
     "clone_repo": "gated network+write: clone a Git/GitHub repository with mirror and archive fallbacks",
-    "web_search": "network: search the web and return result snippets",
+    "web_search": "network: query the configured local search engine and return result snippets",
     "start_service": "gated shell: start background service with pid/log tracking",
     "stop_service": "gated shell: stop a tracked background service",
     "service_status": "read: inspect a tracked background service",
@@ -344,14 +344,29 @@ class ToolRegistry:
         query = require_str(arguments, "query")
         max_results = int(arguments.get("max_results", 5))
         timeout = int(arguments.get("timeout", 10))
-        params = {"q": query, "mkt": "zh-CN", "setlang": "zh-Hans"}
-        url = "https://www.bing.com/search?" + urllib.parse.urlencode(params)
-        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 DeepSeekTuL/0.1"})
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            html = response.read(1_500_000).decode("utf-8", errors="replace")
-        results = parse_bing_results(html, max_results) or parse_duckduckgo_results(html, max_results)
+        if looks_like_url(query):
+            return fetch_direct_url(query, timeout=timeout)
+        search_url = string_or_none(arguments.get("search_url") or arguments.get("engine_url") or arguments.get("base_url"))
+        options = {
+            "language": string_or_none(arguments.get("language")) or "zh-CN",
+            "categories": string_or_none(arguments.get("categories")),
+            "time_range": string_or_none(arguments.get("time_range") or arguments.get("timeRange")),
+        }
+        results, diagnostics = run_local_web_search(query, max_results=max_results, timeout=timeout, search_url=search_url, options=options)
         if not results:
-            return ToolResult(False, f"no web search results parsed for query: {query}")
+            detail = "\n".join(diagnostics) if diagnostics else "no search sources attempted"
+            return ToolResult(
+                False,
+                "local search engine unavailable or returned no results.\n"
+                f"query: {query}\n"
+                "Start a local SearXNG-compatible engine and set DSTUL_SEARCH_URL, "
+                "or pass search_url, e.g. http://127.0.0.1:8080/search\n"
+                f"{detail}",
+            )
+        fetch_pages = int(arguments.get("fetch_pages", arguments.get("fetchPages", 0)) or 0)
+        if fetch_pages > 0:
+            page_limit = int(arguments.get("page_chars", arguments.get("pageChars", 1200)) or 1200)
+            results.extend(fetch_result_pages(results, timeout=timeout, fetch_pages=min(fetch_pages, 5), page_chars=max(200, min(page_limit, 4000))))
         return ToolResult(True, "\n\n".join(results))
 
     def start_service(self, arguments: dict[str, Any]) -> ToolResult:
@@ -604,6 +619,168 @@ def dedupe(values: list[str]) -> list[str]:
     return result
 
 
+def string_or_none(value: object) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def looks_like_url(value: str) -> bool:
+    parsed = urllib.parse.urlparse(value.strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def fetch_text_url(url: str, *, timeout: int, max_bytes: int = 1_500_000) -> str:
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 DeepSeekTuL/0.1"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read(max_bytes).decode("utf-8", errors="replace")
+
+
+def local_search_url_candidates(search_url: str | None = None) -> list[str]:
+    configured = string_or_none(search_url) or string_or_none(os.getenv("DSTUL_SEARCH_URL"))
+    if configured:
+        return [configured.rstrip("/")]
+    return [
+        "http://127.0.0.1:8080/search",
+        "http://127.0.0.1:8888/search",
+        "http://127.0.0.1:4000/search",
+        "http://localhost:8080/search",
+        "http://localhost:8888/search",
+        "http://localhost:4000/search",
+        "http://127.0.0.1:8090/yacysearch.json",
+        "http://localhost:8090/yacysearch.json",
+    ]
+
+
+def local_search_request_url(base_url: str, query: str, options: dict[str, str | None] | None = None, max_results: int = 5) -> str:
+    parsed = urllib.parse.urlparse(base_url)
+    if not parsed.scheme:
+        base_url = "http://" + base_url
+    parsed = urllib.parse.urlparse(base_url)
+    path = parsed.path.rstrip("/")
+    is_yacy = path.endswith("/yacysearch.json")
+    if not is_yacy and not path.endswith("/search"):
+        base_url = base_url.rstrip("/") + "/search"
+    options = options or {}
+    if is_yacy:
+        params = {"query": query, "resource": "local", "maximumRecords": str(max_results)}
+    else:
+        params = {"q": query, "format": "json", "language": options.get("language") or "zh-CN", "safesearch": "0"}
+        if options.get("categories"):
+            params["categories"] = str(options["categories"])
+        if options.get("time_range"):
+            params["time_range"] = str(options["time_range"])
+    return base_url + ("&" if "?" in base_url else "?") + urllib.parse.urlencode(params)
+
+
+def run_local_web_search(
+    query: str,
+    *,
+    max_results: int,
+    timeout: int,
+    search_url: str | None = None,
+    options: dict[str, str | None] | None = None,
+) -> tuple[list[str], list[str]]:
+    diagnostics: list[str] = []
+    seen: set[str] = set()
+    combined: list[str] = []
+    for base_url in local_search_url_candidates(search_url):
+        url = local_search_request_url(base_url, query, options=options, max_results=max_results)
+        try:
+            body = fetch_text_url(url, timeout=timeout)
+        except Exception as exc:
+            diagnostics.append(f"{base_url}: request failed: {exc}")
+            continue
+        parsed = parse_local_search_results(body, max_results)
+        if not parsed:
+            diagnostics.append(f"{base_url}: no SearXNG JSON results parsed")
+            continue
+        for result in parsed:
+            key = result_url_key(result)
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            combined.append(f"[Local Search]\n{result}")
+            if len(combined) >= max_results:
+                return combined, diagnostics
+    return combined, diagnostics
+
+
+def parse_local_search_results(body: str, max_results: int) -> list[str]:
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return []
+    items = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        channels = data.get("channels") if isinstance(data, dict) else None
+        if isinstance(channels, list) and channels and isinstance(channels[0], dict):
+            items = channels[0].get("items")
+    if not isinstance(items, list):
+        return []
+    results: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        title = clean_html(str(item.get("title") or item.get("pretty_url") or item.get("url") or "")).strip()
+        url = str(item.get("url") or item.get("link") or "").strip()
+        snippet = clean_html(str(item.get("content") or item.get("snippet") or item.get("description") or "")).strip()
+        if not title and not url:
+            continue
+        results.append(f"- {title or url}\n  {url}\n  {snippet}".strip())
+        if len(results) >= max_results:
+            break
+    return results
+
+
+def fetch_result_pages(results: list[str], *, timeout: int, fetch_pages: int, page_chars: int) -> list[str]:
+    pages: list[str] = []
+    seen: set[str] = set()
+    for result in results:
+        url = result_url_key(result)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        try:
+            html = fetch_text_url(url, timeout=timeout, max_bytes=800_000)
+        except Exception as exc:
+            pages.append(f"[Fetched Page]\n- fetch failed\n  {url}\n  {exc}")
+            continue
+        title_match = re.search(r"(?is)<title[^>]*>(.*?)</title>", html)
+        title = clean_html(title_match.group(1)) if title_match else url
+        text = clean_page_text(html)
+        pages.append(f"[Fetched Page]\n- {title}\n  {url}\n  {text[:page_chars]}")
+        if len(pages) >= fetch_pages:
+            break
+    return pages
+
+
+def result_url_key(result: str) -> str:
+    for line in result.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("http://", "https://")):
+            return stripped
+    return result
+
+
+def fetch_direct_url(url: str, *, timeout: int) -> ToolResult:
+    try:
+        html = fetch_text_url(url, timeout=timeout)
+    except Exception as exc:
+        return ToolResult(False, f"direct URL fetch failed for {url}: {exc}")
+    title_match = re.search(r"(?is)<title[^>]*>(.*?)</title>", html)
+    title = clean_html(title_match.group(1)) if title_match else url
+    text = clean_page_text(html)
+    return ToolResult(True, f"[URL]\n- {title}\n  {url}\n  {text[:1800]}")
+
+
+def clean_page_text(html: str) -> str:
+    html = re.sub(r"(?is)<(script|style|noscript|svg).*?</\1>", " ", html)
+    html = re.sub(r"(?is)<br\s*/?>|</p>|</div>|</li>|</h[1-6]>", "\n", html)
+    return clean_html(html)
+
+
 def parse_duckduckgo_results(html: str, max_results: int) -> list[str]:
     results: list[str] = []
     blocks = re.findall(r'<div class="result__body">(.*?)</div>\s*</div>', html, flags=re.DOTALL)
@@ -613,7 +790,7 @@ def parse_duckduckgo_results(html: str, max_results: int) -> list[str]:
         title_match = re.search(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', block, flags=re.DOTALL)
         if not title_match:
             continue
-        href = unescape(title_match.group(1))
+        href = normalize_duckduckgo_url(unescape(title_match.group(1)))
         title = clean_html(title_match.group(2))
         snippet_match = re.search(r'class="result__snippet"[^>]*>(.*?)</a>|class="result__snippet"[^>]*>(.*?)</div>', block, flags=re.DOTALL)
         snippet = clean_html(next((group for group in (snippet_match.groups() if snippet_match else []) if group), ""))
@@ -655,6 +832,18 @@ def normalize_bing_url(url: str) -> str:
                     return decoded
             except (ValueError, OSError):
                 pass
+    return url
+
+
+def normalize_duckduckgo_url(url: str) -> str:
+    if url.startswith("//"):
+        url = "https:" + url
+    parsed = urllib.parse.urlparse(url)
+    if parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
+        query = urllib.parse.parse_qs(parsed.query)
+        target = query.get("uddg", [""])[0]
+        if target.startswith(("http://", "https://")):
+            return target
     return url
 
 
