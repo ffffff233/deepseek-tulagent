@@ -253,9 +253,13 @@ code.inline { font-family: var(--mono); font-size: 12px; background: var(--hover
 .tableCopyBtn:hover { color: var(--text); }
 .tableCopyBtn.copied { color: var(--ok); }
 
-/* math: readable formulas rendered from LaTeX */
-.mathBlock { margin: 10px 0; padding: 8px 12px; overflow-x: auto; text-align: center; font-size: 15px; background: var(--bg-under); border-radius: var(--r-row); font-family: "STIX Two Math", "Cambria Math", var(--sans); }
-.mathInline { font-family: "STIX Two Math", "Cambria Math", var(--sans); white-space: nowrap; }
+/* math: KaTeX powers full LaTeX; these wrappers make it feel native to Fathom. */
+.mathBlock { margin: 10px 0; padding: 10px 12px; overflow-x: auto; overflow-y: hidden; text-align: center; font-size: 15px; background: var(--bg-under); border: 1px solid var(--line); border-radius: var(--r-row); }
+.mathBlock .katex-display { margin: 0; }
+.mathBlock .katex-display > .katex { white-space: nowrap; }
+.mathInline { white-space: nowrap; vertical-align: baseline; }
+.mathInline .katex { font-size: 1.04em; }
+.mathBlock .katex-error, .mathInline .katex-error { color: var(--danger, #cc3d3d); }
 .mathBlock sup, .mathInline sup, .mathBlock sub, .mathInline sub { font-size: 0.75em; }
 .mdTable { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 .mdTable th, .mdTable td { padding: 6px 12px; text-align: left; border-bottom: 1px solid var(--line); }

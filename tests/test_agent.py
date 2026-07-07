@@ -1167,6 +1167,115 @@ def test_desktop_manual_compact(monkeypatch, tmp_path: Path):
     assert isinstance(result["messages"], list)
 
 
+def test_desktop_turn_events_stay_bound_to_origin_session(monkeypatch, tmp_path: Path):
+    import json
+    import re
+    import threading
+
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.agent import AgentResult
+    from deepseek_tulagent.messages import Message
+    from deepseek_tulagent.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    turn_session = Session(tmp_path, session_id="turn-session")
+    other_session = Session(tmp_path, session_id="other-session")
+    other_session.append(Message("user", "旧对话"))
+    api.session = turn_session
+
+    entered_run = threading.Event()
+    release_run = threading.Event()
+
+    class Window:
+        def __init__(self):
+            self.events = []
+
+        def evaluate_js(self, script):
+            match = re.search(r"onNativeEvent\((.*)\);$", script)
+            assert match, script
+            self.events.append(json.loads(match.group(1)))
+
+    class FakeAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, *_args, **kwargs):
+            assert kwargs["session"].session_id == "turn-session"
+            entered_run.set()
+            assert release_run.wait(timeout=2)
+            kwargs["on_event"]("subagent researcher")
+            kwargs["on_delta"]("后台输出")
+            kwargs["on_final"]("后台最终输出")
+            return AgentResult("turn-session", "后台最终输出", 1)
+
+    window = Window()
+    api.bind_window(window)
+    monkeypatch.setattr(desktop, "TuLAgent", FakeAgent)
+
+    worker = threading.Thread(target=api._run_agent_turn, args=("新对话任务", []), daemon=True)
+    worker.start()
+    assert entered_run.wait(timeout=2)
+
+    resumed = api.resume("other-session")
+    assert resumed["sessionId"] == "other-session"
+    release_run.set()
+    worker.join(timeout=2)
+
+    assert api.session is not None
+    assert api.session.session_id == "other-session"
+    emitted = [event for event in window.events if event["event"] in {"turn:start", "agent:event", "assistant:delta", "assistant:final", "turn:done"}]
+    assert emitted
+    assert {event["payload"].get("sessionId") for event in emitted} == {"turn-session"}
+    assert all(event["payload"].get("turnId") for event in emitted)
+
+
+def test_desktop_edit_resend_drops_old_tool_result_context(monkeypatch, tmp_path: Path):
+    import time
+
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.agent import AgentResult
+    from deepseek_tulagent.messages import Message
+    from deepseek_tulagent.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    api.session = Session(tmp_path, session_id="edit-session")
+    api.session.append(Message("system", "system"))
+    api.session.append(Message("user", "你好，帮我创建 a.txt"))
+    api.session.append(Message("assistant", '{"tool":"write_file","arguments":{"path":"a.txt","content":"ok"}}'))
+    api.session.append(Message("user", 'TOOL_RESULT name=write_file\n{"ok":true,"output":"created a.txt"}'))
+    api.session.append(Message("assistant", "我已经创建了。"))
+
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, prompt, **kwargs):
+            captured["prompt"] = prompt
+            captured["messages"] = [message.content for message in kwargs["session"].messages]
+            return AgentResult(kwargs["session"].session_id, "新的回答", 1)
+
+    monkeypatch.setattr(desktop, "TuLAgent", FakeAgent)
+    result = api.edit_resend({"prompt": "你好，帮我创建 b.txt", "srcIndex": 1})
+    assert result["ok"] is True
+    deadline = time.time() + 2
+    while api._running and time.time() < deadline:
+        time.sleep(0.02)
+    assert api._running is False
+
+    joined = "\n".join(captured["messages"])
+    assert captured["prompt"] == "你好，帮我创建 b.txt"
+    assert "created a.txt" not in joined
+    assert "我已经创建了" not in joined
+    assert "你好，帮我创建 a.txt" not in joined
+    assert captured["messages"] == ["system"]
+
+
 def test_desktop_session_metadata_pin_and_rename(monkeypatch, tmp_path: Path):
     import deepseek_tulagent.desktop.app as desktop
     from deepseek_tulagent.messages import Message

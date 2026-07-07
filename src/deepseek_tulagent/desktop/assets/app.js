@@ -14,6 +14,11 @@ const state = {
   pendingVersions: null,
   models: [],
   currentSessionId: "",
+  activeTurnId: "",
+  pendingOutbound: false,
+  pendingOutboundId: "",
+  katexRenderToString: null,
+  katexLoadPromise: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -121,11 +126,40 @@ function installDemoApi() {
 window.DeepSeekDesktop = {
   onNativeEvent(message) {
     const { event, payload } = message;
+    const sid = String((payload && payload.sessionId) || "");
+    const tid = String((payload && payload.turnId) || "");
+    const activeSid = currentSessionId();
+    const scopedToOtherSession = Boolean(
+      (sid && activeSid && sid !== activeSid) ||
+      (sid && !activeSid && !state.pendingOutbound && (!state.activeTurnId || tid !== state.activeTurnId)) ||
+      (tid && state.activeTurnId && tid !== state.activeTurnId)
+    );
     // after a user cancel, ignore this turn's late stream/tool events until it ends
     if (state.suppressStream && event !== "turn:done" && event !== "turn:cancelled" && event !== "turn:error" && event !== "turn:start") {
       return;
     }
+    if (scopedToOtherSession) {
+      if (event === "turn:done" || event === "turn:error" || event === "turn:cancelled") {
+        // A background turn finished in another conversation. Keep its transcript
+        // bound to its own session; only refresh chrome/global availability here.
+        refreshSessions();
+        if (tid && tid === state.activeTurnId) {
+          state.activeTurnId = "";
+          setRunning(false);
+        } else if (!state.activeTurnId) {
+          setRunning(false);
+        }
+      }
+      return;
+    }
     if (event === "turn:start") {
+      if (tid) state.activeTurnId = tid;
+      state.pendingOutbound = false;
+      if (sid) {
+        state.currentSessionId = sid;
+        if (state.boot) state.boot.sessionId = sid;
+        setText("sessionState", sid.slice(0, 8));
+      }
       state.suppressStream = false;
       setRunning(true);
       state.stickToBottom = true;
@@ -212,11 +246,13 @@ window.DeepSeekDesktop = {
       setRunning(false);
       dismissApproval();
       refreshSessions();
-      const sid = String(payload.sessionId || "");
-      state.currentSessionId = sid;
-      if (state.boot) state.boot.sessionId = sid;
-      setText("sessionState", sid ? sid.slice(0, 8) : "新会话");
-      if (!wasSuppressed) setSaveState("saved", "已保存", sid || "未保存");
+      const doneSid = String(payload.sessionId || "");
+      state.currentSessionId = doneSid;
+      if (state.boot) state.boot.sessionId = doneSid;
+      if (!tid || tid === state.activeTurnId) state.activeTurnId = "";
+      state.pendingOutbound = false;
+      setText("sessionState", doneSid ? doneSid.slice(0, 8) : "新会话");
+      if (!wasSuppressed) setSaveState("saved", "已保存", doneSid || "未保存");
       markMessageActions();
       // if this turn was a retry, attach the ‹ i/n › version pager to the retried
       // USER message (Codex-style: versions live on your message, not the reply)
@@ -227,6 +263,8 @@ window.DeepSeekDesktop = {
       state.currentAssistant = null;
       state.currentTool = null;
       state.suppressStream = false;
+      if (!tid || tid === state.activeTurnId) state.activeTurnId = "";
+      state.pendingOutbound = false;
       setRunning(false);
       dismissApproval();
       addEvent("error", "错误", payload.error + "\n\n" + payload.trace);
@@ -241,6 +279,8 @@ window.DeepSeekDesktop = {
       state.currentTool = null;
       const wasSuppressed = state.suppressStream;
       state.suppressStream = false;
+      if (!tid || tid === state.activeTurnId) state.activeTurnId = "";
+      state.pendingOutbound = false;
       setRunning(false);
       dismissApproval();
       if (!wasSuppressed) {  // only if not already handled by the instant-cancel path
@@ -253,6 +293,7 @@ window.DeepSeekDesktop = {
 
 async function boot() {
   state.boot = await window.pywebview.api.boot();
+  loadKatexRenderer().catch(() => {});
   $("version").textContent = `v${state.boot.version}`;
   $("workspace").textContent = state.boot.workspace || "";
   setText("apiState", state.boot.apiKeySet ? "已配置" : "未配置");
@@ -383,6 +424,10 @@ async function refreshSessions() {
       const result = await window.pywebview.api.resume(session.session_id);
       state.currentAssistant = null;
       state.currentTool = null;
+      state.activeTurnId = "";
+      state.pendingOutbound = false;
+      state.pendingOutboundId = "";
+      state.suppressLocalUserEcho = false;
       state.stickToBottom = true;
       $("messages").innerHTML = "";
       result.messages.forEach(replayMessage);
@@ -660,6 +705,57 @@ function escapeHtml(text) {
   }[char]));
 }
 
+function hasMathDelimiters(text) {
+  return /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$[^\n$]+?\$/.test(String(text || ""));
+}
+
+function loadKatexRenderer() {
+  if (state.katexRenderToString) return Promise.resolve(state.katexRenderToString);
+  if (state.katexLoadPromise) return state.katexLoadPromise;
+  state.katexLoadPromise = import("./katex-CBSAILhF.js")
+    .then((module) => {
+      state.katexRenderToString = module.renderToString || (module.default && module.default.renderToString) || null;
+      if (!state.katexRenderToString) throw new Error("KaTeX renderToString missing");
+      rerenderMathBubbles();
+      return state.katexRenderToString;
+    })
+    .catch((error) => {
+      console.warn("KaTeX unavailable, using lightweight math fallback.", error);
+      state.katexLoadPromise = null;
+      return null;
+    });
+  return state.katexLoadPromise;
+}
+
+function rerenderMathBubbles() {
+  document.querySelectorAll(".bubble.assistant").forEach((bubble) => {
+    if (hasMathDelimiters(bubble.dataset.raw || "")) renderBubble(bubble);
+  });
+}
+
+function renderLatex(tex, displayMode) {
+  const source = String(tex || "").trim();
+  if (!source) return "";
+  if (state.katexRenderToString) {
+    try {
+      return state.katexRenderToString(source, {
+        displayMode,
+        throwOnError: false,
+        strict: "ignore",
+        trust: false,
+        output: "htmlAndMathml",
+        maxSize: 12,
+        maxExpand: 1000,
+      });
+    } catch (_) {
+      // Keep rendering resilient while streaming partially complete model output.
+    }
+  } else {
+    loadKatexRenderer().catch(() => {});
+  }
+  return renderMathFallback(source);
+}
+
 /* ---------- markdown + syntax highlight ---------- */
 function renderMarkdown(src) {
   src = String(src || "");
@@ -670,11 +766,11 @@ function renderMarkdown(src) {
     blocks.push(`<pre class="code"><div class="codeHead"><span>${escapeHtml(lang || "code")}</span><button class="copyBtn" type="button">复制</button></div><code>${highlightCode(clean, lang)}</code></pre>`);
     return `@@FB${i}@@`;
   });
-  // protect math ($$…$$, \[…\], $…$, \(…\)) and render it to readable Unicode/HTML,
-  // so formulas read like math, not raw LaTeX (code blocks above are already shielded)
+  // Protect math ($$…$$, \[…\], $…$, \(…\)) before markdown parsing so
+  // underscores, asterisks and pipes inside formulas are not mistaken for markdown.
   src = src.replace(/\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]/g, (m, a, b) => {
     const i = blocks.length;
-    blocks.push(`<div class="mathBlock">${renderMath(a != null ? a : b)}</div>`);
+    blocks.push(`<div class="mathBlock">${renderLatex(a != null ? a : b, true)}</div>`);
     return `@@FB${i}@@`;
   });
   src = src.replace(/\$([^\n$]+?)\$|\\\(([\s\S]+?)\\\)/g, (m, a, b) => {
@@ -684,7 +780,7 @@ function renderMarkdown(src) {
     // money/ranges like $5 or $5 和 $10.
     if (a != null && !looksLikeMath(inner)) return m;
     const i = blocks.length;
-    blocks.push(`<span class="mathInline">${renderMath(inner)}</span>`);
+    blocks.push(`<span class="mathInline">${renderLatex(inner, false)}</span>`);
     return `@@FB${i}@@`;
   });
   const lines = src.split("\n");
@@ -747,8 +843,8 @@ function renderMarkdown(src) {
   }
 }
 
-// Render a LaTeX-ish math string to readable Unicode/HTML (no heavy library): Greek
-// letters, common operators, \frac, √, and super/subscripts as <sup>/<sub>.
+// Lightweight fallback used only before/if KaTeX cannot load. It keeps formulas
+// readable but intentionally stays behind the real KaTeX renderer.
 const MATH_SYMBOLS = {
   "\\alpha":"α","\\beta":"β","\\gamma":"γ","\\delta":"δ","\\epsilon":"ε","\\varepsilon":"ε","\\zeta":"ζ","\\eta":"η","\\theta":"θ","\\iota":"ι","\\kappa":"κ","\\lambda":"λ","\\mu":"μ","\\nu":"ν","\\xi":"ξ","\\pi":"π","\\rho":"ρ","\\sigma":"σ","\\tau":"τ","\\phi":"φ","\\varphi":"φ","\\chi":"χ","\\psi":"ψ","\\omega":"ω",
   "\\Gamma":"Γ","\\Delta":"Δ","\\Theta":"Θ","\\Lambda":"Λ","\\Xi":"Ξ","\\Pi":"Π","\\Sigma":"Σ","\\Phi":"Φ","\\Psi":"Ψ","\\Omega":"Ω",
@@ -767,7 +863,7 @@ function looksLikeMath(s) {
   return /\b[a-zA-Z]\b/.test(s) && /\d|[+\-*/=()]/.test(s);
 }
 
-function renderMath(tex) {
+function renderMathFallback(tex) {
   let s = String(tex || "").trim();
   // tolerate nested wrappers like \($x$\) from model output
   if (s.startsWith("$") && s.endsWith("$") && s.length > 1) s = s.slice(1, -1).trim();
@@ -860,19 +956,36 @@ $("send").onclick = async () => {
   state.suppressLocalUserEcho = true;  // turn:start would double-add it
   state.stickToBottom = true;
   setRunning(true);
+  state.pendingOutbound = true;
+  const outboundId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  state.pendingOutboundId = outboundId;
   try {
     await updateRuntime();
     const sendFn = await apiMethod("send");
     const result = await sendFn({ prompt: outgoing, attachments, images: images.map((i) => i.url) });
     if (!result.ok) throw new Error(result.error || "unknown error");
+    const stillVisibleOutbound = state.pendingOutboundId === outboundId;
+    if (stillVisibleOutbound) state.pendingOutbound = false;
+    if (result.sessionId) {
+      if (stillVisibleOutbound) {
+        state.currentSessionId = result.sessionId;
+        if (state.boot) state.boot.sessionId = result.sessionId;
+        setText("sessionState", String(result.sessionId).slice(0, 8));
+      }
+    }
+    if (result.turnId && stillVisibleOutbound) state.activeTurnId = result.turnId;
   } catch (error) {
-    setRunning(false);
-    addEvent("error", "发送失败", String(error.message || error));
-    $("prompt").value = raw;
-    state.attachments = attachments;
-    state.images = images;
-    renderAttachments();
-    autoGrow();
+    if (state.pendingOutboundId === outboundId) {
+      state.pendingOutbound = false;
+      state.pendingOutboundId = "";
+      setRunning(false);
+      addEvent("error", "发送失败", String(error.message || error));
+      $("prompt").value = raw;
+      state.attachments = attachments;
+      state.images = images;
+      renderAttachments();
+      autoGrow();
+    }
   }
 };
 
@@ -1134,6 +1247,10 @@ $("newSession").onclick = async () => {
   state.currentAssistant = null;
   state.currentTool = null;
   state.currentSessionId = "";
+  state.activeTurnId = "";
+  state.pendingOutbound = false;
+  state.pendingOutboundId = "";
+  state.suppressLocalUserEcho = false;
   if (state.boot) state.boot.sessionId = null;
   state.events = 0;
   state.stickToBottom = true;
@@ -1154,7 +1271,7 @@ setInterval(() => { if (!state.running && !document.hidden) refreshSessions(); }
 
 /* ---------- conversation menu (top-right ⋮ — copy ID / rename / branch / new / delete) ---------- */
 function currentSessionId() {
-  return (state.boot && state.boot.sessionId) || state.currentSessionId || "";
+  return state.currentSessionId || (state.boot && state.boot.sessionId) || "";
 }
 const convMenu = $("convMenu");
 $("convMenuBtn").onclick = (e) => {

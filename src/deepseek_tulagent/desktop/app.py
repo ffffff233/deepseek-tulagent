@@ -64,6 +64,8 @@ class DesktopApi:
         self._running = False
         self._cancel_requested = False
         self._approvals: dict[str, dict[str, Any]] = {}
+        self._active_turn_session_id: str | None = None
+        self._active_turn_id: str | None = None
 
     def bind_window(self, window: Any) -> None:
         self.window = window
@@ -253,9 +255,13 @@ class DesktopApi:
     def _start_turn(self, prompt: str, images: list[str] | None = None) -> dict[str, Any]:
         self._cancel_requested = False
         self._running = True
-        thread = threading.Thread(target=self._run_agent_turn, args=(prompt, images or []), daemon=True)
+        if self.session is None:
+            self.session = Session(self.settings.workspace)
+        session_id = self.session.session_id
+        turn_id = uuid4().hex
+        thread = threading.Thread(target=self._run_agent_turn, args=(prompt, images or [], session_id, turn_id), daemon=True)
         thread.start()
-        return {"ok": True}
+        return {"ok": True, "sessionId": session_id, "turnId": turn_id}
 
     def _truncate_to_last_user(self, before_index: int | None = None) -> str | None:
         """Drop a user turn and everything after it; return that user prompt.
@@ -349,7 +355,11 @@ class DesktopApi:
         for pending in list(self._approvals.values()):
             pending["decision"] = False
             pending["event"].set()
-        self._emit("turn:cancel", {"message": "正在取消当前回复；已发出的工具会等待当前调用返回。"})
+        self._emit("turn:cancel", {
+            "message": "正在取消当前回复；已发出的工具会等待当前调用返回。",
+            "sessionId": self._active_turn_session_id,
+            "turnId": self._active_turn_id,
+        })
         return {"ok": True, "running": True}
 
     def _request_approval(self, name: str, arguments: dict[str, Any]) -> bool:
@@ -365,6 +375,8 @@ class DesktopApi:
             "id": request_id,
             "tool": name,
             "summary": approval_summary(name, arguments),
+            "sessionId": self._active_turn_session_id,
+            "turnId": self._active_turn_id,
         })
         # wait, but stay responsive to cancellation
         while not gate.wait(timeout=0.25):
@@ -383,26 +395,42 @@ class DesktopApi:
         pending["event"].set()
         return {"ok": True}
 
-    def _run_agent_turn(self, prompt: str, images: list[str] | None = None) -> None:
+    def _run_agent_turn(
+        self,
+        prompt: str,
+        images: list[str] | None = None,
+        turn_session_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> None:
         with self._lock:
-            turn_session_id = self.session.session_id if self.session else None
+            turn_session_id = turn_session_id or (self.session.session_id if self.session else None)
+            turn_id = turn_id or uuid4().hex
+            self._active_turn_session_id = turn_session_id
+            self._active_turn_id = turn_id
+
+            def emit_turn(event: str, payload: dict[str, Any] | None = None) -> None:
+                scoped = dict(payload or {})
+                scoped.setdefault("sessionId", turn_session_id)
+                scoped.setdefault("turnId", turn_id)
+                self._emit(event, scoped)
+
             try:
-                self._emit("turn:start", {"prompt": prompt, "thinking": self.thinking.name})
+                emit_turn("turn:start", {"prompt": prompt, "thinking": self.thinking.name})
 
                 def delta(text: str) -> None:
                     if self._cancel_requested:
                         raise RuntimeError("turn cancelled")
-                    self._emit("assistant:delta", {"text": text})
+                    emit_turn("assistant:delta", {"text": text})
 
                 def final(text: str) -> None:
                     if self._cancel_requested:
                         raise RuntimeError("turn cancelled")
-                    self._emit("assistant:final", {"text": text})
+                    emit_turn("assistant:final", {"text": text})
 
                 def event(text: str) -> None:
                     if self._cancel_requested:
                         raise RuntimeError("turn cancelled")
-                    self._emit("agent:event", parse_agent_event(text))
+                    emit_turn("agent:event", parse_agent_event(text))
 
                 result = TuLAgent(
                     self.settings,
@@ -417,17 +445,19 @@ class DesktopApi:
                 if current_id in (turn_session_id, result.session_id):
                     self.session = SessionStore(self.settings.workspace).load(result.session_id)
                 ensure_session_title(self.settings.workspace, SessionStore(self.settings.workspace).load(result.session_id))
-                self._emit("turn:done", {"sessionId": result.session_id, "rounds": result.rounds})
+                emit_turn("turn:done", {"sessionId": result.session_id, "rounds": result.rounds})
             except RuntimeError as exc:
                 if str(exc) == "turn cancelled":
-                    self._emit("turn:cancelled", {"message": "当前回复已取消"})
+                    emit_turn("turn:cancelled", {"message": "当前回复已取消"})
                 else:
-                    self._emit("turn:error", {"error": str(exc), "trace": traceback.format_exc(limit=8)})
+                    emit_turn("turn:error", {"error": str(exc), "trace": traceback.format_exc(limit=8)})
             except Exception as exc:
-                self._emit("turn:error", {"error": str(exc), "trace": traceback.format_exc(limit=8)})
+                emit_turn("turn:error", {"error": str(exc), "trace": traceback.format_exc(limit=8)})
             finally:
                 self._running = False
                 self._cancel_requested = False
+                self._active_turn_session_id = None
+                self._active_turn_id = None
 
     def _emit(self, event: str, payload: dict[str, Any]) -> None:
         if self.window is None:
