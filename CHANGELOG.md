@@ -1,5 +1,27 @@
 # 更新记录 / Changelog
 
+## v0.1.103
+
+中文：
+
+- **修复：上下文统计不再混用上游 usage**。右下角只显示当前会话上下文估算、模型上下文窗口、压缩阈值和阈值剩余，不再展示不稳定的输入/输出/缓存统计。
+- **新增：可手动设置模型上下文窗口和自动压缩阈值**。默认按 OpenCode/Codex 思路使用当前会话 token 估算，达到 95% 阈值附近自动压缩；用户可在上下文弹窗里改窗口和阈值。
+- **修复：测试连接/模型列表按当前填写的域名、密钥和 provider 查询**，避免切换 API 后仍显示上一个接口的模型列表缓存。
+- **修复：取消操作改为 turnId 精确取消**。旧取消请求或串对话事件不会再误取消当前正在运行的模型任务。
+- **修复：普通文件附件不再把本地路径写入对话正文**。只有文件夹/媒体附件会提供 path；前端消息也不再把普通文件路径展示出来。
+- **优化：任务目标全部完成后右上角显示关闭按钮**，可清掉已完成任务列表；未完成时不显示。
+- **同步：包版本和 README 安装链接更新到 `v0.1.103`**。
+
+English:
+
+- **Fixed: context statistics no longer mix in upstream usage totals**. The bottom-right panel now shows only current-session context estimate, model context window, compact threshold, and remaining threshold budget.
+- **Added: editable model context window and auto-compact threshold**. The default follows the OpenCode/Codex-style approach: estimate current conversation tokens and compact near the 95% threshold; users can override both values in the context popover.
+- **Fixed: connection testing/model listing now uses the currently typed base URL, API key, and provider**, avoiding stale model lists from a previous endpoint.
+- **Fixed: cancellation is now turnId-scoped**. Stale cancel requests or cross-conversation events no longer cancel the currently running model turn.
+- **Fixed: plain file attachments no longer inject local paths into chat text**. Only folder/media attachments expose paths; the frontend also hides plain-file paths.
+- **Improved: completed task-goal docks show a close button** so finished task lists can be dismissed.
+- **Synced: package version and README install links are now `v0.1.103`**.
+
 ## v0.1.102
 
 中文：

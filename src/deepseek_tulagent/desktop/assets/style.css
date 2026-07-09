@@ -376,6 +376,28 @@ pre.code code { display: block; padding: 12px 14px; font-family: var(--mono); fo
 .ctxBar i { display: block; width: 0%; height: 100%; border-radius: inherit; background: var(--ok); transition: width .18s; }
 .ctxPopover.warn .ctxBar i { background: var(--warn); }
 .ctxPopover.danger .ctxBar i { background: var(--danger); }
+.ctxControls { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px; margin: 8px 0; align-items: end; }
+.ctxControls label { display: grid; gap: 3px; color: var(--text-4); font-size: 10.5px; }
+.ctxControls input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--elevated);
+  color: var(--text-2);
+  padding: 5px 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.ctxControls button {
+  border: 1px solid var(--line-heavy);
+  border-radius: 8px;
+  background: var(--hover);
+  color: var(--text-2);
+  padding: 6px 8px;
+  cursor: pointer;
+}
+.ctxControls button:hover { background: var(--hover-strong); }
 .ctxPopover p { margin: 0; color: var(--text-4); font-size: 11.5px; line-height: 1.55; }
 .attachments { display: flex; flex-wrap: wrap; gap: 6px; }
 .attachments:empty { display: none; }
@@ -401,6 +423,7 @@ pre.code code { display: block; padding: 12px 14px; font-family: var(--mono); fo
 }
 
 .goalDock {
+  position: relative;
   overflow: hidden;
   border: 1px solid color-mix(in oklab, var(--line-heavy) 82%, var(--link));
   border-radius: var(--r-card);
@@ -435,6 +458,23 @@ pre.code code { display: block; padding: 12px 14px; font-family: var(--mono); fo
   background: color-mix(in oklab, var(--link) 14%, transparent);
 }
 .goalDock:not(.complete) .goalOrb .ic { animation: spin 1.15s linear infinite; }
+.goalClose {
+  position: absolute;
+  top: 6px;
+  right: 7px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-4);
+  cursor: pointer;
+  z-index: 2;
+}
+.goalClose:hover { background: var(--hover); color: var(--text-2); }
+.goalDock.complete .goalHead { padding-right: 34px; }
 .goalMeta { min-width: 0; display: grid; gap: 1px; }
 .goalCount {
   min-width: 34px;

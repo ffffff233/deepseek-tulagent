@@ -72,12 +72,15 @@
               <strong>上下文统计</strong>
               <span id="ctxSource">估算</span>
             </div>
-            <div class="ctxMetric"><span>输入</span><strong id="ctxInput">0</strong></div>
-            <div class="ctxMetric"><span>输出</span><strong id="ctxOutput">0</strong></div>
-            <div class="ctxMetric"><span>上下文</span><strong id="ctxUsage">0 / 0</strong></div>
-            <div class="ctxMetric"><span>缓存</span><strong id="ctxCache">0 / 0%</strong></div>
+            <div class="ctxMetric"><span>当前上下文</span><strong id="ctxUsage">0 / 0</strong></div>
             <div class="ctxMetric"><span>压缩阈值</span><strong id="ctxThreshold">0</strong></div>
+            <div class="ctxMetric"><span>阈值剩余</span><strong id="ctxRemaining">0</strong></div>
             <div class="ctxBar"><i id="ctxBarFill"></i></div>
+            <div class="ctxControls">
+              <label>模型上下文 <input id="ctxLimitInput" inputmode="numeric" placeholder="自动识别"></label>
+              <label>压缩阈值% <input id="ctxThresholdInput" inputmode="decimal" placeholder="95"></label>
+              <button id="ctxSave" type="button">保存</button>
+            </div>
             <p id="ctxHint">达到阈值前会自动压缩旧消息。</p>
           </div>
           <button id="contextBadge" class="contextBadge idle" type="button" title="上下文统计">

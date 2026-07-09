@@ -1792,7 +1792,7 @@ def test_desktop_manual_compact(monkeypatch, tmp_path: Path):
     assert result["context"]["tokens"] == result["after"]
 
 
-def test_desktop_context_status_reports_usage(monkeypatch, tmp_path: Path):
+def test_desktop_context_status_reports_local_context_threshold(monkeypatch, tmp_path: Path):
     import deepseek_tulagent.desktop.app as desktop
     from deepseek_tulagent.messages import Message
     from deepseek_tulagent.session import Session
@@ -1807,27 +1807,30 @@ def test_desktop_context_status_reports_usage(monkeypatch, tmp_path: Path):
     status = api.context_status()
     assert status["ok"] is True
     assert status["tokens"] > 1000
-    assert status["inputTokens"] > 1000
+    assert status["contextTokens"] == status["tokens"]
+    assert status["inputTokens"] == 0
     assert status["outputTokens"] == 0
     assert status["cachedTokens"] == 0
     assert status["cachePercent"] == 0
     assert status["accurate"] is False
-    assert status["measure"] == "本地估算"
+    assert status["measure"] == "本地上下文估算"
     assert status["limit"] == 32_000
-    assert status["threshold"] == int(32_000 * 0.92)
+    assert status["threshold"] == int(32_000 * 0.95)
+    assert status["thresholdPercent"] == 95
     assert 0 < status["percent"] < 100
     assert status["source"] == "model-name"
 
     api._usage_by_session["s"] = UsageStats(input_tokens=2000, output_tokens=300, cached_input_tokens=1500, total_tokens=2300, source="upstream")
-    accurate = api.context_status()
-    assert accurate["accurate"] is True
-    assert accurate["measure"] == "上游 usage"
-    assert accurate["tokens"] == 2300
-    assert accurate["inputTokens"] == 2000
-    assert accurate["outputTokens"] == 300
-    assert accurate["cachedTokens"] == 1500
-    assert accurate["cachePercent"] == 75
-    assert accurate["source"] == "upstream"
+    unchanged = api.context_status()
+    assert unchanged["tokens"] == status["tokens"]
+    assert unchanged["usageTotalTokens"] == 0
+    assert unchanged["source"] == "model-name"
+
+    configured = api.configure_context({"contextWindowTokens": "64000", "compactThresholdPercent": "90"})
+    assert configured["ok"] is True
+    assert configured["context"]["limit"] == 64_000
+    assert configured["context"]["threshold"] == 57_600
+    assert configured["context"]["source"] == "custom"
 
 
 def test_desktop_session_switch_returns_fresh_context(monkeypatch, tmp_path: Path):
@@ -1860,8 +1863,58 @@ def test_desktop_session_switch_returns_fresh_context(monkeypatch, tmp_path: Pat
 
     old = api.resume("first")
     assert old["context"]["sessionId"] == "first"
-    assert old["context"]["accurate"] is True
-    assert old["context"]["tokens"] == 5500
+    assert old["context"]["tokens"] < 5500
+    assert old["context"]["usageTotalTokens"] == 0
+
+
+def test_desktop_send_only_exposes_folder_attachment_paths(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    captured: dict[str, str] = {}
+
+    def fake_start(prompt, **_kwargs):
+        captured["prompt"] = prompt
+        return {"ok": True, "sessionId": "s", "turnId": "t"}
+
+    monkeypatch.setattr(api, "_start_turn", fake_start)
+    result = api.send({
+        "prompt": "处理附件",
+        "attachments": [
+            {"name": "plain.txt", "path": "/tmp/private/plain.txt", "size": 5},
+            {"name": "docs", "path": "/tmp/private/docs", "size": 0, "kind": "folder"},
+        ],
+    })
+
+    assert result["ok"] is True
+    prompt = captured["prompt"]
+    assert "plain.txt (5 bytes)" in prompt
+    assert "/tmp/private/plain.txt" not in prompt
+    assert "docs: /tmp/private/docs" in prompt
+    assert "只有这些附件会直接提供本地路径" in prompt
+
+
+def test_desktop_cancel_ignores_stale_turn_id(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    api._running = True
+    api._active_turn_id = "current-turn"
+    api._active_turn_session_id = "s"
+
+    stale = api.cancel({"turnId": "old-turn"})
+    assert stale == {"ok": True, "running": True, "ignored": True}
+    assert api._running is True
+    assert api._active_turn_id == "current-turn"
+    assert "current-turn" not in api._abandoned_turn_ids
+
+    current = api.cancel({"turnId": "current-turn"})
+    assert current == {"ok": True, "running": False}
+    assert "current-turn" in api._abandoned_turn_ids
 
 
 def test_desktop_turn_events_stay_bound_to_origin_session(monkeypatch, tmp_path: Path):

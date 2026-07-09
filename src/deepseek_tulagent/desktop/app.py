@@ -99,6 +99,8 @@ class DesktopApi:
             "apiKeySet": bool(self.settings.api_key),
             "running": self._running,
             "autoCompact": True,
+            "contextWindowTokens": self.settings.context_window_tokens,
+            "compactThresholdPercent": self.settings.compact_threshold_percent,
             "compatFormats": ["deepseek", "openai", "openai-responses", "gemini", "anthropic"],
             "formatLabels": {
                 "deepseek": "DeepSeek",
@@ -151,20 +153,29 @@ class DesktopApi:
         )
         return self.boot()
 
-    def models(self) -> dict[str, Any]:
-        api_marker = str(hash(self.settings.api_key or ""))
-        key = "|".join([self.settings.provider_format, self.settings.base_url, self.settings.model, api_marker])
+    def models(self, data: dict[str, Any] | None = None) -> dict[str, Any]:
+        data = data or {}
+        settings_obj = self.settings
+        if data:
+            base = str(data.get("baseUrl") or settings_obj.base_url or "").strip().rstrip("/")
+            key_value = str(data.get("apiKey") or "").strip() or settings_obj.api_key
+            fmt = str(data.get("providerFormat") or settings_obj.provider_format)
+            model = str(data.get("model") or settings_obj.model)
+            settings_obj = replace_settings(settings_obj, base_url=base, api_key=key_value, provider_format=fmt)
+            settings_obj = settings_obj.with_runtime(model=model)
+        api_marker = str(hash(settings_obj.api_key or ""))
+        key = "|".join([settings_obj.provider_format, settings_obj.base_url, settings_obj.model, api_marker])
         cached = self._models_cache.get(key)
         if cached and time.monotonic() - cached[0] < 600:
             return {"ok": True, "models": cached[1], "cached": True}
         try:
-            models = DeepSeekClient(self.settings, timeout=8.0).models()
+            models = DeepSeekClient(settings_obj, timeout=8.0).models()
             self._models_cache[key] = (time.monotonic(), models)
             return {"ok": True, "models": models}
         except Exception as exc:
             if cached and cached[1]:
                 return {"ok": True, "models": cached[1], "cached": True, "stale": True, "error": str(exc)}
-            return {"ok": False, "error": str(exc), "models": [self.settings.model]}
+            return {"ok": False, "error": str(exc), "models": [settings_obj.model]}
 
     def test_connection(self, data: dict[str, Any] | None = None) -> dict[str, Any]:
         """Probe the endpoint with the dialog's (possibly unsaved) values, without
@@ -243,7 +254,12 @@ class DesktopApi:
         before = estimate_message_tokens(self.session.messages)
         client = DeepSeekClient(self.settings)
         self.session.messages = compact_context_messages(
-            self.session.messages, self.settings.model, force=True, client=client
+            self.session.messages,
+            self.settings.model,
+            force=True,
+            client=client,
+            context_limit=self.settings.context_window_tokens,
+            threshold_percent=self.settings.compact_threshold_percent,
         )
         self._record_session_usage(self.session.session_id, getattr(client, "usage", UsageStats()))
         after = estimate_message_tokens(self.session.messages)
@@ -252,49 +268,65 @@ class DesktopApi:
     def context_status(self) -> dict[str, Any]:
         messages = self.session.messages if self.session else []
         info = context_window_info(self.settings.model)
-        limit = int(info["tokens"])
-        threshold = int(limit * 0.92)
+        detected_limit = int(info["tokens"])
+        limit = int(self.settings.context_window_tokens or detected_limit)
+        threshold_percent = max(1.0, min(99.0, float(self.settings.compact_threshold_percent or 95.0)))
+        threshold = int(limit * threshold_percent / 100)
         session_id = self.session.session_id if self.session else ""
-        usage = self._usage_by_session.get(session_id) if session_id else None
-        accurate = bool(usage and usage.source)
-        if accurate and usage:
-            input_tokens = usage.input_tokens
-            output_tokens = usage.output_tokens
-            tokens = usage.total_tokens or (input_tokens + output_tokens)
-            cached_tokens = usage.cached_input_tokens
-            source = usage.source
-        else:
-            tokens = estimate_message_tokens(messages) if messages else 0
-            input_messages = [m for m in messages if m.role in {"system", "user"}]
-            output_messages = [m for m in messages if m.role == "assistant"]
-            input_tokens = estimate_message_tokens(input_messages) if input_messages else 0
-            output_tokens = estimate_message_tokens(output_messages) if output_messages else 0
-            cached_tokens = 0
-            source = info.get("source", "fallback")
-        percent = round((tokens / limit * 100), 1) if limit else 0
-        cache_percent = round((cached_tokens / input_tokens * 100), 1) if input_tokens else 0
+        context_tokens = estimate_message_tokens(messages) if messages else 0
+        percent = round((context_tokens / limit * 100), 1) if limit else 0
+        threshold_percent_used = round((threshold / limit * 100), 1) if limit else threshold_percent
         return {
             "ok": True,
-            "tokens": tokens,
-            "inputTokens": min(input_tokens, tokens),
-            "outputTokens": min(output_tokens, tokens),
-            "cachedTokens": cached_tokens,
-            "cachePercent": cache_percent,
+            "tokens": context_tokens,
+            "contextTokens": context_tokens,
+            # Deprecated compatibility fields: the desktop UI no longer reports
+            # request usage/caches because upstream providers are inconsistent.
+            "estimatedInputTokens": 0,
+            "estimatedOutputTokens": 0,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "cachedTokens": 0,
+            "cachePercent": 0,
+            "usageTotalTokens": 0,
             "limit": limit,
+            "detectedLimit": detected_limit,
+            "customLimit": bool(self.settings.context_window_tokens),
             "threshold": threshold,
+            "thresholdPercent": threshold_percent_used,
             "percent": percent,
-            "source": source,
-            "accurate": accurate,
-            "measure": "上游 usage" if accurate else "本地估算",
+            "remainingTokens": max(0, threshold - context_tokens),
+            "source": "custom" if self.settings.context_window_tokens else info.get("source", "fallback"),
+            "accurate": False,
+            "measure": "本地上下文估算",
             "model": self.settings.model,
             "sessionId": session_id or None,
             "autoCompact": True,
-            "nearLimit": tokens >= int(limit * 0.75),
-            "needsCompact": tokens >= threshold,
+            "nearLimit": context_tokens >= int(threshold * 0.8),
+            "needsCompact": context_tokens >= threshold,
         }
 
+    def configure_context(self, data: dict[str, Any]) -> dict[str, Any]:
+        limit_raw = data.get("contextWindowTokens")
+        threshold_raw = data.get("compactThresholdPercent")
+        limit = parse_int_setting(limit_raw, minimum=4_000, maximum=10_000_000)
+        threshold = parse_float_setting(threshold_raw, minimum=1.0, maximum=99.0)
+        current: dict[str, Any] = {}
+        if limit is not None:
+            current["context_window_tokens"] = limit
+        if threshold is not None:
+            current["compact_threshold_percent"] = threshold
+        merge_file_config(current)
+        self.settings = get_settings().with_runtime(
+            max_tokens=self.thinking.max_tokens,
+            thinking_enabled=self.thinking.api_thinking,
+            reasoning_effort=self.thinking.reasoning_effort,
+        )
+        return {"ok": True, "context": self.context_status(), "boot": self.boot()}
+
     def save_upload(self, file: dict[str, Any]) -> dict[str, Any]:
-        name = safe_upload_name(str(file.get("name") or "upload.bin"))
+        raw_name = str(file.get("name") or "upload.bin")
+        name = safe_upload_name(raw_name)
         content = str(file.get("content") or "")
         media_type = ""
         if content.startswith("data:") and "," in content:
@@ -307,6 +339,8 @@ class DesktopApi:
         path = upload_dir / name
         path.write_bytes(data)
         result = {"ok": True, "name": name, "path": str(path), "size": len(data)}
+        if "/" in raw_name.replace("\\", "/"):
+            result["kind"] = "folder_file"
         if is_video_upload(name, media_type):
             frames = extract_video_frames(path)
             result["kind"] = "video"
@@ -320,11 +354,9 @@ class DesktopApi:
         attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
         images = [str(u) for u in (payload.get("images") or []) if isinstance(u, str) and u.startswith("data:")]
         non_image = [item for item in attachments if isinstance(item, dict)]
-        if non_image:
-            prompt += "\n\n附件文件：\n" + "\n".join(
-                f"- {item.get('name')}: {item.get('path')} ({item.get('size')} bytes)" for item in non_image
-            )
-            prompt += "\n如果需要查看图片/视频内容，请调用 inspect_media(path)。如果是文本文件，请调用 read_file(path)。"
+        attachment_note = format_attachment_prompt(non_image)
+        if attachment_note:
+            prompt += "\n\n" + attachment_note
         if images and not prompt:
             prompt = "请看这张图片。"
         if not prompt and not images:
@@ -470,9 +502,12 @@ class DesktopApi:
             "sessions": self.sessions(),
         }
 
-    def cancel(self) -> dict[str, Any]:
+    def cancel(self, data: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self._running:
             return {"ok": True, "running": False}
+        requested_turn_id = str((data or {}).get("turnId") or "").strip()
+        if requested_turn_id and self._active_turn_id and requested_turn_id != self._active_turn_id:
+            return {"ok": True, "running": self._running, "ignored": True}
         self._cancel_requested = True
         cancelled_turn_id = self._active_turn_id
         if cancelled_turn_id:
@@ -571,15 +606,19 @@ class DesktopApi:
                     emit_turn("agent:event", parse_agent_event(text))
 
                 client = DeepSeekClient(self.settings)
-                result = TuLAgent(
-                    self.settings,
-                    mode=self.mode,
-                    thinking=self.thinking.name,
-                    client=client,
-                    approve=(lambda _n, _a: True) if self.mode in {"root", "yolo"} else self._request_approval,
-                ).run(prompt, stream=True, images=images or [], on_delta=delta, on_final=final, on_event=event, should_cancel=is_cancelled, session=self.session, goal=goal)
-                self._last_usage = client.usage
-                self._record_session_usage(result.session_id, client.usage)
+                result_session_id = turn_session_id
+                try:
+                    result = TuLAgent(
+                        self.settings,
+                        mode=self.mode,
+                        thinking=self.thinking.name,
+                        client=client,
+                        approve=(lambda _n, _a: True) if self.mode in {"root", "yolo"} else self._request_approval,
+                    ).run(prompt, stream=True, images=images or [], on_delta=delta, on_final=final, on_event=event, should_cancel=is_cancelled, session=self.session, goal=goal)
+                    result_session_id = result.session_id
+                finally:
+                    self._last_usage = client.usage
+                    self._record_session_usage(result_session_id, client.usage)
                 # Only adopt the finished turn's session if the user hasn't switched to a
                 # different conversation meanwhile — otherwise the next send would land in
                 # the OLD conversation (context bleeding across chats).
@@ -646,6 +685,52 @@ def user_error_summary(error: str) -> str:
     if "NoneType" in text and "not subscriptable" in text:
         return "工具返回了空输出，旧版本处理空输出时崩溃。请更新到最新版本后重试。"
     return text[:500]
+
+
+def parse_int_setting(value: Any, *, minimum: int, maximum: int) -> int | None:
+    try:
+        number = int(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+    if number < minimum or number > maximum:
+        return None
+    return number
+
+
+def parse_float_setting(value: Any, *, minimum: float, maximum: float) -> float | None:
+    try:
+        number = float(str(value).replace("%", "").strip())
+    except (TypeError, ValueError):
+        return None
+    if number < minimum or number > maximum:
+        return None
+    return number
+
+
+def format_attachment_prompt(attachments: list[dict[str, Any]]) -> str:
+    if not attachments:
+        return ""
+    private_files: list[str] = []
+    path_files: list[str] = []
+    for item in attachments:
+        name = str(item.get("name") or "file")
+        size = item.get("size")
+        suffix = f" ({size} bytes)" if isinstance(size, int) else ""
+        kind = str(item.get("kind") or "")
+        path = str(item.get("path") or "")
+        if kind in {"folder", "folder_file", "video"} and path:
+            path_files.append(f"- {name}: {path}{suffix}")
+        else:
+            private_files.append(f"- {name}{suffix}")
+    parts: list[str] = []
+    if private_files:
+        parts.append("附件文件（普通文件只记录名称和大小，不写入本地路径）：\n" + "\n".join(private_files))
+    if path_files:
+        parts.append("文件夹/媒体附件（只有这些附件会直接提供本地路径）：\n" + "\n".join(path_files))
+        parts.append("如果需要查看文件夹/媒体内容，请调用 inspect_media(path) 或 read_file(path)。")
+    elif private_files:
+        parts.append("普通文件不会把本地路径写入对话正文；如需读取内容，请让用户提供文件夹或明确路径。")
+    return "\n".join(parts)
 
 
 def serialize_messages(messages: list[Message]) -> list[dict[str, Any]]:

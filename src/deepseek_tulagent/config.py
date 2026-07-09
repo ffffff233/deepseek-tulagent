@@ -27,6 +27,8 @@ class Settings:
     provider_format: str = "deepseek"
     thinking_enabled: bool = True
     reasoning_effort: str | None = None
+    context_window_tokens: int | None = None
+    compact_threshold_percent: float = 95.0
 
     @property
     def sessions_dir(self) -> Path:
@@ -70,6 +72,8 @@ def get_settings() -> Settings:
         default_mode=str(file_config.get("default_mode") or "root"),
         default_thinking=str(file_config.get("default_thinking") or "fast"),
         provider_format=provider_format,
+        context_window_tokens=int(file_config["context_window_tokens"]) if file_config.get("context_window_tokens") else None,
+        compact_threshold_percent=float(file_config.get("compact_threshold_percent") or 95.0),
     )
 
 

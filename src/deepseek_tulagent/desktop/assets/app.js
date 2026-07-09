@@ -39,6 +39,7 @@ const ICONS = {
   dots: '<circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none"/>',
   loader: '<path d="M12 2v4"/><path d="M12 18v4"/><path d="m4.93 4.93 2.83 2.83"/><path d="m16.24 16.24 2.83 2.83"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="m4.93 19.07 2.83-2.83"/><path d="m16.24 7.76 2.83-2.83"/>',
   check: '<path d="M20 6L9 17l-5-5"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   branch: '<path d="M4 4v8a3 3 0 0 0 3 3h13"/><path d="M16 11l4 4-4 4"/>',
   compact: '<path d="M17 11l-5-5-5 5"/><path d="M17 13l-5 5-5-5"/>',
   alert: '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
@@ -399,19 +400,21 @@ function updateContextBadge(ctx) {
   const level = ctx.needsCompact || pct >= 92 ? "danger" : (ctx.nearLimit || pct >= 75 ? "warn" : "ok");
   badge.className = `contextBadge ${level}`;
   setText("ctxPct", `上下文 ${pct.toFixed(pct >= 10 ? 0 : 1)}%`);
-  setText("ctxInput", fmtTokens(ctx.inputTokens));
-  setText("ctxOutput", fmtTokens(ctx.outputTokens));
   setText("ctxUsage", `${fmtTokens(ctx.tokens)} / ${fmtTokens(ctx.limit)}`);
-  setText("ctxCache", ctx.accurate ? `${fmtTokens(ctx.cachedTokens)} / ${ctx.cachePercent || 0}%` : "未返回");
-  setText("ctxThreshold", fmtTokens(ctx.threshold));
-  setText("ctxSource", ctx.accurate ? (ctx.measure || "上游 usage") : "本地估算");
-  const basis = ctx.accurate ? "来自上游 usage；缓存为 cached input tokens。" : "上游未返回 usage；输入、输出和上下文为本地估算，缓存不伪造。";
+  setText("ctxThreshold", `${fmtTokens(ctx.threshold)} (${ctx.thresholdPercent || 95}%)`);
+  setText("ctxRemaining", fmtTokens(ctx.remainingTokens || 0));
+  setText("ctxSource", ctx.customLimit ? "手动窗口" : sourceLabel(ctx.source));
+  const limitInput = $("ctxLimitInput");
+  const thresholdInput = $("ctxThresholdInput");
+  if (limitInput && document.activeElement !== limitInput) limitInput.value = ctx.customLimit ? String(ctx.limit || "") : "";
+  if (thresholdInput && document.activeElement !== thresholdInput) thresholdInput.value = String(ctx.thresholdPercent || 95);
+  const basis = `按当前会话消息本地估算；窗口 ${fmtTokens(ctx.limit)}，阈值 ${ctx.thresholdPercent || 95}%。`;
   setText("ctxHint", ctx.needsCompact ? `已达到自动压缩阈值。${basis}` : basis);
   const bar = $("ctxBarFill");
   if (bar) bar.style.width = `${pct}%`;
   const pop = $("ctxPopover");
   if (pop) pop.className = `ctxPopover ${level}`;
-  badge.title = ctx.accurate ? "点击查看上游 usage 统计" : "点击查看本地估算统计";
+  badge.title = "点击查看上下文窗口和压缩阈值";
 }
 
 function sourceLabel(source) {
@@ -581,6 +584,7 @@ function renderGoalDock() {
   dock.hidden = false;
   dock.className = `goalDock${state.goalCollapsed ? " collapsed" : ""}${done === total ? " complete" : ""}`;
   dock.innerHTML = `
+    ${done === total ? `<button class="goalClose" type="button" title="清除已完成任务">${icon("x", 12)}</button>` : ""}
     <button class="goalHead" type="button" data-action="toggle-goal">
       <span class="goalOrb">${done === total ? icon("check", 13) : icon("loader", 13)}</span>
       <span class="goalMeta">
@@ -605,6 +609,14 @@ function renderGoalDock() {
     state.goalCollapsed = !state.goalCollapsed;
     renderGoalDock();
   };
+  const close = dock.querySelector(".goalClose");
+  if (close) close.onclick = (event) => {
+    event.stopPropagation();
+    delete state.goalsBySession[goalSessionKey()];
+    saveGoalStore();
+    syncActiveGoalFromStore();
+    renderGoalDock();
+  };
 }
 
 function goalStatusLabel(status) {
@@ -616,7 +628,12 @@ function goalStatusLabel(status) {
 
 async function refreshModels() {
   const models = await apiMethod("models");
-  const result = await models();
+  const result = await models({
+    baseUrl: $("baseUrl") ? $("baseUrl").value : undefined,
+    apiKey: $("apiKey") ? $("apiKey").value : undefined,
+    providerFormat: $("providerFormat") ? $("providerFormat").value : undefined,
+    model: $("model") ? $("model").value : undefined,
+  });
   const fetched = result.ok && result.models && result.models.length ? result.models : [];
   // cache the last good full list so it never collapses to a single fallback item
   if (fetched.length) state.models = fetched;
@@ -1309,7 +1326,9 @@ function addUserMessageWithImages(text, images, attachments) {
       const item = document.createElement("div");
       item.className = "msgFile";
       const extra = file.kind === "video" && file.frameCount ? ` · 已抽 ${file.frameCount} 帧` : "";
-      item.textContent = `${file.name || "file"} · ${file.path || ""}${extra}`;
+      const size = Number.isFinite(Number(file.size)) ? ` · ${fmtTokens(Number(file.size))}B` : "";
+      const showPath = ["folder", "folder_file", "video"].includes(file.kind || "");
+      item.textContent = showPath ? `${file.name || "file"} · ${file.path || ""}${extra}` : `${file.name || "file"}${size}${extra}`;
       list.append(item);
       if (file.frames && file.frames.length) {
         const frames = document.createElement("div");
@@ -1516,7 +1535,8 @@ $("cancel").onclick = async () => {
   state.currentTool = null;
   // keep copy/retry/branch available on whatever was produced before the interrupt
   markMessageActions();
-  state.cancelPromise = window.pywebview.api.cancel();
+  const turnId = state.activeTurnId || "";
+  state.cancelPromise = window.pywebview.api.cancel({ turnId });
   try { await state.cancelPromise; } catch (_) {}
 };
 
@@ -1533,6 +1553,18 @@ $("format").addEventListener("change", async () => {
   await refreshModels().catch(() => {});
 });
 $("settingsBtn").onclick = () => $("settingsDialog").showModal();
+$("ctxSave").onclick = async () => {
+  const configureContext = await apiMethod("configure_context");
+  const result = await configureContext({
+    contextWindowTokens: $("ctxLimitInput").value,
+    compactThresholdPercent: $("ctxThresholdInput").value,
+  });
+  if (result.ok) {
+    if (result.boot) state.boot = result.boot;
+    updateContextBadge(result.context || (result.boot && result.boot.context) || null);
+    toast("上下文设置已保存");
+  }
+};
 $("testConn").onclick = async () => {
   const box = $("testResult");
   box.hidden = false;

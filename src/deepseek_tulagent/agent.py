@@ -176,7 +176,14 @@ class TuLAgent:
             if pending_internal_prompt:
                 model_source_messages = model_source_messages + [Message("user", pending_internal_prompt)]
                 pending_internal_prompt = None
-            model_messages = compact_context_messages(model_source_messages, self.settings.model, on_event=on_event, client=self.client)
+            model_messages = compact_context_messages(
+                model_source_messages,
+                self.settings.model,
+                on_event=on_event,
+                client=self.client,
+                context_limit=self.settings.context_window_tokens,
+                threshold_percent=self.settings.compact_threshold_percent,
+            )
             if rounds == 1 and complex_task:
                 model_messages = model_messages + [Message("user", private_execution_hint())]
             model_messages = self._with_internal_thinking(model_messages, on_event=on_event)
@@ -351,7 +358,14 @@ class TuLAgent:
     ) -> str:
         if on_event:
             on_event("tool round limit reached; finalizing")
-        messages = compact_context_messages(session.messages, self.settings.model, on_event=on_event, client=self.client)
+        messages = compact_context_messages(
+            session.messages,
+            self.settings.model,
+            on_event=on_event,
+            client=self.client,
+            context_limit=self.settings.context_window_tokens,
+            threshold_percent=self.settings.compact_threshold_percent,
+        )
         messages = messages + [
             Message(
                 "user",
@@ -1034,11 +1048,14 @@ def compact_context_messages(
     on_event: Callable[[str], None] | None = None,
     force: bool = False,
     client: DeepSeekClient | None = None,
+    context_limit: int | None = None,
+    threshold_percent: float | None = None,
 ) -> list[Message]:
     if not force and os.getenv("DSTUL_AUTO_COMPACT", "1").lower() in {"0", "false", "no"}:
         return messages
-    limit = context_window_tokens(model)
-    threshold = int(limit * 0.92)
+    limit = int(context_limit or context_window_tokens(model))
+    ratio = max(1.0, min(99.0, float(threshold_percent if threshold_percent is not None else 95.0))) / 100
+    threshold = int(limit * ratio)
     estimated = estimate_message_tokens(messages)
     if not force and estimated <= threshold:
         return messages
