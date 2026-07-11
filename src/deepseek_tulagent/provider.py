@@ -263,9 +263,14 @@ class DeepSeekClient:
         self._client: httpx.Client | None = None
         self.format = normalize_format(getattr(settings, "provider_format", "deepseek"))
         self.usage = UsageStats()
+        # Cumulative usage is useful for billing, while the context meter needs the
+        # snapshot from only the most recent upstream request.
+        self.last_usage = UsageStats()
 
     def _record_usage(self, data: dict, source: str = "upstream") -> None:
-        self.usage.merge(parse_usage_stats(data, source))
+        snapshot = parse_usage_stats(data, source)
+        self.last_usage = snapshot
+        self.usage.merge(snapshot)
 
     def _usage_snapshot(self, data: dict, source: str = "upstream") -> UsageStats:
         return parse_usage_stats(data, source)
@@ -308,6 +313,7 @@ class DeepSeekClient:
     # ---- public API ----
     def chat(self, messages: Iterable[Message]) -> str:
         messages = list(messages)
+        self.last_usage = UsageStats()
         if self.format == "anthropic":
             return self._anthropic_chat(messages, stream=False)  # type: ignore[return-value]
         if self.format == "gemini":
@@ -318,6 +324,7 @@ class DeepSeekClient:
 
     def stream_chat(self, messages: Iterable[Message]) -> Iterator[str]:
         messages = list(messages)
+        self.last_usage = UsageStats()
         if self.format == "anthropic":
             return self._anthropic_chat(messages, stream=True)  # type: ignore[return-value]
         if self.format == "gemini":
@@ -398,6 +405,7 @@ class DeepSeekClient:
                 content = delta.get("content")
                 if content:
                     yield content
+        self.last_usage = usage
         self.usage.merge(usage)
 
     def _openai_models(self) -> list[str]:
@@ -472,6 +480,7 @@ class DeepSeekClient:
                     delta = data.get("delta")
                     if delta:
                         yield delta
+        self.last_usage = usage
         self.usage.merge(usage)
 
     # ---- Anthropic / Claude ----
@@ -527,6 +536,7 @@ class DeepSeekClient:
                 delta = data.get("delta") or {}
                 if delta.get("type") == "text_delta" and delta.get("text"):
                     yield delta["text"]
+        self.last_usage = usage
         self.usage.merge(usage)
 
     def _anthropic_models(self) -> list[str]:
@@ -591,6 +601,7 @@ class DeepSeekClient:
                     text = part.get("text")
                     if text:
                         yield text
+        self.last_usage = usage
         self.usage.merge(usage)
 
     def _gemini_models(self) -> list[str]:

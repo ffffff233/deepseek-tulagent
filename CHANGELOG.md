@@ -1,5 +1,25 @@
 # 更新记录 / Changelog
 
+## v0.1.107
+
+中文：
+
+- **修复：上下文占用优先采用上游最后一次请求的真实输入 token**，并按当前会话与实际请求之间的消息增量校正；不再把一整轮累计计费 usage 当成上下文。
+- **修复：中文和图片不再被本地 token 估算严重漏算**。中文宽字符按接近逐字 token 估算，图片按视觉输入预算计入；无上游 usage 或重启恢复时显示会更接近实际值。
+- **修复：自动压缩和手动压缩都会原子写回 JSONL 会话**，切换会话或重启后不会恢复压缩前历史，也不会在每个工具轮次重复压缩。
+- **修复：Windows 后台服务状态与停止操作改用 `tasklist/taskkill`**，不再调用不存在的 Unix `kill`；工具路径统一显示为 `/`。
+- **新增：官方 Windows 安装程序**。`DeepSeekFathom-0.1.107-Setup.exe` 以当前用户身份安装，自动创建名为 **DeepSeekFathom** 的桌面和开始菜单入口，并使用新的品牌图标。
+- **同步：包版本和 README 安装链接更新到 `v0.1.107`**。
+
+English:
+
+- **Fixed: the context meter now prefers the latest upstream input-token snapshot**, adjusted by the message delta between the actual request and current session, instead of confusing cumulative billing usage with context size.
+- **Fixed: local estimates no longer severely undercount CJK text and images**, improving restored/offline sessions where upstream usage is unavailable.
+- **Fixed: automatic and manual compaction are atomically persisted to JSONL**, so compacted history survives restart and is not repeatedly summarized on every tool round.
+- **Fixed: Windows background-service status and termination now use `tasklist/taskkill`**, and displayed tool paths use portable `/` separators.
+- **Added: a standard Windows installer**. `DeepSeekFathom-0.1.107-Setup.exe` installs per user and creates branded **DeepSeekFathom** desktop and Start menu entries.
+- **Synced: package version and README install links are now `v0.1.107`**.
+
 ## v0.1.106
 
 中文：

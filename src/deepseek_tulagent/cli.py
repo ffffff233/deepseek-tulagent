@@ -401,6 +401,7 @@ def interactive(settings, mode: str, thinking_name: str, yes: bool, resume: str 
                 continue
             before = estimate_message_tokens(session.messages)
             session.messages = compact_context_messages(session.messages, settings.model, force=True)
+            session.rewrite()
             after = estimate_message_tokens(session.messages)
             print(f"compact: {before} -> {after} est tokens; recent messages kept exact")
             continue

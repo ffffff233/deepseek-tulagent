@@ -421,12 +421,14 @@ function updateContextBadge(ctx) {
   setText("ctxUsage", `${fmtTokens(ctx.tokens)} / ${fmtTokens(ctx.limit)}`);
   setText("ctxThreshold", `${fmtTokens(ctx.threshold)} (${ctx.thresholdPercent || 95}%)`);
   setText("ctxRemaining", fmtTokens(ctx.remainingTokens || 0));
-  setText("ctxSource", ctx.customLimit ? "手动窗口" : sourceLabel(ctx.source));
+  const limitSource = ctx.customLimit ? "手动窗口" : sourceLabel(ctx.limitSource || ctx.source);
+  setText("ctxSource", ctx.accurate ? `上游实测 · ${limitSource}` : limitSource);
   const limitInput = $("ctxLimitInput");
   const thresholdInput = $("ctxThresholdInput");
   if (limitInput && document.activeElement !== limitInput) limitInput.value = ctx.customLimit ? String(ctx.limit || "") : "";
   if (thresholdInput && document.activeElement !== thresholdInput) thresholdInput.value = String(ctx.thresholdPercent || 95);
-  const basis = `按当前会话消息本地估算；窗口 ${fmtTokens(ctx.limit)}，阈值 ${ctx.thresholdPercent || 95}%。`;
+  const measure = ctx.accurate ? "以上游输入为基准，并校正当前会话增量" : "按当前会话消息本地估算";
+  const basis = `${measure}；窗口 ${fmtTokens(ctx.limit)}，阈值 ${ctx.thresholdPercent || 95}%。`;
   setText("ctxHint", ctx.needsCompact ? `已达到自动压缩阈值。${basis}` : basis);
   const bar = $("ctxBarFill");
   if (bar) bar.style.width = `${pct}%`;
@@ -812,7 +814,7 @@ function addMessage(role, content, srcIndex) {
   row.className = `message ${role}`;
   if (srcIndex !== undefined && srcIndex !== null) row.dataset.src = String(srcIndex);
   const avatar = role === "user" ? "你" : "F";
-  const name = role === "user" ? "You" : "Fathom";
+  const name = role === "user" ? "You" : "DeepSeekFathom";
   row.innerHTML = `<div class="msgHead"><span class="avatar ${role}">${avatar}</span><span class="who">${name}</span></div><div class="bubble ${role}"></div>` +
     `<div class="msgActions">` +
     `<button class="msgAct copy" title="复制">${icon("copy", 13)}</button>` +
@@ -1701,7 +1703,7 @@ $("newSession").onclick = async () => {
   state.events = 0;
   state.stickToBottom = true;
   setText("eventCount", "0");
-  $("messages").innerHTML = '<div class="empty intro"><div class="introMark">Fathom</div><h1>新对话已创建</h1><p>输入任务开始，输入 <kbd>/</kbd> 调出命令。工具调用与输出会内联展开。</p></div>';
+  $("messages").innerHTML = '<div class="empty intro"><div class="introMark">DeepSeekFathom</div><h1>新对话已创建</h1><p>输入任务开始，输入 <kbd>/</kbd> 调出命令。工具调用与输出会内联展开。</p></div>';
   setText("eventMirror", "工具、思考和子代理事件会显示在这里。");
   setText("sessionState", "新会话");
   setSaveState("idle", "新会话", "未保存");

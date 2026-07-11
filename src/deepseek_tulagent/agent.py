@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 from typing import Any, Callable
+import unicodedata
 
 from .config import Settings
 from .messages import Message
@@ -135,6 +136,7 @@ class TuLAgent:
         self.tools = ToolRegistry(settings.workspace, policy=self.policy)
         self.approve = approve
         self.ask_user = ask_user
+        self.last_model_messages: list[Message] = []
 
     def run(
         self,
@@ -174,10 +176,7 @@ class TuLAgent:
             if should_cancel and should_cancel():
                 raise RuntimeError("turn cancelled")
             model_source_messages = filter_internal_automation_messages(session.messages)
-            if pending_internal_prompt:
-                model_source_messages = model_source_messages + [Message("user", pending_internal_prompt)]
-                pending_internal_prompt = None
-            model_messages = compact_context_messages(
+            compacted_messages = compact_context_messages(
                 model_source_messages,
                 self.settings.model,
                 on_event=on_event,
@@ -185,9 +184,18 @@ class TuLAgent:
                 context_limit=self.settings.context_window_tokens,
                 threshold_percent=self.settings.compact_threshold_percent,
             )
+            if compacted_messages is not model_source_messages:
+                session.messages = compacted_messages
+                session.rewrite()
+                model_source_messages = compacted_messages
+            if pending_internal_prompt:
+                model_source_messages = model_source_messages + [Message("user", pending_internal_prompt)]
+                pending_internal_prompt = None
+            model_messages = model_source_messages
             if rounds == 1 and complex_task:
                 model_messages = model_messages + [Message("user", private_execution_hint())]
             model_messages = self._with_internal_thinking(model_messages, on_event=on_event)
+            self.last_model_messages = list(model_messages)
             if stream:
                 parts: list[str] = []
                 held_parts: list[str] = []
@@ -368,13 +376,16 @@ class TuLAgent:
         if on_event:
             on_event("tool round limit reached; finalizing")
         messages = compact_context_messages(
-            session.messages,
+            filter_internal_automation_messages(session.messages),
             self.settings.model,
             on_event=on_event,
             client=self.client,
             context_limit=self.settings.context_window_tokens,
             threshold_percent=self.settings.compact_threshold_percent,
         )
+        if messages is not session.messages:
+            session.messages = messages
+            session.rewrite()
         messages = messages + [
             Message(
                 "user",
@@ -382,6 +393,7 @@ class TuLAgent:
                 "Summarize what succeeded, what failed or remains unverified, and the exact next command or user action if needed.",
             )
         ]
+        self.last_model_messages = list(messages)
         if stream:
             parts: list[str] = []
             for delta in self.client.stream_chat(messages):
@@ -1224,8 +1236,27 @@ def explicit_context_window_tokens(model: str) -> int | None:
 
 
 def estimate_message_tokens(messages: list[Message]) -> int:
-    total_chars = sum(len(message.content) + len(message.role) + 8 for message in messages)
-    return max(1, total_chars // 4)
+    if not messages:
+        return 0
+    total = 0
+    for message in messages:
+        ascii_chars = 0
+        wide_chars = 0
+        other_chars = 0
+        for char in message.content:
+            if char.isascii():
+                ascii_chars += 1
+            elif unicodedata.east_asian_width(char) in {"W", "F"}:
+                wide_chars += 1
+            else:
+                other_chars += 1
+        total += (ascii_chars + 3) // 4
+        total += wide_chars
+        total += (other_chars + 1) // 2
+        total += 4  # role and message framing
+        # Providers charge images by dimensions/detail rather than base64 length.
+        total += 1024 * len(message.images)
+    return max(1, total)
 
 
 def summarize_messages_locally(messages: list[Message], max_chars: int) -> str:

@@ -76,6 +76,7 @@ class DesktopApi:
         self._last_usage = UsageStats()
         self._usage_total = UsageStats()
         self._usage_by_session: dict[str, UsageStats] = {}
+        self._context_by_session: dict[str, dict[str, Any]] = {}
 
     def bind_window(self, window: Any) -> None:
         self.window = window
@@ -262,6 +263,8 @@ class DesktopApi:
             threshold_percent=self.settings.compact_threshold_percent,
         )
         self._record_session_usage(self.session.session_id, getattr(client, "usage", UsageStats()))
+        self._context_by_session.pop(self.session.session_id, None)
+        self.session.rewrite()
         after = estimate_message_tokens(self.session.messages)
         return {"ok": True, "before": before, "after": after, "messages": serialize_messages(self.session.messages), "context": self.context_status()}
 
@@ -273,22 +276,24 @@ class DesktopApi:
         threshold_percent = max(1.0, min(99.0, float(self.settings.compact_threshold_percent or 95.0)))
         threshold = int(limit * threshold_percent / 100)
         session_id = self.session.session_id if self.session else ""
-        context_tokens = estimate_message_tokens(messages) if messages else 0
+        local_tokens = estimate_message_tokens(messages) if messages else 0
+        snapshot = self._context_by_session.get(session_id) if session_id else None
+        use_upstream = bool(snapshot and snapshot.get("model") == self.settings.model)
+        context_tokens = int(snapshot["tokens"]) if use_upstream else local_tokens
+        usage = snapshot.get("usage") if use_upstream else UsageStats()
         percent = round((context_tokens / limit * 100), 1) if limit else 0
         threshold_percent_used = round((threshold / limit * 100), 1) if limit else threshold_percent
         return {
             "ok": True,
             "tokens": context_tokens,
             "contextTokens": context_tokens,
-            # Deprecated compatibility fields: the desktop UI no longer reports
-            # request usage/caches because upstream providers are inconsistent.
-            "estimatedInputTokens": 0,
-            "estimatedOutputTokens": 0,
-            "inputTokens": 0,
-            "outputTokens": 0,
-            "cachedTokens": 0,
-            "cachePercent": 0,
-            "usageTotalTokens": 0,
+            "estimatedInputTokens": local_tokens,
+            "estimatedOutputTokens": max(0, context_tokens - int(getattr(usage, "input_tokens", 0))),
+            "inputTokens": int(getattr(usage, "input_tokens", 0)),
+            "outputTokens": int(getattr(usage, "output_tokens", 0)),
+            "cachedTokens": int(getattr(usage, "cached_input_tokens", 0)),
+            "cachePercent": round(int(getattr(usage, "cached_input_tokens", 0)) / max(1, int(getattr(usage, "input_tokens", 0))) * 100, 1),
+            "usageTotalTokens": int(getattr(usage, "total_tokens", 0)),
             "limit": limit,
             "detectedLimit": detected_limit,
             "customLimit": bool(self.settings.context_window_tokens),
@@ -296,9 +301,10 @@ class DesktopApi:
             "thresholdPercent": threshold_percent_used,
             "percent": percent,
             "remainingTokens": max(0, threshold - context_tokens),
-            "source": "custom" if self.settings.context_window_tokens else info.get("source", "fallback"),
-            "accurate": False,
-            "measure": "本地上下文估算",
+            "source": "upstream" if use_upstream else ("custom" if self.settings.context_window_tokens else info.get("source", "fallback")),
+            "limitSource": "custom" if self.settings.context_window_tokens else info.get("source", "fallback"),
+            "accurate": use_upstream,
+            "measure": "上游输入 + 当前会话增量" if use_upstream else "本地上下文估算",
             "model": self.settings.model,
             "sessionId": session_id or None,
             "autoCompact": True,
@@ -605,6 +611,10 @@ class DesktopApi:
             turn_id = turn_id or uuid4().hex
             self._active_turn_session_id = turn_session_id
             self._active_turn_id = turn_id
+            try:
+                turn_session = SessionStore(self.settings.workspace).load(str(turn_session_id))
+            except FileNotFoundError:
+                turn_session = Session(self.settings.workspace, session_id=str(turn_session_id or uuid4()))
 
             def emit_turn(event: str, payload: dict[str, Any] | None = None) -> None:
                 if turn_id in self._abandoned_turn_ids and event != "turn:cancelled":
@@ -640,13 +650,14 @@ class DesktopApi:
                 client = DeepSeekClient(self.settings)
                 result_session_id = turn_session_id
                 try:
-                    result = TuLAgent(
+                    runner = TuLAgent(
                         self.settings,
                         mode=self.mode,
                         thinking=self.thinking.name,
                         client=client,
                         approve=(lambda _n, _a: True) if self.mode in {"root", "yolo"} else self._request_approval,
-                    ).run(prompt, stream=True, images=images or [], on_delta=delta, on_final=final, on_event=event, should_cancel=is_cancelled, session=self.session, goal=goal)
+                    )
+                    result = runner.run(prompt, stream=True, images=images or [], on_delta=delta, on_final=final, on_event=event, should_cancel=is_cancelled, session=turn_session, goal=goal)
                     result_session_id = result.session_id
                 finally:
                     self._last_usage = client.usage
@@ -656,9 +667,16 @@ class DesktopApi:
                 # the OLD conversation (context bleeding across chats).
                 current_id = self.session.session_id if self.session else None
                 self._restore_regenerated_suffix(result.session_id, restore_suffix)
+                finished_session = SessionStore(self.settings.workspace).load(result.session_id)
+                self._record_context_usage(
+                    result.session_id,
+                    getattr(client, "last_usage", UsageStats()),
+                    list(getattr(runner, "last_model_messages", []) or []),
+                    finished_session.messages,
+                )
                 if current_id in (turn_session_id, result.session_id):
-                    self.session = SessionStore(self.settings.workspace).load(result.session_id)
-                ensure_session_title(self.settings.workspace, SessionStore(self.settings.workspace).load(result.session_id))
+                    self.session = finished_session
+                ensure_session_title(self.settings.workspace, finished_session)
                 emit_turn("turn:done", {"sessionId": result.session_id, "rounds": result.rounds})
             except RuntimeError as exc:
                 self._restore_regenerated_suffix(turn_session_id, restore_suffix)
@@ -684,6 +702,25 @@ class DesktopApi:
         self._usage_total.merge(usage)
         bucket = self._usage_by_session.setdefault(session_id, UsageStats())
         bucket.merge(usage)
+
+    def _record_context_usage(
+        self,
+        session_id: str,
+        usage: UsageStats,
+        request_messages: list[Message],
+        current_messages: list[Message],
+    ) -> None:
+        if not usage.source or usage.input_tokens <= 0:
+            self._context_by_session.pop(session_id, None)
+            return
+        request_estimate = estimate_message_tokens(request_messages)
+        current_estimate = estimate_message_tokens(current_messages)
+        adjusted = max(0, usage.input_tokens + current_estimate - request_estimate) if request_messages else usage.input_tokens
+        self._context_by_session[session_id] = {
+            "model": self.settings.model,
+            "tokens": adjusted,
+            "usage": usage,
+        }
 
     def _emit(self, event: str, payload: dict[str, Any]) -> None:
         if self.window is None:
@@ -1019,7 +1056,7 @@ def main() -> None:
 
     api = DesktopApi()
     window = webview.create_window(
-        "Fathom",
+        "DeepSeekFathom",
         str(ASSET_DIR / "index.html"),
         js_api=api,
         width=1180,

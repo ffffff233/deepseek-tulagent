@@ -1,4 +1,4 @@
-# Fathom
+# DeepSeekFathom
 
 ## 中文用户请点这里
 
@@ -10,7 +10,7 @@
 
 English
 
-Fathom is a terminal coding agent built specifically around DeepSeek's OpenAI-compatible chat API. It provides local tools, session resume, slash commands, permission modes, thinking modes, and installable skills while keeping the implementation independent and compact.
+DeepSeekFathom is a terminal coding agent built specifically around DeepSeek's OpenAI-compatible chat API. It provides local tools, session resume, slash commands, permission modes, thinking modes, and installable skills while keeping the implementation independent and compact.
 It also includes a desktop entrypoint that can be packaged as a Windows exe.
 
 ## Features
@@ -54,14 +54,14 @@ deepseekTul desktop
 On Windows after installation:
 
 ```powershell
-py -3 -m pip install --upgrade "deepseek-tulagent[desktop] @ https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.106.tar.gz"
+py -3 -m pip install --upgrade "deepseek-tulagent[desktop] @ https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.107.tar.gz"
 deepseekTulDesktop
 ```
 
 Native Windows PowerShell:
 
 ```powershell
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.106.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.107.tar.gz
 deepseekTul config set --base-url https://api.deepseek.com --api-key sk-... --model deepseek-v4-flash
 deepseekTul doctor --live
 deepseekTul
@@ -70,7 +70,7 @@ deepseekTul
 Windows CMD:
 
 ```bat
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.106.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.107.tar.gz
 deepseekTul version
 deepseekTul
 ```
@@ -81,7 +81,7 @@ The desktop app uses `pywebview` and is suitable for native Windows use.
 If `git clone` is blocked by local proxy/git configuration, install directly from the tagged source tarball instead:
 
 ```bash
-python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.106.tar.gz
+python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.107.tar.gz
 ```
 
 Proxy-compatible examples:
@@ -89,7 +89,7 @@ Proxy-compatible examples:
 ```bash
 export HTTPS_PROXY=http://127.0.0.1:7890
 export HTTP_PROXY=http://127.0.0.1:7890
-python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.106.tar.gz
+python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.107.tar.gz
 ```
 
 Windows PowerShell proxy example:
@@ -97,7 +97,7 @@ Windows PowerShell proxy example:
 ```powershell
 $env:HTTPS_PROXY="http://127.0.0.1:7890"
 $env:HTTP_PROXY="http://127.0.0.1:7890"
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.106.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.107.tar.gz
 ```
 
 Windows CMD proxy example:
@@ -105,7 +105,7 @@ Windows CMD proxy example:
 ```bat
 set HTTPS_PROXY=http://127.0.0.1:7890
 set HTTP_PROXY=http://127.0.0.1:7890
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.106.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.107.tar.gz
 ```
 
 When asking the agent to fetch another GitHub repository, say something like `clone owner/repo into path`. The agent should use `clone_repo`, which tries direct git, mirror URLs, and GitHub archive download before asking you to configure `HTTP_PROXY`, `HTTPS_PROXY`, or git proxy settings.
@@ -163,7 +163,7 @@ cd deepseek-tulagent
 .\scripts\build_windows_exe.ps1
 ```
 
-Output: `dist\DeepSeekTuLAgent\DeepSeekTuLAgent.exe`. The script bundles the desktop assets and pywebview's Windows backend (the usual cause of "module not found" / blank-window errors); if the window is blank, install the free Microsoft Edge WebView2 Runtime. GitHub Actions also builds a `DeepSeekTuLAgent-windows` artifact on tagged releases (this Linux workspace cannot produce a real Windows exe directly).
+Outputs: `dist\DeepSeekFathom\DeepSeekFathom.exe` and, when Inno Setup 6 is installed, `dist\installer\DeepSeekFathom-0.1.107-Setup.exe`. The installer installs per user and creates branded **DeepSeekFathom** desktop and Start menu entries. GitHub Actions builds the same installer on tags and attaches it directly to the GitHub Release.
 
 ## Conversations
 
@@ -234,7 +234,7 @@ See [CHANGELOG.md](CHANGELOG.md) for update history.
 
 ## Context Compaction
 
-Fathom estimates conversation context before model calls. Near the model context limit, it automatically compacts older messages:
+DeepSeekFathom estimates conversation context before model calls. Near the model context limit, it automatically compacts older messages:
 
 - system prompt is preserved
 - the most recent 8 messages are kept exactly
@@ -297,7 +297,7 @@ Confirmation rules:
 
 ## Skills
 
-Fathom discovers skills from these directories, in order:
+DeepSeekFathom discovers skills from these directories, in order:
 
 - `<workspace>/.deepseek-tulagent/skills`
 - `<workspace>/.agents/skills`

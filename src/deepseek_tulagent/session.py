@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 from uuid import uuid4
 
@@ -56,10 +57,14 @@ class Session:
         if not self.persist:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("w", encoding="utf-8") as handle:
+        tmp_path = self.path.with_name(f".{self.path.name}.tmp-{os.getpid()}")
+        with tmp_path.open("w", encoding="utf-8") as handle:
             for message in self.messages:
                 event = {"session_id": self.session_id, "created_at": self.created_at, "message": _message_record(message)}
                 handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, self.path)
 
 
 class SessionStore:

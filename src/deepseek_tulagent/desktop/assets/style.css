@@ -1,4 +1,4 @@
-/* Fathom desktop — graphite theme
+/* DeepSeekFathom desktop — graphite theme
    色彩体系参考 Codex 桌面端研究结论：
    单一石墨灰底 + 白色透明度分层文字 + 发丝线边框，杜绝彩色噪音 */
 :root {
@@ -251,7 +251,7 @@ code.inline { font-family: var(--mono); font-size: 12px; background: var(--hover
 .tableCopyBtn:hover { color: var(--text); }
 .tableCopyBtn.copied { color: var(--ok); }
 
-/* math: KaTeX powers full LaTeX; these wrappers make it feel native to Fathom. */
+/* math: KaTeX powers full LaTeX; these wrappers make it feel native to DeepSeekFathom. */
 .mathBlock { margin: 10px 0; padding: 10px 12px; overflow-x: auto; overflow-y: hidden; text-align: center; font-size: 15px; background: var(--bg-under); border: 1px solid var(--line); border-radius: var(--r-row); }
 .mathBlock .katex-display { margin: 0; }
 .mathBlock .katex-display > .katex { white-space: nowrap; }

@@ -1,8 +1,8 @@
-# Fathom
+# DeepSeekFathom
 
 简体中文 | [English](README.md)
 
-Fathom 是一个专门适配 DeepSeek OpenAI 兼容接口的终端编程代理。它支持本地工具、会话恢复、`/` 命令面板、权限模式、思考模式和本地技能目录。
+DeepSeekFathom 是一个专门适配 DeepSeek OpenAI 兼容接口的终端编程代理。它支持本地工具、会话恢复、`/` 命令面板、权限模式、思考模式和本地技能目录。
 同时提供桌面端入口，可打包成 Windows exe。
 
 ## 功能
@@ -43,14 +43,14 @@ deepseekTul desktop
 Windows 安装后也可以直接运行：
 
 ```powershell
-py -3 -m pip install --upgrade "deepseek-tulagent[desktop] @ https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.106.tar.gz"
+py -3 -m pip install --upgrade "deepseek-tulagent[desktop] @ https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.107.tar.gz"
 deepseekTulDesktop
 ```
 
 Windows PowerShell 原生安装：
 
 ```powershell
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.106.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.107.tar.gz
 deepseekTul config set --base-url https://api.deepseek.com --api-key sk-你的key --model deepseek-v4-flash
 deepseekTul doctor --live
 deepseekTul
@@ -59,7 +59,7 @@ deepseekTul
 Windows CMD：
 
 ```bat
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.106.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.107.tar.gz
 deepseekTul version
 deepseekTul
 ```
@@ -70,7 +70,7 @@ Windows 原生可以使用 `deepseekTul run`、`config`、`update`、`sessions` 
 如果用户机器上的 `git clone` 因代理、端口写法或 git 配置失败，可以不依赖 git，直接安装 GitHub tag 源码包：
 
 ```bash
-python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.106.tar.gz
+python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.107.tar.gz
 ```
 
 代理环境示例：
@@ -78,7 +78,7 @@ python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/
 ```bash
 export HTTPS_PROXY=http://127.0.0.1:7890
 export HTTP_PROXY=http://127.0.0.1:7890
-python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.106.tar.gz
+python3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.107.tar.gz
 ```
 
 Windows PowerShell 代理示例：
@@ -86,7 +86,7 @@ Windows PowerShell 代理示例：
 ```powershell
 $env:HTTPS_PROXY="http://127.0.0.1:7890"
 $env:HTTP_PROXY="http://127.0.0.1:7890"
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.106.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.107.tar.gz
 ```
 
 Windows CMD 代理示例：
@@ -94,7 +94,7 @@ Windows CMD 代理示例：
 ```bat
 set HTTPS_PROXY=http://127.0.0.1:7890
 set HTTP_PROXY=http://127.0.0.1:7890
-py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.106.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/deepseek-tulagent/archive/refs/tags/v0.1.107.tar.gz
 ```
 
 让 agent 拉取其他 GitHub 仓库时，可以直接说“把 `owner/repo` 拉到 `path`”。它会优先使用 `clone_repo` 工具，自动尝试直连、镜像和 GitHub archive 下载，不会反复手写同一批失败的 `git clone` 命令。全部失败后才会提示你配置 `HTTP_PROXY` / `HTTPS_PROXY` 或 git proxy。
@@ -144,10 +144,11 @@ cd deepseek-tulagent
 生成位置：
 
 ```text
-dist\DeepSeekTuLAgent\DeepSeekTuLAgent.exe
+dist\DeepSeekFathom\DeepSeekFathom.exe
+dist\installer\DeepSeekFathom-0.1.107-Setup.exe
 ```
 
-GitHub Actions 也会在推送 tag 时构建 Windows artifact：`DeepSeekTuLAgent-windows`。
+安装程序会安装到当前用户目录，并自动创建名为 **DeepSeekFathom** 的桌面和开始菜单入口。GitHub Actions 也会在推送 tag 时构建 Windows artifact，并把 Setup EXE 上传到 GitHub Release。
 当前仓库所在的 Linux 环境不能直接产出真正 Windows exe；需要在 Windows 或 GitHub Actions 的 `windows-latest` 上构建。
 
 ## 配置
@@ -257,7 +258,7 @@ root + fast + deepseek-v4-flash
 
 ## 上下文压缩
 
-Fathom 会估算消息上下文大小。接近模型上下文窗口时，会自动压缩旧消息：
+DeepSeekFathom 会估算消息上下文大小。接近模型上下文窗口时，会自动压缩旧消息：
 
 - 保留系统提示
 - 保留最近 8 条消息原文
@@ -353,7 +354,7 @@ deepseekTul sessions list
 
 ## 技能目录
 
-Fathom 会发现这些目录里的技能：
+DeepSeekFathom 会发现这些目录里的技能：
 
 - `<workspace>/.deepseek-tulagent/skills`
 - `<workspace>/.agents/skills`

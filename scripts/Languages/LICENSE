@@ -1,11 +1,6 @@
-DeepSeek TuLAgent desktop UI attribution
+MIT License
 
-The desktop workspace UI in this project is inspired by Reasonix Desktop:
-https://github.com/esengine/DeepSeek-Reasonix
-
-Reasonix is distributed under the MIT License:
-
-Copyright (c) 2026 Reasonix Contributors
+Copyright (c) 2019 - 2020 kirakira
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -24,11 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-The Windows installer includes the Simplified Chinese Inno Setup translation
-maintained by Zhenghan Yang (Kira):
-https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation
-
-That translation is distributed under the MIT License; its license text is
-included at scripts/Languages/LICENSE.
-

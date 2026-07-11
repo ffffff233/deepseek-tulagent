@@ -10,7 +10,7 @@ import subprocess
 import urllib.parse
 import zipfile
 
-from deepseek_tulagent.agent import RECOVER_AFTER_TOOL_FAILURE_PROMPT, TuLAgent, compact_context_messages, context_window_info, context_window_tokens, filter_internal_automation_messages, is_question_mark_only, normalize_subagent_mode_and_thinking, normalize_subagent_specs, normalize_user_question, parse_tool_call, plainify_assistant_text, promises_more_work, trim_tool_content, tool_result_message
+from deepseek_tulagent.agent import RECOVER_AFTER_TOOL_FAILURE_PROMPT, TuLAgent, compact_context_messages, context_window_info, context_window_tokens, estimate_message_tokens, filter_internal_automation_messages, is_question_mark_only, normalize_subagent_mode_and_thinking, normalize_subagent_specs, normalize_user_question, parse_tool_call, plainify_assistant_text, promises_more_work, trim_tool_content, tool_result_message
 from deepseek_tulagent.cli import main
 from deepseek_tulagent.config import Settings, get_settings, merge_file_config, resolve_model
 from deepseek_tulagent.messages import Message
@@ -103,6 +103,19 @@ def test_parse_provider_usage_stats():
     assert responses.output_tokens == 10
     assert responses.cached_input_tokens == 30
     assert responses.total_tokens == 100
+
+
+def test_client_keeps_latest_usage_separate_from_cumulative(tmp_path: Path):
+    from deepseek_tulagent.provider import DeepSeekClient
+
+    client = DeepSeekClient(settings(tmp_path))
+    client._record_usage({"usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}})
+    client._record_usage({"usage": {"prompt_tokens": 180, "completion_tokens": 30, "total_tokens": 210}})
+
+    assert client.usage.input_tokens == 280
+    assert client.usage.total_tokens == 330
+    assert client.last_usage.input_tokens == 180
+    assert client.last_usage.output_tokens == 30
 
     anthropic = parse_usage_stats(
         {"usage": {"input_tokens": 80, "output_tokens": 12, "cache_creation_input_tokens": 40, "cache_read_input_tokens": 25}},
@@ -1822,6 +1835,8 @@ def test_desktop_manual_compact(monkeypatch, tmp_path: Path):
     assert "handoff summary" in api.session.messages[1].content
     assert isinstance(result["messages"], list)
     assert result["context"]["tokens"] == result["after"]
+    reloaded = SessionStore(tmp_path).load("s")
+    assert [message.content for message in reloaded.messages] == [message.content for message in api.session.messages]
 
 
 def test_desktop_context_status_reports_local_context_threshold(monkeypatch, tmp_path: Path):
@@ -1857,6 +1872,19 @@ def test_desktop_context_status_reports_local_context_threshold(monkeypatch, tmp
     assert unchanged["tokens"] == status["tokens"]
     assert unchanged["usageTotalTokens"] == 0
     assert unchanged["source"] == "model-name"
+
+    api._context_by_session["s"] = {
+        "model": "custom-32k",
+        "tokens": 2450,
+        "usage": UsageStats(input_tokens=2300, output_tokens=200, cached_input_tokens=1200, total_tokens=2500, source="upstream"),
+    }
+    measured = api.context_status()
+    assert measured["tokens"] == 2450
+    assert measured["inputTokens"] == 2300
+    assert measured["cachedTokens"] == 1200
+    assert measured["accurate"] is True
+    assert measured["source"] == "upstream"
+    assert measured["measure"] == "上游输入 + 当前会话增量"
 
     configured = api.configure_context({"contextWindowTokens": "64000", "compactThresholdPercent": "90"})
     assert configured["ok"] is True
@@ -2570,6 +2598,36 @@ def test_context_compaction_keeps_recent_messages(monkeypatch):
     assert len(compacted) < len(messages)
     assert "handoff summary" in compacted[1].content
     assert "old 19" in compacted[-1].content
+
+
+def test_token_estimate_handles_cjk_and_images():
+    english = estimate_message_tokens([Message("user", "a" * 400)])
+    chinese = estimate_message_tokens([Message("user", "中" * 400)])
+    image = estimate_message_tokens([Message("user", "看图", images=["data:image/png;base64,abc"])])
+
+    assert 95 <= english <= 110
+    assert chinese >= 400
+    assert image >= 1024
+
+
+def test_auto_compaction_is_persisted(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.agent as agent
+    from deepseek_tulagent.session import Session
+
+    monkeypatch.setattr(agent, "context_window_tokens", lambda _model: 200)
+    session = Session(tmp_path, session_id="auto-compact")
+    session.messages = [Message("system", "system")]
+    session.messages.extend(Message("user", "old " + str(index) + " " + ("x" * 200)) for index in range(20))
+    session.rewrite()
+
+    result = TuLAgent(settings(tmp_path), client=FakeClient(["persisted summary", "final answer"])).run(
+        "new request", session=session, require_todo=False
+    )
+
+    assert result.answer == "final answer"
+    reloaded = SessionStore(tmp_path).load("auto-compact")
+    assert "persisted summary" in reloaded.messages[1].content
+    assert len(reloaded.messages) < 23
 
 
 def test_context_window_info_handles_current_global_and_china_models():

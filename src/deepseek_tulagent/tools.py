@@ -127,7 +127,7 @@ class ToolRegistry:
         """Workspace-relative path for display, or the absolute path when outside it
         (full-access mode) so we never crash on relative_to()."""
         try:
-            return str(path.relative_to(self.workspace))
+            return path.relative_to(self.workspace).as_posix()
         except ValueError:
             return str(path)
 
@@ -157,7 +157,7 @@ class ToolRegistry:
             if should_skip(path):
                 continue
             try:
-                rel = str(path.relative_to(base))
+                rel = path.relative_to(base).as_posix()
             except ValueError:
                 rel = str(path)
             entries.append(rel + ("/" if path.is_dir() else ""))
@@ -193,6 +193,15 @@ class ToolRegistry:
             except subprocess.TimeoutExpired:
                 return ToolResult(False, f"search timed out after {timeout}s")
             lines = completed.stdout.splitlines()[:max_matches]
+            workspace_prefix = str(self.workspace) + os.sep
+            normalized_lines: list[str] = []
+            for line in lines:
+                if line.startswith(workspace_prefix):
+                    line = line[len(workspace_prefix):]
+                    path_part, separator, detail = line.partition(":")
+                    line = path_part.replace("\\", "/") + separator + detail
+                normalized_lines.append(line)
+            lines = normalized_lines
             if len(completed.stdout.splitlines()) > max_matches:
                 lines.append("...")
             if completed.returncode not in {0, 1}:
@@ -450,7 +459,10 @@ class ToolRegistry:
         if not pid_path.exists():
             return ToolResult(True, f"Service {name} is not recorded")
         pid = int(pid_path.read_text(encoding="utf-8").strip())
-        subprocess.run(["kill", str(pid)], capture_output=True, text=True)
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True)
+        else:
+            subprocess.run(["kill", str(pid)], capture_output=True, text=True)
         pid_path.unlink(missing_ok=True)
         return ToolResult(True, f"Stopped {name} pid={pid}")
 
@@ -490,6 +502,13 @@ def safe_name(name: str) -> str:
 def process_alive(pid_path: Path) -> bool:
     try:
         pid = int(pid_path.read_text(encoding="utf-8").strip())
+        if os.name == "nt":
+            completed = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+            )
+            return completed.returncode == 0 and f'"{pid}"' in completed.stdout
         return subprocess.run(["kill", "-0", str(pid)], capture_output=True).returncode == 0
     except (OSError, ValueError):
         return False
