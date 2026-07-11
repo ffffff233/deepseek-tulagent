@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, replace as replace_settings
 import base64
+import binascii
+from email.message import Message as EmailMessage
 import json
 import mimetypes
 import os
@@ -432,11 +434,22 @@ class DesktopApi:
             media_type = content[5:].split(";", 1)[0]
         if "," in content:
             content = content.split(",", 1)[1]
-        data = base64.b64decode(content)
+        try:
+            data = base64.b64decode(content, validate=True)
+        except (binascii.Error, ValueError):
+            return {"ok": False, "error": "附件内容不是有效的 Base64 数据"}
+        if len(data) > MAX_BROWSER_UPLOAD_BYTES:
+            return {"ok": False, "error": "浏览器兼容附件超过 32 MB，请使用本机文件选择器"}
         upload_dir = self.settings.workspace / ".deepseek-tulagent" / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
-        path = upload_dir / name
-        path.write_bytes(data)
+        path = unique_attachment_path(upload_dir, name)
+        temp_path = upload_dir / f".{path.name}.part-{uuid4().hex}"
+        try:
+            temp_path.write_bytes(data)
+            os.replace(temp_path, path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+        name = path.name
         result = {"ok": True, "name": name, "path": str(path), "size": len(data), "kind": "uploaded_file"}
         if "/" in raw_name.replace("\\", "/"):
             result["kind"] = "folder_file"
@@ -472,20 +485,26 @@ class DesktopApi:
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             return {"ok": False, "error": "只支持 http/https 文件链接"}
-        name = safe_upload_name(unquote(Path(parsed.path).name) or "network-download.bin")
         upload_dir = self.settings.workspace / ".deepseek-tulagent" / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
-        path = upload_dir / name
+        path: Path | None = None
+        temp_path: Path | None = None
         try:
             with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0), follow_redirects=True) as client:
                 with client.stream("GET", url) as response:
                     response.raise_for_status()
-                    declared = int(response.headers.get("content-length") or 0)
+                    name = network_attachment_name(url, response)
+                    path = unique_attachment_path(upload_dir, name)
+                    temp_path = upload_dir / f".{path.name}.part-{uuid4().hex}"
+                    try:
+                        declared = int(response.headers.get("content-length") or 0)
+                    except (TypeError, ValueError):
+                        declared = 0
                     if declared > MAX_NETWORK_ATTACHMENT_BYTES:
                         return {"ok": False, "error": "网络文件超过 100 MB，已停止下载"}
                     size = 0
                     too_large = False
-                    with path.open("wb") as stream:
+                    with temp_path.open("wb") as stream:
                         for chunk in response.iter_bytes(1024 * 1024):
                             size += len(chunk)
                             if size > MAX_NETWORK_ATTACHMENT_BYTES:
@@ -493,12 +512,24 @@ class DesktopApi:
                                 break
                             stream.write(chunk)
                     if too_large:
-                        path.unlink(missing_ok=True)
                         return {"ok": False, "error": "网络文件超过 100 MB，已停止下载"}
+                    os.replace(temp_path, path)
+                    temp_path = None
         except Exception as exc:
-            path.unlink(missing_ok=True)
             return {"ok": False, "error": str(exc)}
-        return {"ok": True, "name": name, "path": str(path), "size": path.stat().st_size, "kind": "network_file"}
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+        if path is None or not path.is_file():
+            return {"ok": False, "error": "网络附件没有生成有效文件"}
+        return {
+            "ok": True,
+            "name": path.name,
+            "path": str(path),
+            "size": path.stat().st_size,
+            "kind": "network_file",
+            "sourceUrl": url,
+        }
 
     def send(self, payload: dict[str, Any]) -> dict[str, Any]:
         prompt = str(payload.get("prompt") or "").strip()
@@ -1096,7 +1127,7 @@ def serialize_messages(messages: list[Message]) -> list[dict[str, Any]]:
                 continue
         pending_tool = None
         visible.append({"role": message.role, "content": content, "srcIndex": idx})
-    return visible[-320:]
+    return visible
 
 
 def estimate_cached_context_tokens(messages: list[Message]) -> int:
@@ -1219,6 +1250,42 @@ def safe_upload_name(name: str) -> str:
         cleaned = cleaned.replace("..", ".")
     cleaned = cleaned.strip(". ")
     return cleaned[:120] or "upload.bin"
+
+
+def unique_attachment_path(directory: Path, name: str) -> Path:
+    candidate = directory / safe_upload_name(name)
+    if not candidate.exists():
+        return candidate
+    stem, suffix = candidate.stem, candidate.suffix
+    for index in range(2, 10_000):
+        numbered = directory / f"{stem} ({index}){suffix}"
+        if not numbered.exists():
+            return numbered
+    return directory / f"{stem} ({uuid4().hex[:8]}){suffix}"
+
+
+def network_attachment_name(url: str, response: Any) -> str:
+    disposition = str(response.headers.get("content-disposition") or "")
+    if disposition:
+        message = EmailMessage()
+        message["content-disposition"] = disposition
+        filename = message.get_filename()
+        if filename:
+            return safe_upload_name(str(filename))
+
+    candidates = [url]
+    final_url = str(getattr(response, "url", "") or "")
+    if final_url and final_url != url:
+        candidates.append(final_url)
+    for candidate in candidates:
+        parsed = urlparse(candidate)
+        filename = unquote(Path(parsed.path).name)
+        if filename:
+            return safe_upload_name(filename)
+
+    media_type = str(response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    extension = mimetypes.guess_extension(media_type) or ".bin"
+    return safe_upload_name("network-download" + extension)
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".mpeg", ".mpg"}

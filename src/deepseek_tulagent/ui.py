@@ -657,20 +657,55 @@ def read_bracketed_paste(fd: int, buffer: list[str]) -> None:
 
 
 def should_submit_newline(fd: int) -> bool:
-    ready, _, _ = select.select([fd], [], [], 0.015)
-    return not ready
+    return not wait_for_fd_input(fd, 0.015)
 
 
 def read_escape_suffix(fd: int) -> str:
     chars: list[str] = []
     for timeout in (0.8, 0.25, 0.08, 0.03):
-        ready, _, _ = select.select([fd], [], [], timeout)
-        if not ready:
+        if not wait_for_fd_input(fd, timeout):
             break
         chars.append(read_raw_char(fd))
         if "".join(chars) in {"[A", "[B", "[C", "[D", "OA", "OB", "OC", "OD"}:
             break
     return "".join(chars)
+
+
+def wait_for_fd_input(fd: int, timeout: float) -> bool:
+    """Wait for terminal/pipe input on both POSIX and Windows file descriptors."""
+    try:
+        ready, _, _ = select.select([fd], [], [], timeout)
+        return bool(ready)
+    except (OSError, ValueError):
+        if os.name != "nt":
+            raise
+    deadline = time.monotonic() + max(timeout, 0.0)
+    while True:
+        if windows_fd_has_input(fd):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.005, remaining))
+
+
+def windows_fd_has_input(fd: int) -> bool:
+    try:
+        import ctypes
+        import msvcrt
+
+        handle = msvcrt.get_osfhandle(fd)
+        available = ctypes.c_ulong(0)
+        ok = ctypes.windll.kernel32.PeekNamedPipe(
+            ctypes.c_void_p(handle), None, 0, None, ctypes.byref(available), None
+        )
+        if ok:
+            return available.value > 0
+        if fd == sys.stdin.fileno():
+            return bool(msvcrt.kbhit())
+    except (ImportError, OSError, ValueError):
+        return False
+    return False
 
 
 def assistant_prefix() -> str:

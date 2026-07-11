@@ -793,6 +793,7 @@ def test_initial_messages_keep_large_system_prompt_cacheable(tmp_path: Path):
     assert "Available tools:" in initial[0].content
     assert "cf题" in initial[0].content
     assert "Use delegate_agent proactively" in initial[0].content
+    assert "preserve CSS `*` selectors" in initial[0].content
     assert "repo-debug" not in initial[0].content
     assert "repo-debug" in initial[1].content
 
@@ -1018,6 +1019,30 @@ def test_agent_executes_explicit_json_tool_call(tmp_path: Path):
     assert "TOOL_RESULT name=run_shell" in transcript
     assert "repo-ok" in transcript
     assert result.answer == "工具结果是 repo-ok。"
+
+
+def test_write_file_supports_empty_content_and_rejects_directory(tmp_path: Path):
+    import pytest
+
+    tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
+    empty = tools.run("write_file", {"path": "empty.txt", "content": ""})
+    assert empty.ok is True
+    assert (tmp_path / "empty.txt").read_bytes() == b""
+
+    with pytest.raises(ToolError, match="target is a directory"):
+        tools.run("write_file", {"path": str(tmp_path), "content": "wrong"})
+    assert not list(tmp_path.parent.glob(f".{tmp_path.name}.tmp-*"))
+
+
+def test_write_file_rejects_ellipsis_placeholder_path(tmp_path: Path):
+    import pytest
+
+    tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
+    for placeholder in ("...", "…"):
+        with pytest.raises(ToolError, match="placeholder"):
+            tools.run("write_file", {"path": placeholder, "content": "..."})
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_tool_result_is_sent_as_user_context_not_tool_role(tmp_path: Path):
@@ -1306,6 +1331,10 @@ def test_clone_repo_rejects_non_empty_target(tmp_path: Path):
 
 
 def test_windows_style_workspace_path_is_normalized_on_posix(tmp_path: Path):
+    import pytest
+
+    if os.name == "nt":
+        pytest.skip("Windows drive paths are real absolute paths on Windows")
     tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
     result = tools.run("write_file", {"path": r"D:\deepseek项目\open-design\README.md", "content": "ok"})
     assert result.ok is True
@@ -1992,6 +2021,103 @@ def test_desktop_upload_saves_file(monkeypatch, tmp_path: Path):
     assert ".." not in result["name"]
 
 
+def test_desktop_upload_preserves_same_named_files(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    first = api.save_upload({"name": "notes.txt", "content": "data:text/plain;base64,b25l"})
+    second = api.save_upload({"name": "notes.txt", "content": "data:text/plain;base64,dHdv"})
+
+    assert first["name"] == "notes.txt"
+    assert second["name"] == "notes (2).txt"
+    assert Path(first["path"]).read_text(encoding="utf-8") == "one"
+    assert Path(second["path"]).read_text(encoding="utf-8") == "two"
+
+
+def test_desktop_upload_rejects_invalid_base64(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    result = desktop.DesktopApi().save_upload({"name": "bad.txt", "content": "data:text/plain;base64,%%%"})
+    assert result["ok"] is False
+    assert "Base64" in result["error"]
+
+
+def test_network_attachment_uses_server_filename_and_never_overwrites(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+
+    class Response:
+        headers = {
+            "content-disposition": "attachment; filename*=UTF-8''%E6%B8%B8%E6%88%8F.html",
+            "content-length": "4",
+            "content-type": "text/html",
+        }
+        url = "https://cdn.example.test/download/opaque-id"
+
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        def raise_for_status(self): return None
+        def iter_bytes(self, _size): yield b"game"
+
+    class Client:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        def stream(self, *_args, **_kwargs): return Response()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setattr("httpx.Client", Client)
+    api = desktop.DesktopApi()
+    first = api.download_attachment({"url": "https://example.test/file?id=1"})
+    second = api.download_attachment({"url": "https://example.test/file?id=1"})
+
+    assert first["name"] == "游戏.html"
+    assert second["name"] == "游戏 (2).html"
+    assert first["sourceUrl"] == "https://example.test/file?id=1"
+    assert Path(first["path"]).read_bytes() == b"game"
+    assert Path(second["path"]).read_bytes() == b"game"
+
+
+def test_failed_network_attachment_keeps_existing_file_and_cleans_part(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+
+    class Response:
+        headers = {
+            "content-disposition": 'attachment; filename="keep.txt"',
+            "content-length": str(desktop.MAX_NETWORK_ATTACHMENT_BYTES + 1),
+        }
+        url = "https://example.test/keep.txt"
+
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        def raise_for_status(self): return None
+
+    class Client:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        def stream(self, *_args, **_kwargs): return Response()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setattr("httpx.Client", Client)
+    api = desktop.DesktopApi()
+    upload_dir = api.settings.workspace / ".deepseek-tulagent" / "uploads"
+    upload_dir.mkdir(parents=True)
+    existing = upload_dir / "keep.txt"
+    existing.write_text("original", encoding="utf-8")
+
+    result = api.download_attachment({"url": "https://example.test/keep.txt"})
+
+    assert result["ok"] is False
+    assert existing.read_text(encoding="utf-8") == "original"
+    assert not list(upload_dir.glob("*.part-*"))
+
+
 def test_desktop_configure_merges_existing_key(monkeypatch, tmp_path: Path):
     import deepseek_tulagent.desktop.app as desktop
 
@@ -2232,7 +2358,7 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert '<img src="app-icon.png" alt="">' in brand
     assert "<svg" not in brand
     assert 'class="introLogo" src="app-icon.png"' in html
-    assert '<span id="version">v0.1.5</span>' in html
+    assert '<span id="version">v0.1.6</span>' in html
     assert 'id="settingsView"' in html and '<dialog id="settingsDialog"' not in html
     assert 'id="settingsBackTop"' in html and 'id="settingsBackBottom"' in html
     js = (root / "app.js").read_text(encoding="utf-8")
@@ -2246,7 +2372,7 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert ".logo img" in css
     assert "background: transparent" in css
     assert 'id="sessionScrollbar"' in html and 'id="sessionScrollThumb"' in html
-    assert 'style.css?v=0.1.5' in html and 'app.js?v=0.1.5' in html
+    assert 'style.css?v=0.1.6' in html and 'app.js?v=0.1.6' in html
     assert 'state.currentAssistant.remove();' in js
     assert 'event === "native:drop"' in js
     assert "sessions.slice(0, 40)" not in js
@@ -3083,9 +3209,9 @@ def test_cli_and_desktop_versions_are_independent():
     assert project["name"] == "deepseek-tulagent"
     assert project["version"] == __version__ == "0.1.108"
     assert project["scripts"]["deepseekfathom"] == "deepseek_tulagent.cli:main"
-    assert DESKTOP_VERSION == "0.1.5"
+    assert DESKTOP_VERSION == "0.1.6"
     assert REPO == "ffffff233/DeepSeekFathom"
-    assert '#define MyAppVersion "0.1.5"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
+    assert '#define MyAppVersion "0.1.6"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
     assert 'filevers=(0, 1, 5, 0)' in (root / "assets" / "windows-version-info.txt").read_text(encoding="utf-8")
 
 
@@ -3204,6 +3330,35 @@ def test_resume_global_session_appends_to_original_file(monkeypatch, tmp_path: P
     assert not (workspace / ".deepseek-tulagent" / "sessions" / f"{session_id}.jsonl").exists()
 
 
+def test_session_load_skips_corrupt_jsonl_rows_without_hiding_conversation(tmp_path: Path):
+    sessions_dir = tmp_path / ".deepseek-tulagent" / "sessions"
+    sessions_dir.mkdir(parents=True)
+    session_id = "10000000-0000-4000-8000-000000000001"
+    path = sessions_dir / f"{session_id}.jsonl"
+    valid_user = json.dumps({"session_id": session_id, "created_at": "now", "message": {"role": "user", "content": "保留我"}}, ensure_ascii=False)
+    valid_answer = json.dumps({"session_id": session_id, "created_at": "now", "message": {"role": "assistant", "content": "还在"}}, ensure_ascii=False)
+    path.write_text(valid_user + "\n" + '{"message":' + "\n" + valid_answer + "\n", encoding="utf-8")
+
+    store = SessionStore(tmp_path)
+    loaded = store.load(session_id)
+    listed = store.list()
+
+    assert [message.content for message in loaded.messages] == ["保留我", "还在"]
+    assert listed[0]["session_id"] == session_id
+    assert listed[0]["messages"] == 2
+
+
+def test_desktop_transcript_does_not_hide_messages_before_320_limit():
+    from deepseek_tulagent.desktop.app import serialize_messages
+
+    messages = [Message("user" if index % 2 == 0 else "assistant", f"message-{index}") for index in range(402)]
+    visible = serialize_messages(messages)
+
+    assert len(visible) == 402
+    assert visible[0]["content"] == "message-0"
+    assert visible[-1]["content"] == "message-401"
+
+
 class FakeWindow:
     def __init__(self, height=12, width=48):
         self.height = height
@@ -3223,6 +3378,11 @@ class FakeWindow:
 
 
 def test_tui_draw_avoids_bottom_right_curses_error(monkeypatch):
+    import deepseek_tulagent.tui as tui_module
+    import pytest
+
+    if tui_module.curses is None:
+        pytest.skip("curses is not included in the Windows standard library")
     monkeypatch.setattr("deepseek_tulagent.tui.curses.color_pair", lambda _n: 0)
     state = TuiState(model="deepseek-v4-flash", mode="root", thinking="fast")
     ChatTui(state, lambda _text, _state: None, lambda _cmd, _state: False)._draw(FakeWindow())
@@ -3320,9 +3480,10 @@ def test_redraw_composer_handles_wide_chinese_text(monkeypatch):
 
 
 def test_tail_for_width_keeps_single_line_window():
-    assert tail_for_width("abcdef", 4) == "…def"
+    prefix = "..." if os.name == "nt" else "…"
+    assert tail_for_width("abcdef", 4) == ("...f" if os.name == "nt" else "…def")
     chinese = tail_for_width("画画画画", 5)
-    assert chinese.startswith("…")
+    assert chinese.startswith(prefix)
     assert display_width(chinese) <= 5
 
 

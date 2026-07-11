@@ -57,14 +57,17 @@ class Session:
         if not self.persist:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self.path.with_name(f".{self.path.name}.tmp-{os.getpid()}")
-        with tmp_path.open("w", encoding="utf-8") as handle:
-            for message in self.messages:
-                event = {"session_id": self.session_id, "created_at": self.created_at, "message": _message_record(message)}
-                handle.write(json.dumps(event, ensure_ascii=False) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, self.path)
+        tmp_path = self.path.with_name(f".{self.path.name}.tmp-{os.getpid()}-{uuid4().hex}")
+        try:
+            with tmp_path.open("w", encoding="utf-8") as handle:
+                for message in self.messages:
+                    event = {"session_id": self.session_id, "created_at": self.created_at, "message": _message_record(message)}
+                    handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, self.path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
 
 class SessionStore:
@@ -76,15 +79,21 @@ class SessionStore:
         if not self.sessions_dir.exists():
             return []
         rows: list[dict] = []
-        for path in sorted(self.sessions_dir.glob("*.jsonl"), key=lambda item: item.stat().st_mtime, reverse=True):
-            loaded = self.load(path.stem)
+        paths = list(self.sessions_dir.glob("*.jsonl"))
+        paths.sort(key=safe_mtime, reverse=True)
+        for path in paths:
+            try:
+                loaded = self.load(path.stem)
+                stat = path.stat()
+            except (OSError, FileNotFoundError):
+                continue
             meta = self.metadata(loaded.session_id)
             first_user = next((message.content for message in loaded.messages if message.role == "user"), "")
             rows.append(
                 {
                     "session_id": loaded.session_id,
                     "created_at": loaded.created_at,
-                    "updated_at": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
+                    "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
                     "path": str(path),
                     "messages": len(loaded.messages),
                     "title": meta.get("title") or session_title_from_text(first_user),
@@ -103,10 +112,17 @@ class SessionStore:
             for line in handle:
                 if not line.strip():
                     continue
-                event = json.loads(line)
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
                 if event.get("created_at"):
                     session.created_at = event["created_at"]
                 message = event.get("message") or {}
+                if not isinstance(message, dict) or message.get("role") not in {"system", "user", "assistant", "tool"}:
+                    continue
                 images = message.get("images")
                 session.messages.append(
                     Message(
@@ -154,9 +170,19 @@ class SessionStore:
         path = self.metadata_path(session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid4().hex}")
-        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp_path, path)
+        try:
+            tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            os.replace(tmp_path, path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
         return data
+
+
+def safe_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def session_title_from_text(text: str) -> str:

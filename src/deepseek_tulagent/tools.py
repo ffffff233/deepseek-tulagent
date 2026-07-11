@@ -18,6 +18,7 @@ import re
 import urllib.parse
 import urllib.request
 import urllib.robotparser
+from uuid import uuid4
 import zipfile
 
 from .policy import ApprovalPolicy
@@ -289,18 +290,28 @@ class ToolRegistry:
     def write_file(self, arguments: dict[str, Any]) -> ToolResult:
         if not self.allow_write:
             raise ToolError("write_file is disabled in this mode")
-        path = self.resolve_workspace_path(require_str(arguments, "path"))
-        content = require_str(arguments, "content")
+        raw_path = require_str(arguments, "path")
+        if raw_path.strip() in {"...", "…"}:
+            raise ToolError("write_file path is a placeholder, not a file path")
+        path = self.resolve_workspace_path(raw_path)
+        content = arguments.get("content")
+        if not isinstance(content, str):
+            raise ToolError("Missing string argument: content")
+        if path.is_dir():
+            raise ToolError(f"write_file target is a directory, not a file: {self._display_path(path)}")
         existed = path.is_file()
         old_content = path.read_text(encoding="utf-8", errors="replace") if existed else ""
         display_path = self._display_path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-        with tmp_path.open("w", encoding="utf-8") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
+        tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid4().hex[:8]}")
+        try:
+            with tmp_path.open("w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
         return ToolResult(
             True,
             f"Wrote {display_path}",
@@ -313,10 +324,11 @@ class ToolRegistry:
         command = require_str(arguments, "command")
         if is_background_command(command):
             return self.start_service({"name": arguments.get("name", "shell-bg"), "command": strip_background(command)})
+        invocation, use_shell = shell_invocation(command)
         completed = subprocess.run(
-            command,
+            invocation,
             cwd=self.workspace,
-            shell=True,
+            shell=use_shell,
             text=True,
             capture_output=True,
             timeout=int(arguments.get("timeout", 60)),
@@ -554,6 +566,67 @@ def normalize_user_path(raw_path: str) -> str:
         path = re.sub(r"^[A-Za-z]:[\\/]+", "", path)
     path = path.replace("\\", "/")
     return path
+
+
+POWERSHELL_COMMAND_RE = re.compile(
+    r"(?i)(?:^|[;|]\s*)(?:Get|Set|New|Remove|Test|Write|Select|Where|ForEach|Start|Stop)-[A-Za-z]"
+)
+POSIX_COMMAND_RE = re.compile(
+    r"(?i)^\s*(?:printf|ls|pwd|cat|cp|mv|rm|touch|grep|sed|awk|find|head|tail|chmod|export|which)(?:\s|$)"
+)
+
+
+def shell_invocation(command: str) -> tuple[str | list[str], bool]:
+    """Choose a shell that matches the model's command dialect.
+
+    Models frequently emit POSIX shell even on Windows. Git Bash is preferred for
+    those commands; PowerShell remains available for native cmdlets, and ordinary
+    Windows commands keep the system shell behavior used by earlier releases.
+    """
+    if os.name != "nt":
+        return command, True
+    if looks_like_powershell(command):
+        return powershell_invocation(command), False
+    if POSIX_COMMAND_RE.search(command) or any(marker in command for marker in ("$(", "${", "/dev/null", "#!/bin/")):
+        bash = find_git_bash()
+        if bash:
+            return [bash, "-lc", command], False
+        return powershell_invocation(command, posix_compat=True), False
+    return [os.environ.get("COMSPEC") or "cmd.exe", "/d", "/s", "/c", command], False
+
+
+def looks_like_powershell(command: str) -> bool:
+    return bool(
+        POWERSHELL_COMMAND_RE.search(command)
+        or re.search(r"(?i)\$(?:env:|PSVersionTable|ErrorActionPreference|_)\b", command)
+    )
+
+
+def find_git_bash() -> str | None:
+    found = shutil.which("bash")
+    if found:
+        return found
+    for candidate in (
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "bin" / "bash.exe",
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "usr" / "bin" / "bash.exe",
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Git" / "bin" / "bash.exe",
+    ):
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def powershell_invocation(command: str, *, posix_compat: bool = False) -> list[str]:
+    executable = shutil.which("powershell.exe") or "powershell.exe"
+    if posix_compat:
+        command = (
+            "function printf { param([string]$Format, "
+            "[Parameter(ValueFromRemainingArguments=$true)][object[]]$Values) "
+            "if ($Values.Count) { [Console]::Write($Format, $Values) } "
+            "else { [Console]::Write($Format) } }; "
+            + command
+        )
+    return [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command]
 
 
 def should_skip(path: Path) -> bool:

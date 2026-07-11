@@ -1,5 +1,21 @@
 # 桌面端更新记录 / Desktop Changelog
 
+## v0.1.6
+
+中文：
+
+- **完整恢复长会话并容忍局部损坏**：桌面端不再只显示最后 320 条消息；JSONL 中单行损坏时会跳过该行并保留其余对话，会话重写和元数据更新均使用唯一临时文件并保证清理，降低并发或异常退出造成的丢失风险。
+- **附件保存不再覆盖已有文件**：浏览器兼容上传严格校验 Base64 并限制为 32 MB；同名附件自动编号，网络附件采用临时文件原子落盘、优先使用服务端文件名，并保留原始 URL；失败或超限不会删除旧文件。
+- **改进 Windows 命令与终端兼容性**：模型生成 POSIX 命令时优先交给 Git Bash，没有 Git Bash 时使用 PowerShell 兼容层；原生 PowerShell 命令保持原语义，CLI/TUI 的管道和键盘输入等待在 Windows 上不再依赖不支持的 `select` 行为。
+- **加固文件写入工具**：支持创建空文件，拒绝把目录当文件覆盖，使用唯一临时文件并在失败后清理；`"..."` 和 `"…"` 这类示例占位路径不会再被 Windows 解析成用户工作目录。系统提示同时明确正文格式偏好不得篡改 CSS `*` 选择器、glob 或代码语法。
+
+English:
+
+- **Restored complete long conversations and tolerated isolated JSONL corruption** by removing the 320-message transcript cutoff, skipping only malformed rows, and using uniquely named, cleaned-up temporary files for session and metadata rewrites.
+- **Prevented attachment overwrites** with strict Base64 validation, a 32 MB browser-upload cap, automatic same-name numbering, atomic network downloads, server-provided filenames, source URL retention, and failure cleanup that preserves existing files.
+- **Improved Windows command and terminal compatibility** by routing POSIX commands through Git Bash or a PowerShell compatibility layer while preserving native PowerShell behavior and supporting pipe/console input without unsupported `select` calls.
+- **Hardened file writes** with empty-file support, directory-target rejection, unique atomic temporary files, and explicit rejection of ellipsis placeholder paths that Windows can otherwise resolve to the user's working directory. Prose formatting guidance can no longer alter CSS `*` selectors, globs, or code syntax.
+
 ## v0.1.5
 
 中文：
