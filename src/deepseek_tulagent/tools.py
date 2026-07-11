@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 import base64
+import difflib
 import json
 import mimetypes
 import os
@@ -31,9 +32,55 @@ class ToolResult:
     ok: bool
     output: str
     images: list[str] | None = None
+    ui: dict[str, Any] | None = None
 
     def to_message(self) -> str:
-        return json.dumps({"ok": self.ok, "output": self.output}, ensure_ascii=False)
+        payload: dict[str, Any] = {"ok": self.ok, "output": self.output}
+        if self.ui:
+            payload["ui"] = self.ui
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def _bounded_diff(text: str, max_chars: int = 18_000) -> str:
+    if len(text) <= max_chars:
+        return text
+    omitted = len(text) - max_chars
+    return text[:max_chars] + f"\n... {omitted} 个字符未显示"
+
+
+def _file_change_ui(path: str, old: str, new: str, *, existed: bool) -> dict[str, Any]:
+    from_name = f"a/{path}" if existed else "/dev/null"
+    diff = "\n".join(
+        difflib.unified_diff(
+            old.splitlines(),
+            new.splitlines(),
+            fromfile=from_name,
+            tofile=f"b/{path}",
+            lineterm="",
+        )
+    )
+    return {
+        "kind": "file_change",
+        "operation": "modified" if existed else "created",
+        "path": path,
+        "paths": [path],
+        "diff": _bounded_diff(diff),
+    }
+
+
+def _patch_paths(patch: str) -> list[str]:
+    paths: list[str] = []
+    for line in patch.splitlines():
+        if not line.startswith("+++ "):
+            continue
+        raw = line[4:].split("\t", 1)[0].strip()
+        if raw == "/dev/null":
+            continue
+        if raw.startswith("b/"):
+            raw = raw[2:]
+        if raw and raw not in paths:
+            paths.append(raw)
+    return paths
 
 
 ToolHandler = Callable[[dict[str, Any]], ToolResult]
@@ -244,6 +291,9 @@ class ToolRegistry:
             raise ToolError("write_file is disabled in this mode")
         path = self.resolve_workspace_path(require_str(arguments, "path"))
         content = require_str(arguments, "content")
+        existed = path.is_file()
+        old_content = path.read_text(encoding="utf-8", errors="replace") if existed else ""
+        display_path = self._display_path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
         with tmp_path.open("w", encoding="utf-8") as handle:
@@ -251,7 +301,11 @@ class ToolRegistry:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_path, path)
-        return ToolResult(True, f"Wrote {self._display_path(path)}")
+        return ToolResult(
+            True,
+            f"Wrote {display_path}",
+            ui=_file_change_ui(display_path, old_content, content, existed=existed),
+        )
 
     def run_shell(self, arguments: dict[str, Any]) -> ToolResult:
         if not self.allow_shell:
@@ -288,7 +342,19 @@ class ToolRegistry:
         output = completed.stdout
         if completed.stderr:
             output += "\n[stderr]\n" + completed.stderr
-        return ToolResult(completed.returncode == 0, output.strip() or "patch applied")
+        paths = _patch_paths(patch)
+        display_path = paths[0] if len(paths) == 1 else f"{len(paths)} 个文件"
+        return ToolResult(
+            completed.returncode == 0,
+            output.strip() or "patch applied",
+            ui={
+                "kind": "file_change",
+                "operation": "modified",
+                "path": display_path,
+                "paths": paths,
+                "diff": _bounded_diff(patch),
+            },
+        )
 
     def download_url(self, arguments: dict[str, Any]) -> ToolResult:
         if not self.policy.allow_network:

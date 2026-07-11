@@ -68,7 +68,7 @@ def get_settings() -> Settings:
         workspace=workspace,
         max_tool_rounds=int(os.getenv("DSTUL_MAX_TOOL_ROUNDS") or file_config.get("max_tool_rounds") or "256"),
         max_tokens=int(os.getenv("DSTUL_MAX_TOKENS") or file_config.get("max_tokens") or "8192"),
-        request_timeout=float(os.getenv("DSTUL_REQUEST_TIMEOUT") or file_config.get("request_timeout") or "180"),
+        request_timeout=float(os.getenv("DSTUL_REQUEST_TIMEOUT") or file_config.get("request_timeout") or "60"),
         default_mode=str(file_config.get("default_mode") or "root"),
         default_thinking=str(file_config.get("default_thinking") or "fast"),
         provider_format=provider_format,

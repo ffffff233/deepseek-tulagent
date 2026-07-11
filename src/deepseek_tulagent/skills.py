@@ -11,6 +11,7 @@ class Skill:
     description: str
     body: str
     path: Path
+    source: str = "user"
 
     def summary(self) -> str:
         return f"- {self.name}: {self.description}"
@@ -29,6 +30,7 @@ class SkillStore:
             self.workspace / "skills",
             self.home / ".deepseek-tulagent" / "skills",
             self.home / ".agents" / "skills",
+            Path(__file__).resolve().parent / "builtin_skills",
         ]
 
     @property
@@ -37,11 +39,17 @@ class SkillStore:
 
     def list(self) -> list[Skill]:
         skills: dict[str, Skill] = {}
+        seen_roots: set[Path] = set()
+        official_dir = (Path(__file__).resolve().parent / "builtin_skills").resolve()
         for root in self.search_dirs:
+            root = root.resolve()
+            if root in seen_roots:
+                continue
+            seen_roots.add(root)
             if not root.exists():
                 continue
             for skill_md in sorted(root.glob("*/SKILL.md")):
-                skill = parse_skill(skill_md)
+                skill = parse_skill(skill_md, source="official" if root == official_dir else "user")
                 skills.setdefault(skill.name, skill)
         return [skills[name] for name in sorted(skills)]
 
@@ -74,7 +82,7 @@ class SkillStore:
         return "Available skills:\n" + "\n".join(skill.summary() for skill in skills)
 
 
-def parse_skill(path: Path) -> Skill:
+def parse_skill(path: Path, *, source: str = "user") -> Skill:
     text = path.read_text(encoding="utf-8", errors="replace")
     name = path.parent.name
     description = ""
@@ -99,7 +107,7 @@ def parse_skill(path: Path) -> Skill:
             if stripped and not stripped.startswith("#"):
                 description = stripped[:200]
                 break
-    return Skill(name=name, description=description, body=body.strip(), path=path)
+    return Skill(name=name, description=description, body=body.strip(), path=path, source=source)
 
 
 def safe_skill_name(name: str) -> str:

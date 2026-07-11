@@ -110,8 +110,31 @@ def parse_usage_stats(data: dict, source: str) -> UsageStats:
         details = usage.get(key)
         if isinstance(details, dict):
             cached += int(details.get("cached_tokens") or details.get("cachedTokens") or 0)
-    # Anthropic reports cache creation/read separately; "cached input" means read hits.
-    cached += intval("cache_read_input_tokens")
+    # Standard OpenAI usage includes cached tokens in input_tokens. A few compatible
+    # gateways instead report only the uncached portion there. cached > input proves
+    # that shape, so reconstruct the complete input without double-counting compliant
+    # responses.
+    if cached > input_tokens:
+        input_tokens += cached
+    # DeepSeek and several compatible gateways expose cache hits/misses beside
+    # prompt_tokens. Some gateways incorrectly put only the cache miss count in
+    # prompt_tokens, so hit + miss is the reliable full request size there.
+    cache_hit = intval("prompt_cache_hit_tokens", "cache_hit_tokens", "cached_input_tokens")
+    cache_miss = intval("prompt_cache_miss_tokens", "cache_miss_tokens")
+    cached = max(cached, cache_hit)
+    if cache_hit or cache_miss:
+        input_tokens = max(input_tokens, cache_hit + cache_miss)
+
+    # Anthropic reports cache creation/read separately from uncached input_tokens.
+    # All three parts occupy the current context window, while only cache reads are
+    # counted as cached input for the hit-rate display.
+    cache_read = intval("cache_read_input_tokens")
+    cache_creation = intval("cache_creation_input_tokens")
+    if cache_read or cache_creation:
+        input_tokens += cache_read + cache_creation
+        cached += cache_read
+    if input_tokens or output_tokens:
+        total_tokens = max(total_tokens, input_tokens + output_tokens)
     return UsageStats(input_tokens, output_tokens, cached, total_tokens, source)
 
 
@@ -259,7 +282,7 @@ class DeepSeekClient:
 
     def __init__(self, settings: Settings, timeout: float | None = None):
         self.settings = settings
-        self.timeout = timeout or settings.request_timeout
+        self.timeout = max(1.0, float(timeout or settings.request_timeout))
         self._client: httpx.Client | None = None
         self.format = normalize_format(getattr(settings, "provider_format", "deepseek"))
         self.usage = UsageStats()
@@ -278,8 +301,22 @@ class DeepSeekClient:
     # ---- shared http ----
     def _http(self) -> httpx.Client:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.Client(timeout=self.timeout)
+            self._client = httpx.Client(
+                timeout=httpx.Timeout(
+                    connect=min(10.0, self.timeout),
+                    read=self.timeout,
+                    write=min(30.0, self.timeout),
+                    pool=min(10.0, self.timeout),
+                )
+            )
         return self._client
+
+    def close(self) -> None:
+        """Interrupt an in-flight request and release its connection pool."""
+        client = self._client
+        self._client = None
+        if client is not None and not client.is_closed:
+            client.close()
 
     def _require_key(self) -> str:
         if not self.settings.api_key:
@@ -702,7 +739,7 @@ def extract_error_message(body: str) -> str:
 def _effort_budget_tokens(effort: str | None) -> int:
     """Map a reasoning-effort label to a thinking-token budget for providers that take
     an explicit budget (Anthropic, Gemini) instead of an effort string."""
-    return {"low": 2048, "medium": 8192, "high": 16384, "max": 24576}.get((effort or "").lower(), 8192)
+    return {"low": 2048, "medium": 8192, "high": 16384, "xhigh": 24576}.get((effort or "").lower(), 8192)
 
 
 def apply_thinking_payload(payload: dict, settings: Settings) -> None:
@@ -716,8 +753,6 @@ def apply_thinking_payload(payload: dict, settings: Settings) -> None:
 
     if fmt == "deepseek":
         payload["thinking"] = {"type": "enabled" if enabled else "disabled"}
-        if enabled and effort:
-            payload["reasoning_effort"] = effort
     elif fmt == "openai":
         # OpenAI chat completions (o-series / gpt-5): top-level reasoning_effort.
         if enabled and effort:

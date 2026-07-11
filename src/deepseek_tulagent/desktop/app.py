@@ -4,13 +4,16 @@ from dataclasses import asdict, replace as replace_settings
 import base64
 import json
 import mimetypes
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import traceback
 from typing import Any
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 from . import DESKTOP_VERSION
@@ -24,6 +27,8 @@ from ..skills import SkillStore
 
 
 ASSET_DIR = Path(__file__).resolve().parent / "assets"
+MAX_BROWSER_UPLOAD_BYTES = 32 * 1024 * 1024
+MAX_NETWORK_ATTACHMENT_BYTES = 100 * 1024 * 1024
 MODES = ["plan", "review", "agent", "trusted", "yolo", "root"]
 # Codex-style permission tiers exposed in the desktop UI (composer.permissionsDropdown:
 # read-only / default-with-approval / full access), mapped onto the internal modes.
@@ -47,23 +52,78 @@ def coerce_permission_tier(mode: str) -> str:
     return {"review": "agent", "trusted": "agent", "yolo": "root"}.get(mode, "root")
 # Codex-style reasoning effort tiers exposed in the desktop UI, mapped onto the
 # richer internal ThinkingMode set (CLI keeps the full list).
-THINKING_TIERS = ["instant", "fast", "balanced", "deep", "ultra"]
+THINKING_TIERS = ["fast", "balanced", "deep", "ultra"]
 THINKING_LABELS = {
-    "instant": "Minimal",
     "fast": "Low",
     "balanced": "Medium",
     "deep": "High",
-    "ultra": "Extra High",
+    "ultra": "XHigh",
 }
+
+
+def _copy_missing_user_data(source: Path, target: Path) -> None:
+    """Migrate legacy install-local data without replacing anything user-owned."""
+    if not source.is_dir() or source.resolve() == target.resolve():
+        return
+    for item in source.rglob("*"):
+        try:
+            relative = item.relative_to(source)
+            destination = target / relative
+            if item.is_dir():
+                destination.mkdir(parents=True, exist_ok=True)
+            elif not destination.exists():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, destination)
+        except OSError:
+            continue
+
+
+def get_desktop_settings() -> Settings:
+    settings = get_settings()
+    if not getattr(sys, "frozen", False) or os.getenv("DSTUL_WORKSPACE"):
+        return settings
+    user_workspace = Path.home().resolve()
+    _copy_missing_user_data(settings.workspace / ".deepseek-tulagent", user_workspace / ".deepseek-tulagent")
+    return replace_settings(settings, workspace=user_workspace)
+
+
+def desktop_window_geometry() -> tuple[int, int, tuple[int, int]]:
+    """Choose logical window dimensions that fit the current Windows DPI/work area."""
+    if sys.platform != "win32":
+        return 1180, 780, (920, 620)
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        rect = wintypes.RECT()
+        ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)
+        dpi = int(ctypes.windll.user32.GetDpiForSystem()) or 96
+        scale = max(1.0, dpi / 96.0)
+        work_width = max(640, rect.right - rect.left)
+        work_height = max(480, rect.bottom - rect.top)
+        width = max(640, min(1180, int((work_width - 36) / scale)))
+        height = max(340, min(780, int((work_height - 120) / scale)))
+        return width, height, (min(760, width), min(440, height))
+    except (AttributeError, OSError, ValueError):
+        return 1180, 720, (760, 440)
 
 
 class DesktopApi:
     def __init__(self) -> None:
-        self.settings = get_settings()
+        self.settings = get_desktop_settings()
         self.mode = coerce_permission_tier(self.settings.default_mode)
         self.thinking = ThinkingMode.resolve(self.settings.default_thinking)
+        if self.thinking.name not in THINKING_TIERS:
+            self.thinking = ThinkingMode.resolve("fast")
+        self.settings = self.settings.with_runtime(
+            max_tokens=self.thinking.max_tokens,
+            thinking_enabled=True,
+            reasoning_effort=self.thinking.reasoning_effort,
+        )
         self.session: Session | None = None
-        self.window: Any = None
+        # pywebview recursively exposes public js_api attributes. Keeping the native
+        # Window public makes it walk window.native and can deadlock WebView2 startup.
+        self._window: Any = None
         self._lock = threading.Lock()
         self._running = False
         self._cancel_requested = False
@@ -72,6 +132,7 @@ class DesktopApi:
         self._active_turn_id: str | None = None
         self._pending_turn: dict[str, Any] | None = None
         self._abandoned_turn_ids: set[str] = set()
+        self._active_client: DeepSeekClient | None = None
         self._models_cache: dict[str, tuple[float, list[str]]] = {}
         self._last_usage = UsageStats()
         self._usage_total = UsageStats()
@@ -79,7 +140,7 @@ class DesktopApi:
         self._context_by_session: dict[str, dict[str, Any]] = {}
 
     def bind_window(self, window: Any) -> None:
-        self.window = window
+        self._window = window
 
     def boot(self) -> dict[str, Any]:
         return {
@@ -102,6 +163,7 @@ class DesktopApi:
             "autoCompact": True,
             "contextWindowTokens": self.settings.context_window_tokens,
             "compactThresholdPercent": self.settings.compact_threshold_percent,
+            "requestTimeout": self.settings.request_timeout,
             "compatFormats": ["deepseek", "openai", "openai-responses", "gemini", "anthropic"],
             "formatLabels": {
                 "deepseek": "DeepSeek",
@@ -126,16 +188,26 @@ class DesktopApi:
             value = data.get(source)
             if isinstance(value, str) and value.strip():
                 config[target] = value.strip().rstrip("/") if source == "baseUrl" else value.strip()
+        request_timeout = parse_float_setting(data.get("requestTimeout"), minimum=15.0, maximum=300.0)
+        if request_timeout is not None:
+            config["request_timeout"] = request_timeout
         # keep the currently-selected model across the reload — get_settings() would
         # otherwise reset it to the file default (deepseek-v4-flash) every time the user
         # changes provider or saves settings.
         keep_model = self.settings.model
         merge_file_config(config)
-        self.settings = get_settings()
+        self.settings = get_desktop_settings()
         if "model" not in config and keep_model:
             self.settings = self.settings.with_runtime(model=keep_model)
         self.mode = coerce_permission_tier(self.settings.default_mode)
         self.thinking = ThinkingMode.resolve(self.settings.default_thinking)
+        if self.thinking.name not in THINKING_TIERS:
+            self.thinking = ThinkingMode.resolve("fast")
+        self.settings = self.settings.with_runtime(
+            max_tokens=self.thinking.max_tokens,
+            thinking_enabled=True,
+            reasoning_effort=self.thinking.reasoning_effort,
+        )
         return self.boot()
 
     def set_runtime(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -202,7 +274,7 @@ class DesktopApi:
         reasoning_sent = {k: sample[k] for k in ("reasoning_effort", "reasoning", "thinking") if k in sample}
         if "generationConfig" in sample and sample["generationConfig"].get("thinkingConfig"):
             reasoning_sent["thinkingConfig"] = sample["generationConfig"]["thinkingConfig"]
-        client = DeepSeekClient(probe)
+        client = DeepSeekClient(probe, timeout=min(20.0, probe.request_timeout))
         try:
             reply = client.chat([Message("user", "连接测试：只回复 ok。")])
             return {
@@ -215,6 +287,8 @@ class DesktopApi:
             }
         except Exception as exc:
             return {"ok": False, "error": str(exc), "reasoning": reasoning_sent, "resolved": client._base_url()}
+        finally:
+            client.close()
 
     def sessions(self) -> list[dict[str, Any]]:
         return SessionStore(self.settings.workspace).list()
@@ -288,8 +362,10 @@ class DesktopApi:
         local_delta = local_tokens - baseline if use_upstream else 0
         context_tokens = max(0, int(snapshot["tokens"]) + local_delta) if use_upstream else local_tokens
         usage = snapshot.get("usage") if use_upstream else UsageStats()
+        usage_quality = str(snapshot.get("quality") or "upstream") if use_upstream else "missing"
+        request_tokens = int(snapshot.get("requestTokens") or getattr(usage, "input_tokens", 0)) if use_upstream else 0
         session_usage = self._usage_by_session.get(session_id, UsageStats()) if session_id else UsageStats()
-        exact_upstream = bool(use_upstream and local_delta == 0)
+        exact_upstream = bool(use_upstream and local_delta == 0 and usage_quality == "upstream")
         known_context = use_upstream
         percent = round((context_tokens / limit * 100), 1) if known_context and limit else None
         threshold_percent_used = round((threshold / limit * 100), 1) if limit else threshold_percent
@@ -300,7 +376,8 @@ class DesktopApi:
             "localVisibleTokens": local_tokens,
             "estimatedInputTokens": local_tokens,
             "estimatedOutputTokens": max(0, context_tokens - int(getattr(usage, "input_tokens", 0))),
-            "inputTokens": int(getattr(usage, "input_tokens", 0)),
+            "inputTokens": request_tokens,
+            "reportedInputTokens": int(getattr(usage, "input_tokens", 0)),
             "outputTokens": int(getattr(usage, "output_tokens", 0)),
             "cachedTokens": int(getattr(usage, "cached_input_tokens", 0)),
             "cachePercent": round(int(getattr(usage, "cached_input_tokens", 0)) / max(1, int(getattr(usage, "input_tokens", 0))) * 100, 1),
@@ -315,12 +392,12 @@ class DesktopApi:
             "thresholdPercent": threshold_percent_used,
             "percent": percent,
             "remainingTokens": max(0, threshold - context_tokens) if known_context else None,
-            "source": "upstream" if exact_upstream else ("upstream-stale" if use_upstream else ("custom" if self.settings.context_window_tokens else info.get("source", "fallback"))),
+            "source": "upstream" if exact_upstream else ("upstream-underreported" if usage_quality == "underreported" else ("upstream-stale" if use_upstream else ("custom" if self.settings.context_window_tokens else info.get("source", "fallback")))),
             "limitSource": "custom" if self.settings.context_window_tokens else info.get("source", "fallback"),
             "accurate": exact_upstream,
             "usageAvailable": use_upstream,
-            "usageState": "current" if exact_upstream else ("adjusted" if use_upstream else "missing"),
-            "measure": "上游输入实测" if exact_upstream else ("上次上游输入 + 当前会话增量" if use_upstream else "上游未返回 usage，仅估算本地可见消息"),
+            "usageState": "current" if exact_upstream else ("underreported" if usage_quality == "underreported" else ("adjusted" if use_upstream else "missing")),
+            "measure": "上游输入实测" if exact_upstream else ("上游 usage 少报，按本地实际发送内容估算" if usage_quality == "underreported" else ("上次上游输入 + 当前会话增量" if use_upstream else "上游未返回 usage，仅估算本地可见消息")),
             "model": self.settings.model,
             "sessionId": session_id or None,
             "autoCompact": True,
@@ -339,7 +416,7 @@ class DesktopApi:
         if threshold is not None:
             current["compact_threshold_percent"] = threshold
         merge_file_config(current)
-        self.settings = get_settings().with_runtime(
+        self.settings = get_desktop_settings().with_runtime(
             max_tokens=self.thinking.max_tokens,
             thinking_enabled=self.thinking.api_thinking,
             reasoning_effort=self.thinking.reasoning_effort,
@@ -360,7 +437,7 @@ class DesktopApi:
         upload_dir.mkdir(parents=True, exist_ok=True)
         path = upload_dir / name
         path.write_bytes(data)
-        result = {"ok": True, "name": name, "path": str(path), "size": len(data)}
+        result = {"ok": True, "name": name, "path": str(path), "size": len(data), "kind": "uploaded_file"}
         if "/" in raw_name.replace("\\", "/"):
             result["kind"] = "folder_file"
         if is_video_upload(name, media_type):
@@ -369,6 +446,59 @@ class DesktopApi:
             result["frames"] = frames
             result["frameCount"] = len(frames)
         return result
+
+    def pick_files(self) -> dict[str, Any]:
+        """Return native file paths without copying contents into app storage."""
+        if self._window is None:
+            return {"ok": False, "error": "window is not ready", "files": []}
+        try:
+            import webview
+
+            paths = self._window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=True) or []
+            if isinstance(paths, str):
+                paths = [paths]
+            return {"ok": True, "files": describe_local_paths(paths)}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "files": []}
+
+    def attach_local_paths(self, paths: list[str] | None) -> dict[str, Any]:
+        return {"ok": True, "files": describe_local_paths(paths or [])}
+
+    def download_attachment(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Stream a dragged web URL to disk with a hard cap to prevent OOM crashes."""
+        import httpx
+
+        url = str(data.get("url") or "").strip()
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return {"ok": False, "error": "只支持 http/https 文件链接"}
+        name = safe_upload_name(unquote(Path(parsed.path).name) or "network-download.bin")
+        upload_dir = self.settings.workspace / ".deepseek-tulagent" / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        path = upload_dir / name
+        try:
+            with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0), follow_redirects=True) as client:
+                with client.stream("GET", url) as response:
+                    response.raise_for_status()
+                    declared = int(response.headers.get("content-length") or 0)
+                    if declared > MAX_NETWORK_ATTACHMENT_BYTES:
+                        return {"ok": False, "error": "网络文件超过 100 MB，已停止下载"}
+                    size = 0
+                    too_large = False
+                    with path.open("wb") as stream:
+                        for chunk in response.iter_bytes(1024 * 1024):
+                            size += len(chunk)
+                            if size > MAX_NETWORK_ATTACHMENT_BYTES:
+                                too_large = True
+                                break
+                            stream.write(chunk)
+                    if too_large:
+                        path.unlink(missing_ok=True)
+                        return {"ok": False, "error": "网络文件超过 100 MB，已停止下载"}
+        except Exception as exc:
+            path.unlink(missing_ok=True)
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "name": name, "path": str(path), "size": path.stat().st_size, "kind": "network_file"}
 
     def send(self, payload: dict[str, Any]) -> dict[str, Any]:
         prompt = str(payload.get("prompt") or "").strip()
@@ -574,11 +704,16 @@ class DesktopApi:
             "sessionId": self._active_turn_session_id,
             "turnId": self._active_turn_id,
         })
-        self._running = False
-        self._cancel_requested = False
-        self._active_turn_session_id = None
-        self._active_turn_id = None
-        return {"ok": True, "running": False}
+        active_client = self._active_client
+        if active_client is not None:
+            try:
+                active_client.close()
+            except Exception:
+                pass
+        # Keep the backend busy until the worker actually exits. A new send is queued
+        # by send() while _cancel_requested is true, so two workers never write the same
+        # session concurrently.
+        return {"ok": True, "running": True, "cancelling": True}
 
     def _request_approval(self, name: str, arguments: dict[str, Any]) -> bool:
         """Blocking approval bridge: emit a request to the UI, wait for the user's
@@ -664,6 +799,7 @@ class DesktopApi:
                     emit_turn("agent:event", parse_agent_event(text))
 
                 client = DeepSeekClient(self.settings)
+                self._active_client = client
                 result_session_id = turn_session_id
                 try:
                     runner = TuLAgent(
@@ -678,6 +814,9 @@ class DesktopApi:
                 finally:
                     self._last_usage = client.usage
                     self._record_session_usage(result_session_id, client.usage)
+                    client.close()
+                    if self._active_client is client:
+                        self._active_client = None
                 # Only adopt the finished turn's session if the user hasn't switched to a
                 # different conversation meanwhile — otherwise the next send would land in
                 # the OLD conversation (context bleeding across chats).
@@ -702,7 +841,10 @@ class DesktopApi:
                     emit_turn("turn:error", desktop_error_payload(exc))
             except Exception as exc:
                 self._restore_regenerated_suffix(turn_session_id, restore_suffix)
-                emit_turn("turn:error", desktop_error_payload(exc))
+                if is_cancelled():
+                    emit_turn("turn:cancelled", {"message": "当前回复已取消"})
+                else:
+                    emit_turn("turn:error", desktop_error_payload(exc))
             finally:
                 self._abandoned_turn_ids.discard(turn_id)
                 if self._active_turn_id == turn_id:
@@ -761,20 +903,27 @@ class DesktopApi:
             return
         request_estimate = estimate_message_tokens(request_messages)
         current_estimate = estimate_message_tokens(current_messages)
-        adjusted = max(0, usage.input_tokens + current_estimate - request_estimate) if request_messages else usage.input_tokens
+        underreported = bool(request_messages and usage.input_tokens < int(request_estimate * 0.8))
+        request_tokens = max(usage.input_tokens, request_estimate) if underreported else usage.input_tokens
+        adjusted = max(0, request_tokens + current_estimate - request_estimate) if request_messages else request_tokens
         snapshot = {
             "model": self.settings.model,
             "tokens": adjusted,
             "usage": usage,
             "currentEstimate": current_estimate,
+            "requestTokens": request_tokens,
+            "quality": "underreported" if underreported else "upstream",
         }
         self._context_by_session[session_id] = snapshot
         SessionStore(self.settings.workspace).update_metadata(
             session_id,
             context_usage={
+                "schema": 2,
                 "model": self.settings.model,
                 "tokens": adjusted,
                 "current_estimate": current_estimate,
+                "request_tokens": request_tokens,
+                "quality": snapshot["quality"],
                 "input_tokens": usage.input_tokens,
                 "output_tokens": usage.output_tokens,
                 "cached_input_tokens": usage.cached_input_tokens,
@@ -788,6 +937,12 @@ class DesktopApi:
         if not isinstance(stored, dict):
             self._context_by_session.pop(session_id, None)
             return
+        # v1 snapshots treated any positive upstream number as complete context. That
+        # is exactly how cache-heavy 140K requests became a fake 1.2K display. Do not
+        # resurrect those snapshots; one fresh request will write a validated v2 value.
+        if stored.get("schema") not in (2, "2"):
+            self._context_by_session.pop(session_id, None)
+            return
         try:
             usage = UsageStats(
                 input_tokens=int(stored.get("input_tokens") or 0),
@@ -798,6 +953,8 @@ class DesktopApi:
             )
             tokens = int(stored.get("tokens") or 0)
             current_estimate = int(stored.get("current_estimate") or 0)
+            request_tokens = int(stored.get("request_tokens") or usage.input_tokens)
+            quality = str(stored.get("quality") or "upstream")
             model = str(stored.get("model") or "")
         except (TypeError, ValueError):
             self._context_by_session.pop(session_id, None)
@@ -810,17 +967,19 @@ class DesktopApi:
             "tokens": tokens,
             "usage": usage,
             "currentEstimate": current_estimate,
+            "requestTokens": request_tokens,
+            "quality": quality,
         }
 
     def _emit(self, event: str, payload: dict[str, Any]) -> None:
-        if self.window is None:
+        if self._window is None:
             return
         data = json.dumps({"event": event, "payload": payload}, ensure_ascii=False)
         # U+2028/U+2029 are valid inside JSON strings but are line terminators in
         # JS source, which would break evaluate_js and silently drop the event.
         data = data.replace(" ", "\\u2028").replace(" ", "\\u2029")
         try:
-            self.window.evaluate_js(f"window.DeepSeekDesktop.onNativeEvent({data});")
+            self._window.evaluate_js(f"window.DeepSeekDesktop.onNativeEvent({data});")
         except Exception:
             pass
 
@@ -844,6 +1003,8 @@ def user_error_summary(error: str) -> str:
         return "上游 API 返回错误：" + text.removeprefix("API error ").strip()
     if "上游返回的是网页而不是 API 响应" in text:
         return text
+    if "timed out" in text.lower() or "timeout" in text.lower():
+        return "上游 API 响应超时。可在设置中调整接口超时，或检查 Base URL 和网络。"
     if "NoneType" in text and "not subscriptable" in text:
         return "工具返回了空输出，旧版本处理空输出时崩溃。请更新到最新版本后重试。"
     return text[:500]
@@ -880,7 +1041,7 @@ def format_attachment_prompt(attachments: list[dict[str, Any]]) -> str:
         suffix = f" ({size} bytes)" if isinstance(size, int) else ""
         kind = str(item.get("kind") or "")
         path = str(item.get("path") or "")
-        if kind in {"folder", "folder_file", "video"} and path:
+        if kind in {"folder", "folder_file", "video", "local_file", "network_file", "uploaded_file"} and path:
             path_files.append(f"- {name}: {path}{suffix}")
         else:
             private_files.append(f"- {name}{suffix}")
@@ -888,8 +1049,8 @@ def format_attachment_prompt(attachments: list[dict[str, Any]]) -> str:
     if private_files:
         parts.append("附件文件（普通文件只记录名称和大小，不写入本地路径）：\n" + "\n".join(private_files))
     if path_files:
-        parts.append("文件夹/媒体附件（只有这些附件会直接提供本地路径）：\n" + "\n".join(path_files))
-        parts.append("如果需要查看文件夹/媒体内容，请调用 inspect_media(path) 或 read_file(path)。")
+        parts.append("本机/网络附件路径：\n" + "\n".join(path_files))
+        parts.append("需要读取附件时，请直接调用 read_file(path) 或 inspect_media(path)。")
     elif private_files:
         parts.append("普通文件不会把本地路径写入对话正文；如需读取内容，请让用户提供文件夹或明确路径。")
     return "\n".join(parts)
@@ -1068,6 +1229,22 @@ def is_video_upload(name: str, media_type: str = "") -> bool:
     return media_type.startswith("video/") or guessed.startswith("video/") or Path(name).suffix.lower() in VIDEO_EXTENSIONS
 
 
+def describe_local_paths(paths: list[str] | tuple[str, ...]) -> list[dict[str, Any]]:
+    files: list[dict[str, Any]] = []
+    for raw in paths:
+        path = Path(str(raw)).expanduser()
+        try:
+            resolved = path.resolve(strict=True)
+            if not resolved.is_file():
+                continue
+            size = resolved.stat().st_size
+        except OSError:
+            continue
+        kind = "video" if is_video_upload(resolved.name) else "local_file"
+        files.append({"ok": True, "name": resolved.name, "path": str(resolved), "size": size, "kind": kind})
+    return files
+
+
 def video_duration_seconds(path: Path, timeout: int = 8) -> float | None:
     ffprobe = shutil.which("ffprobe")
     if not ffprobe:
@@ -1145,13 +1322,14 @@ def main() -> None:
         ) from exc
 
     api = DesktopApi()
+    width, height, min_size = desktop_window_geometry()
     window = webview.create_window(
         "DeepSeekFathom",
         str(ASSET_DIR / "index.html"),
         js_api=api,
-        width=1180,
-        height=780,
-        min_size=(920, 620),
+        width=width,
+        height=height,
+        min_size=min_size,
         text_select=True,
     )
     api.bind_window(window)

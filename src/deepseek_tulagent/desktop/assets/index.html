@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DeepSeekFathom</title>
   <link rel="icon" type="image/png" href="app-icon.png">
+  <script>document.documentElement.dataset.theme = localStorage.getItem("deepseekfathom.theme") === "light" ? "light" : "dark";</script>
   <link rel="stylesheet" href="katex-fathom.css">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=0.1.4">
 </head>
 <body>
   <main class="app">
@@ -17,27 +18,36 @@
         </div>
         <div class="brandText">
           <strong>DeepSeekFathom</strong>
-          <span id="version">v0.0.0</span>
+          <span id="version">v0.1.4</span>
         </div>
         <button id="toggleSidebar" class="collapseBtn" title="收起 / 展开侧栏" aria-label="折叠侧栏"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M11 17l-5-5 5-5"/><path d="M18 17l-5-5 5-5"/></svg></button>
       </div>
       <button id="newSession" class="primary wide newBtn"><span class="plusGlyph" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></span> 新对话</button>
-      <section class="panel">
+      <section class="panel sessionsPanel">
         <div class="panelHead">
           <h2>会话</h2>
           <button id="refreshSessions" class="ghost small">刷新</button>
         </div>
-        <div id="sessions" class="navList subtle">暂无会话</div>
+        <div class="sessionScroll">
+          <div id="sessions" class="navList subtle">暂无会话</div>
+          <div id="sessionScrollbar" class="sessionScrollbar" aria-hidden="true">
+            <div id="sessionScrollThumb" class="sessionScrollThumb"></div>
+          </div>
+        </div>
       </section>
+      <button id="settingsBtn" class="sidebarSettings" type="button" title="设置">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1z"/></svg>
+        <span>设置</span>
+      </button>
     </aside>
 
-    <section class="chatPane">
+    <section id="chatPane" class="chatPane">
       <header class="toolbar">
         <div class="topIdentity">
           <button id="toggleSidebarTop" class="railBtn" title="侧栏" aria-label="侧栏"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/></svg></button>
           <span class="pulse"></span>
           <strong>DeepSeekFathom</strong>
-          <small id="topRuntime">ready</small>
+          <small id="topRuntime">启动中</small>
         </div>
         <div class="toolbarActions">
           <span id="workspace" class="workspace"></span>
@@ -52,7 +62,6 @@
               <button class="convItem danger" data-act="delete">删除对话</button>
             </div>
           </div>
-          <button id="settingsBtn" class="ghost">设置</button>
         </div>
       </header>
 
@@ -120,44 +129,68 @@
       </footer>
     </section>
 
-    <dialog id="settingsDialog">
-      <form method="dialog" class="settings">
-        <header>
-          <div>
-            <h2>API 设置</h2>
-            <p>支持 DeepSeek、OpenAI、Google Gemini、Anthropic Claude 接口。保存后立即生效。</p>
-          </div>
-          <button value="cancel" class="iconClose" aria-label="关闭"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg></button>
-        </header>
-        <label>接口格式
-          <select id="providerFormat">
-            <option value="deepseek">DeepSeek</option>
-            <option value="openai">OpenAI (Chat)</option>
-            <option value="openai-responses">OpenAI (Responses·最新)</option>
-            <option value="gemini">Google Gemini</option>
-            <option value="anthropic">Anthropic Claude</option>
-          </select>
-        </label>
-        <label>Base URL
-          <input id="baseUrl" placeholder="留空自动选用该格式默认域名">
-        </label>
-        <label>API Key
-          <input id="apiKey" type="password" placeholder="留空则保留原 key">
-        </label>
-        <section class="settingsNote">
-          <strong>界面许可说明</strong>
-          <span>桌面端视觉为 DeepSeekFathom 独立设计，基于 Python / pywebview 实现，内置工具调用、上下文压缩、技能与子代理能力。</span>
-        </section>
-        <div id="testResult" class="testResult" hidden></div>
-        <menu>
-          <button id="testConn" value="cancel" type="button" class="ghost">测试连接</button>
-          <span class="grow"></span>
-          <button value="cancel" class="ghost">取消</button>
-          <button id="saveSettings" value="default" class="primary">保存并刷新</button>
-        </menu>
-      </form>
-    </dialog>
+    <section id="settingsView" class="settingsView" hidden>
+      <header class="settingsTopbar">
+        <button id="settingsBackTop" class="settingsBack" type="button" aria-label="返回对话">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+          <span>返回对话</span>
+        </button>
+        <strong>设置</strong>
+      </header>
+      <div class="settingsPage">
+        <div class="settingsContent">
+          <section class="settingsSection">
+            <div class="settingsHeading">
+              <h1>API 设置</h1>
+              <p>配置模型服务地址与密钥，保存后立即应用到新请求。</p>
+            </div>
+            <label>接口格式
+              <select id="providerFormat">
+                <option value="deepseek">DeepSeek</option>
+                <option value="openai">OpenAI (Chat)</option>
+                <option value="openai-responses">OpenAI (Responses·最新)</option>
+                <option value="gemini">Google Gemini</option>
+                <option value="anthropic">Anthropic Claude</option>
+              </select>
+            </label>
+            <label>Base URL
+              <input id="baseUrl" placeholder="留空自动选用该格式默认域名">
+            </label>
+            <label>API Key
+              <input id="apiKey" type="password" autocomplete="off" placeholder="留空则保留原密钥">
+            </label>
+            <label>接口超时（秒）
+              <input id="requestTimeout" type="number" min="15" max="300" step="5" value="60" inputmode="numeric">
+            </label>
+            <div id="testResult" class="testResult" hidden></div>
+            <div class="settingsActions">
+              <button id="testConn" type="button" class="ghost">测试连接</button>
+              <button id="saveSettings" type="button" class="primary">保存设置</button>
+            </div>
+          </section>
+          <section class="settingsSection">
+            <div class="settingsHeading">
+              <h2>外观</h2>
+              <p>选择界面配色，默认使用黑色主题。</p>
+            </div>
+            <div class="themeRow">
+              <span>颜色主题</span>
+              <div class="themeSwitch" role="group" aria-label="颜色主题">
+                <button type="button" data-theme-value="dark">黑色</button>
+                <button type="button" data-theme-value="light">白色</button>
+              </div>
+            </div>
+          </section>
+        </div>
+        <footer class="settingsFooter">
+          <button id="settingsBackBottom" class="settingsBack" type="button">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+            <span>返回对话</span>
+          </button>
+        </footer>
+      </div>
+    </section>
   </main>
-  <script src="app.js"></script>
+  <script src="app.js?v=0.1.4"></script>
 </body>
 </html>

@@ -35,7 +35,7 @@ The product, repository, and CLI all use **DeepSeekFathom**. Only the pip distri
 
 Windows users can download and run the installer directly:
 
-**[DeepSeekFathom-0.1.2-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.2/DeepSeekFathom-0.1.2-Setup.exe)**
+**[DeepSeekFathom-0.1.4-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.4/DeepSeekFathom-0.1.4-Setup.exe)**
 
 Linux / macOS:
 
@@ -169,7 +169,7 @@ cd DeepSeekFathom
 .\scripts\build_windows_exe.ps1
 ```
 
-Outputs: `dist\DeepSeekFathom\DeepSeekFathom.exe` and, when Inno Setup 6 is installed, `dist\installer\DeepSeekFathom-0.1.2-Setup.exe`. The installer installs per user and creates branded **DeepSeekFathom** desktop and Start menu entries. Desktop releases use independent `desktop-vX.Y.Z` tags; GitHub Actions builds the installer from those tags and attaches it to the matching Release.
+Outputs: `dist\DeepSeekFathom\DeepSeekFathom.exe` and, when Inno Setup 6 is installed, `dist\installer\DeepSeekFathom-0.1.4-Setup.exe`. The installer installs per user and creates branded **DeepSeekFathom** desktop and Start menu entries. Desktop releases use independent `desktop-vX.Y.Z` tags; GitHub Actions builds the installer from those tags and attaches it to the matching Release.
 
 ## Conversations
 
@@ -340,16 +340,16 @@ Discovered skill summaries are injected into the agent prompt at startup/run tim
 | `auto` | auto-selected | 384K | auto | auto |
 | `off` | `deepseek-v4-flash` | 384K | disabled | 0 |
 | `instant` | `deepseek-v4-flash` | 384K | disabled | 0 |
-| `fast` | `deepseek-v4-flash` | 384K | high | 0 |
-| `standard` | `deepseek-v4-flash` | 384K | high | 0 |
-| `balanced` | `deepseek-v4-pro` | 384K | high | 1 |
+| `fast` | `deepseek-v4-flash` | 384K | low | 0 |
+| `standard` | `deepseek-v4-flash` | 384K | low | 0 |
+| `balanced` | `deepseek-v4-pro` | 384K | medium | 1 |
 | `careful` | `deepseek-v4-pro` | 384K | high | 1 |
 | `deep` | `deepseek-v4-pro` | 384K | high | 2 |
-| `deeper` | `deepseek-v4-pro` | 384K | max | 2 |
-| `max` | `deepseek-v4-pro` | 384K | max | 3 |
-| `ultra` | `deepseek-v4-pro` | 384K | max | 4 |
+| `deeper` | `deepseek-v4-pro` | 384K | xhigh | 2 |
+| `max` | `deepseek-v4-pro` | 384K | xhigh | 3 |
+| `ultra` | `deepseek-v4-pro` | 384K | xhigh | 4 |
 
-`fast` and higher modes send real DeepSeek API `thinking` controls. `balanced` and deeper modes also perform client-side internal deliberation passes: the client makes extra model calls for private planning, then uses those notes as context for the final answer.
+`fast` and higher modes send DeepSeek's native `thinking` switch. The effort values in the table apply to OpenAI; Anthropic and Gemini receive equivalent native budgets. `balanced` and deeper modes also perform client-side internal deliberation passes: the client makes extra model calls for private planning, then uses those notes as context for the final answer.
 
 Changing thinking mode does not force a model change. `/model`, `/think`, and `/mode` selections are saved as local defaults for the next session.
 

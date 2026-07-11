@@ -24,7 +24,7 @@ DeepSeekFathom 是一个专门适配 DeepSeek OpenAI 兼容接口的终端编程
 
 Windows 普通用户直接下载并运行：
 
-**[DeepSeekFathom-0.1.2-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.2/DeepSeekFathom-0.1.2-Setup.exe)**
+**[DeepSeekFathom-0.1.4-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.4/DeepSeekFathom-0.1.4-Setup.exe)**
 
 Linux / macOS：
 
@@ -151,7 +151,7 @@ cd DeepSeekFathom
 
 ```text
 dist\DeepSeekFathom\DeepSeekFathom.exe
-dist\installer\DeepSeekFathom-0.1.2-Setup.exe
+dist\installer\DeepSeekFathom-0.1.4-Setup.exe
 ```
 
 安装程序会安装到当前用户目录，并自动创建名为 **DeepSeekFathom** 的桌面和开始菜单入口。桌面端使用独立的 `desktop-vX.Y.Z` 标签；GitHub Actions 会在推送该标签时构建 Windows artifact，并把 Setup EXE 上传到对应 Release。
@@ -217,16 +217,16 @@ root + fast + deepseek-v4-flash
 | `auto` | 自动选择 | 384K | 自动 | 自动 |
 | `off` | `deepseek-v4-flash` | 384K | 关闭 | 0 |
 | `instant` | `deepseek-v4-flash` | 384K | 关闭 | 0 |
-| `fast` | `deepseek-v4-flash` | 384K | high | 0 |
-| `standard` | `deepseek-v4-flash` | 384K | high | 0 |
-| `balanced` | `deepseek-v4-pro` | 384K | high | 1 |
+| `fast` | `deepseek-v4-flash` | 384K | low | 0 |
+| `standard` | `deepseek-v4-flash` | 384K | low | 0 |
+| `balanced` | `deepseek-v4-pro` | 384K | medium | 1 |
 | `careful` | `deepseek-v4-pro` | 384K | high | 1 |
 | `deep` | `deepseek-v4-pro` | 384K | high | 2 |
-| `deeper` | `deepseek-v4-pro` | 384K | max | 2 |
-| `max` | `deepseek-v4-pro` | 384K | max | 3 |
-| `ultra` | `deepseek-v4-pro` | 384K | max | 4 |
+| `deeper` | `deepseek-v4-pro` | 384K | xhigh | 2 |
+| `max` | `deepseek-v4-pro` | 384K | xhigh | 3 |
+| `ultra` | `deepseek-v4-pro` | 384K | xhigh | 4 |
 
-`fast` 及以上会向 DeepSeek API 发送真实 `thinking` 参数；`balanced` 及以上还会在客户端进行真实内部思考轮次：先调用模型生成私有规划，再把规划作为本轮回答上下文使用，不靠动画假装思考。
+`fast` 及以上会向 DeepSeek API 发送真实 `thinking` 开关。表中的强度值用于 OpenAI；Anthropic 和 Gemini 会换算为各自的原生预算参数。`balanced` 及以上还会在客户端进行真实内部思考轮次：先调用模型生成私有规划，再把规划作为本轮回答上下文使用，不靠动画假装思考。
 
 切换思考模式不会强制切换当前模型。`/model`、`/think`、`/mode` 的选择会保存到本地配置，下次启动继续使用。
 
