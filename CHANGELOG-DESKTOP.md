@@ -4,6 +4,8 @@
 
 中文：
 
+- **修复安装包夹带旧版前端资源**：PyInstaller 现在强制从当前源码目录打包界面，不再从虚拟环境中的旧包收集资源；解决 EXE 属性为 `0.1.4`、界面却回退到 `0.1.2`，并连带看不到当前会话目录的问题。CSS / JS 同时加入版本缓存标记。
+- **本机附件改为路径直传**：点击 `+` 使用原生文件选择器，只记录本机绝对路径和大小，不再把文件转成 Base64 后复制到上传目录；拖拽能取得本机路径时同样直传。浏览器拿不到路径的兼容拖拽限制为 32 MB，超限直接提示而不是崩溃；网络 URL 拖入采用最大 100 MB 的流式下载。
 - **新增始终可见、可拖动的会话滑块**：不再依赖 WebView 覆盖式系统滚动条；支持拖动滑块、点击轨道跳转，并移除只渲染前 40 条会话的截断，滚动到底可以看到真正的最后一条。
 - **修正上下文 usage 的缓存 token 解析**：支持 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`、OpenAI 缓存明细和 Anthropic 缓存输入；例如上游返回 `1,236` 未缓存输入和 `140,000` 缓存输入时，当前上下文会显示约 `141K`，不再误报 `1.2K`。旧版不可信快照不会继续冒充实测值；上游数字小于实际发送内容时会明确标为“上游少报”。
 - **思考强度改为四个真实档位**：桌面端只显示 `Low / Medium / High / XHigh`，移除 `None` 和 `Minimal`；OpenAI 分别发送 `low / medium / high / xhigh`，DeepSeek 仅发送其原生思考开关，Anthropic / Gemini 按档位换算原生预算。
@@ -15,6 +17,8 @@
 
 English:
 
+- **Fixed installers bundling stale frontend assets** by forcing PyInstaller to package the current checkout instead of an older site-packages copy, eliminating 0.1.4 executables that displayed a 0.1.2 UI and stale conversation behavior. CSS and JS URLs are versioned to invalidate cache.
+- **Changed local attachments to path-based selection**: the `+` button uses the native picker without Base64 copying, path-aware OS drops stay local, fallback browser uploads are capped at 32 MB, and dragged web URLs stream to disk with a 100 MB cap.
 - **Added an always-visible draggable conversation scrollbar**, including track clicks, and removed the 40-session rendering cap so the final row is genuinely reachable.
 - **Fixed cached-token context accounting** for DeepSeek-compatible cache hit/miss fields, OpenAI cached-input details, and Anthropic cache input. Legacy untrusted snapshots are discarded, and under-reported upstream usage is labeled instead of presented as exact.
 - **Replaced desktop reasoning choices with four real tiers: `Low / Medium / High / XHigh`**, removing `None` and `Minimal` while translating each tier to the provider's native parameter shape.

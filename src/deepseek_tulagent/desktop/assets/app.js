@@ -33,6 +33,7 @@ const $ = (id) => document.getElementById(id);
 // null-safe text setter — inspector elements were removed, callers must not crash on them
 const setText = (id, value) => { const el = $(id); if (el) el.textContent = value; };
 const b64 = (s) => btoa(unescape(encodeURIComponent(s)));
+const MAX_BROWSER_UPLOAD_BYTES = 32 * 1024 * 1024;
 
 /* ---------- line-style SVG icons (Lucide-ish), replacing all emoji ---------- */
 const ICONS = {
@@ -1581,7 +1582,7 @@ function addUserMessageWithImages(text, images, attachments) {
       item.className = "msgFile";
       const extra = file.kind === "video" && file.frameCount ? ` · 已抽 ${file.frameCount} 帧` : "";
       const size = Number.isFinite(Number(file.size)) ? ` · ${fmtTokens(Number(file.size))}B` : "";
-      const showPath = ["folder", "folder_file", "video"].includes(file.kind || "");
+      const showPath = ["folder", "folder_file", "video", "local_file", "network_file", "uploaded_file"].includes(file.kind || "");
       item.textContent = showPath ? `${file.name || "file"} · ${file.path || ""}${extra}` : `${file.name || "file"}${size}${extra}`;
       list.append(item);
       if (file.frames && file.frames.length) {
@@ -1991,7 +1992,17 @@ $("manualCompact").onclick = async () => {
   addEvent("compact", "手动压缩", `${result.before} -> ${result.after} estimated tokens`);
   updateContextBadge(result.context || null);
 };
-$("attach").onclick = () => $("fileInput").click();
+$("attach").onclick = async () => {
+  try {
+    const pick = await apiMethod("pick_files");
+    const result = await pick();
+    if (!result.ok) throw new Error(result.error || "无法打开文件选择器");
+    (result.files || []).forEach((file) => state.attachments.push(file));
+    renderAttachments();
+  } catch (error) {
+    toast(`选择文件失败：${String(error.message || error)}`);
+  }
+};
 $("fileInput").onchange = async (event) => {
   for (const file of event.target.files) await uploadFile(file);
   event.target.value = "";
@@ -2000,6 +2011,16 @@ $("fileInput").onchange = async (event) => {
 
 async function uploadFile(file, relPath) {
   try {
+    if (file.path) {
+      const attach = await apiMethod("attach_local_paths");
+      const result = await attach([file.path]);
+      (result.files || []).forEach((item) => state.attachments.push(item));
+      return;
+    }
+    if (Number(file.size || 0) > MAX_BROWSER_UPLOAD_BYTES) {
+      toast(`文件 ${file.name || "未命名"} 超过 32 MB。请使用 + 选择本机文件，应用会直接引用路径。`);
+      return;
+    }
     const content = await readFileAsDataUrl(file);
     // images ride along as vision input (kept as data URL); other files are saved to disk
     if ((file.type || "").startsWith("image/")) {
@@ -2048,6 +2069,17 @@ composeCard.addEventListener("drop", async (e) => {
   e.preventDefault();
   composeCard.classList.remove("dropping");
   const dt = e.dataTransfer;
+  const webUrl = String((dt && (dt.getData("text/uri-list") || dt.getData("text/plain"))) || "")
+    .split(/\r?\n/)
+    .find((line) => /^https?:\/\//i.test(line.trim()));
+  if (webUrl && !(dt && dt.files && dt.files.length)) {
+    const download = await apiMethod("download_attachment");
+    const saved = await download({ url: webUrl.trim() });
+    if (saved && saved.ok) state.attachments.push(saved);
+    else toast(`网络文件下载失败：${(saved && saved.error) || "未知错误"}`);
+    renderAttachments();
+    return;
+  }
   const items = dt && dt.items ? Array.from(dt.items) : [];
   const entries = items.map((it) => it.webkitGetAsEntry && it.webkitGetAsEntry()).filter(Boolean);
   if (entries.length) {

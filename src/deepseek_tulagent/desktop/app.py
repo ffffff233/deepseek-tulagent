@@ -13,6 +13,7 @@ import threading
 import time
 import traceback
 from typing import Any
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 from . import DESKTOP_VERSION
@@ -26,6 +27,8 @@ from ..skills import SkillStore
 
 
 ASSET_DIR = Path(__file__).resolve().parent / "assets"
+MAX_BROWSER_UPLOAD_BYTES = 32 * 1024 * 1024
+MAX_NETWORK_ATTACHMENT_BYTES = 100 * 1024 * 1024
 MODES = ["plan", "review", "agent", "trusted", "yolo", "root"]
 # Codex-style permission tiers exposed in the desktop UI (composer.permissionsDropdown:
 # read-only / default-with-approval / full access), mapped onto the internal modes.
@@ -434,7 +437,7 @@ class DesktopApi:
         upload_dir.mkdir(parents=True, exist_ok=True)
         path = upload_dir / name
         path.write_bytes(data)
-        result = {"ok": True, "name": name, "path": str(path), "size": len(data)}
+        result = {"ok": True, "name": name, "path": str(path), "size": len(data), "kind": "uploaded_file"}
         if "/" in raw_name.replace("\\", "/"):
             result["kind"] = "folder_file"
         if is_video_upload(name, media_type):
@@ -443,6 +446,59 @@ class DesktopApi:
             result["frames"] = frames
             result["frameCount"] = len(frames)
         return result
+
+    def pick_files(self) -> dict[str, Any]:
+        """Return native file paths without copying contents into app storage."""
+        if self._window is None:
+            return {"ok": False, "error": "window is not ready", "files": []}
+        try:
+            import webview
+
+            paths = self._window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=True) or []
+            if isinstance(paths, str):
+                paths = [paths]
+            return {"ok": True, "files": describe_local_paths(paths)}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "files": []}
+
+    def attach_local_paths(self, paths: list[str] | None) -> dict[str, Any]:
+        return {"ok": True, "files": describe_local_paths(paths or [])}
+
+    def download_attachment(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Stream a dragged web URL to disk with a hard cap to prevent OOM crashes."""
+        import httpx
+
+        url = str(data.get("url") or "").strip()
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return {"ok": False, "error": "只支持 http/https 文件链接"}
+        name = safe_upload_name(unquote(Path(parsed.path).name) or "network-download.bin")
+        upload_dir = self.settings.workspace / ".deepseek-tulagent" / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        path = upload_dir / name
+        try:
+            with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0), follow_redirects=True) as client:
+                with client.stream("GET", url) as response:
+                    response.raise_for_status()
+                    declared = int(response.headers.get("content-length") or 0)
+                    if declared > MAX_NETWORK_ATTACHMENT_BYTES:
+                        return {"ok": False, "error": "网络文件超过 100 MB，已停止下载"}
+                    size = 0
+                    too_large = False
+                    with path.open("wb") as stream:
+                        for chunk in response.iter_bytes(1024 * 1024):
+                            size += len(chunk)
+                            if size > MAX_NETWORK_ATTACHMENT_BYTES:
+                                too_large = True
+                                break
+                            stream.write(chunk)
+                    if too_large:
+                        path.unlink(missing_ok=True)
+                        return {"ok": False, "error": "网络文件超过 100 MB，已停止下载"}
+        except Exception as exc:
+            path.unlink(missing_ok=True)
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "name": name, "path": str(path), "size": path.stat().st_size, "kind": "network_file"}
 
     def send(self, payload: dict[str, Any]) -> dict[str, Any]:
         prompt = str(payload.get("prompt") or "").strip()
@@ -985,7 +1041,7 @@ def format_attachment_prompt(attachments: list[dict[str, Any]]) -> str:
         suffix = f" ({size} bytes)" if isinstance(size, int) else ""
         kind = str(item.get("kind") or "")
         path = str(item.get("path") or "")
-        if kind in {"folder", "folder_file", "video"} and path:
+        if kind in {"folder", "folder_file", "video", "local_file", "network_file", "uploaded_file"} and path:
             path_files.append(f"- {name}: {path}{suffix}")
         else:
             private_files.append(f"- {name}{suffix}")
@@ -993,8 +1049,8 @@ def format_attachment_prompt(attachments: list[dict[str, Any]]) -> str:
     if private_files:
         parts.append("附件文件（普通文件只记录名称和大小，不写入本地路径）：\n" + "\n".join(private_files))
     if path_files:
-        parts.append("文件夹/媒体附件（只有这些附件会直接提供本地路径）：\n" + "\n".join(path_files))
-        parts.append("如果需要查看文件夹/媒体内容，请调用 inspect_media(path) 或 read_file(path)。")
+        parts.append("本机/网络附件路径：\n" + "\n".join(path_files))
+        parts.append("需要读取附件时，请直接调用 read_file(path) 或 inspect_media(path)。")
     elif private_files:
         parts.append("普通文件不会把本地路径写入对话正文；如需读取内容，请让用户提供文件夹或明确路径。")
     return "\n".join(parts)
@@ -1171,6 +1227,22 @@ VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".mpeg", ".
 def is_video_upload(name: str, media_type: str = "") -> bool:
     guessed = mimetypes.guess_type(name)[0] or ""
     return media_type.startswith("video/") or guessed.startswith("video/") or Path(name).suffix.lower() in VIDEO_EXTENSIONS
+
+
+def describe_local_paths(paths: list[str] | tuple[str, ...]) -> list[dict[str, Any]]:
+    files: list[dict[str, Any]] = []
+    for raw in paths:
+        path = Path(str(raw)).expanduser()
+        try:
+            resolved = path.resolve(strict=True)
+            if not resolved.is_file():
+                continue
+            size = resolved.stat().st_size
+        except OSError:
+            continue
+        kind = "video" if is_video_upload(resolved.name) else "local_file"
+        files.append({"ok": True, "name": resolved.name, "path": str(resolved), "size": size, "kind": kind})
+    return files
 
 
 def video_duration_seconds(path: Path, timeout: int = 8) -> float | None:

@@ -2122,6 +2122,7 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert ".logo img" in css
     assert "background: transparent" in css
     assert 'id="sessionScrollbar"' in html and 'id="sessionScrollThumb"' in html
+    assert 'style.css?v=0.1.4' in html and 'app.js?v=0.1.4' in html
     assert "sessions.slice(0, 40)" not in js
     assert "sessions.forEach" in js
     assert "function initSessionScrollbar()" in js
@@ -2130,7 +2131,7 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert icon.startswith(b"\x89PNG\r\n\x1a\n")
 
 
-def test_desktop_send_only_exposes_folder_attachment_paths(monkeypatch, tmp_path: Path):
+def test_desktop_send_exposes_selected_local_attachment_paths(monkeypatch, tmp_path: Path):
     import deepseek_tulagent.desktop.app as desktop
 
     monkeypatch.chdir(tmp_path)
@@ -2146,17 +2147,38 @@ def test_desktop_send_only_exposes_folder_attachment_paths(monkeypatch, tmp_path
     result = api.send({
         "prompt": "处理附件",
         "attachments": [
-            {"name": "plain.txt", "path": "/tmp/private/plain.txt", "size": 5},
+            {"name": "plain.txt", "path": "/tmp/private/plain.txt", "size": 5, "kind": "local_file"},
             {"name": "docs", "path": "/tmp/private/docs", "size": 0, "kind": "folder"},
         ],
     })
 
     assert result["ok"] is True
     prompt = captured["prompt"]
-    assert "plain.txt (5 bytes)" in prompt
-    assert "/tmp/private/plain.txt" not in prompt
+    assert "plain.txt: /tmp/private/plain.txt (5 bytes)" in prompt
     assert "docs: /tmp/private/docs" in prompt
-    assert "只有这些附件会直接提供本地路径" in prompt
+    assert "本机/网络附件路径" in prompt
+
+
+def test_desktop_local_file_selection_does_not_copy_contents(tmp_path: Path):
+    from deepseek_tulagent.desktop.app import describe_local_paths
+
+    source = tmp_path / "large-local.bin"
+    source.write_bytes(b"local-only")
+    described = describe_local_paths([str(source), str(tmp_path / "missing.bin")])
+    assert described == [{
+        "ok": True,
+        "name": "large-local.bin",
+        "path": str(source.resolve()),
+        "size": 10,
+        "kind": "local_file",
+    }]
+
+
+def test_pyinstaller_uses_checkout_assets_instead_of_stale_site_package():
+    spec = (Path(__file__).parents[1] / "DeepSeekFathom.spec").read_text(encoding="utf-8")
+    assert "tmp_ret = collect_all('deepseek_tulagent')" not in spec
+    assert "src\\\\deepseek_tulagent\\\\desktop\\\\assets" in spec
+    assert "pathex=['src']" in spec
 
 
 def test_desktop_cancel_ignores_stale_turn_id(monkeypatch, tmp_path: Path):
