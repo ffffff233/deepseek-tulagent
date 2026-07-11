@@ -2009,6 +2009,12 @@ convMenu.addEventListener("click", async (e) => {
     if (!sid) { toast("当前还没有会话 ID（先发一条消息）"); return; }
     copyToClipboard(sid, null, null, null);
     toast(`已复制会话 ID：${sid.slice(0, 8)}…`);
+  } else if (act === "exportMd") {
+    if (!sid) { toast("当前还没有可导出的会话"); return; }
+    const result = await window.pywebview.api.export_session(sid);
+    if (result.cancelled) return;
+    if (!result.ok) { toast(result.error || "导出失败"); return; }
+    toast(`已导出 Markdown：${result.path}`);
   } else if (act === "rename") {
     if (!sid) { toast("当前还没有会话"); return; }
     const title = await uiPrompt("新的会话标题", "");
