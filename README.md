@@ -35,7 +35,7 @@ The product, repository, and CLI all use **DeepSeekFathom**. Only the pip distri
 
 Windows users can download and run the installer directly:
 
-**[DeepSeekFathom-0.1.0-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.0/DeepSeekFathom-0.1.0-Setup.exe)**
+**[DeepSeekFathom-0.1.1-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.1/DeepSeekFathom-0.1.1-Setup.exe)**
 
 Linux / macOS:
 
@@ -169,7 +169,7 @@ cd DeepSeekFathom
 .\scripts\build_windows_exe.ps1
 ```
 
-Outputs: `dist\DeepSeekFathom\DeepSeekFathom.exe` and, when Inno Setup 6 is installed, `dist\installer\DeepSeekFathom-0.1.0-Setup.exe`. The installer installs per user and creates branded **DeepSeekFathom** desktop and Start menu entries. Desktop releases use independent `desktop-vX.Y.Z` tags; GitHub Actions builds the installer from those tags and attaches it to the matching Release.
+Outputs: `dist\DeepSeekFathom\DeepSeekFathom.exe` and, when Inno Setup 6 is installed, `dist\installer\DeepSeekFathom-0.1.1-Setup.exe`. The installer installs per user and creates branded **DeepSeekFathom** desktop and Start menu entries. Desktop releases use independent `desktop-vX.Y.Z` tags; GitHub Actions builds the installer from those tags and attaches it to the matching Release.
 
 ## Conversations
 
@@ -273,13 +273,12 @@ git config --global http.proxy http://127.0.0.1:7890
 git config --global https.proxy http://127.0.0.1:7890
 ```
 
-Install an older version:
+Check out an older version using the matching CLI or desktop tag:
 
 ```bash
 git fetch --tags
-git checkout v0.1.2
-# or
-git checkout v0.1.1
+git checkout v<CLI_VERSION>
+# Desktop: git checkout desktop-v<DESKTOP_VERSION>
 ```
 
 ## Permission Modes

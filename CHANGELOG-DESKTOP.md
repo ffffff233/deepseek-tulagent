@@ -1,5 +1,19 @@
 # 桌面端更新记录 / Desktop Changelog
 
+## v0.1.1
+
+中文：
+
+- **修复恢复会话后上下文从真实上游输入退回 `1.4K` 本地估算的问题**。最后一次上游 usage 和对应本地消息基线现在会原子写入会话元数据，重启或切换会话后仍能恢复真实输入 token。
+- **有新消息但上游暂未返回 usage 时，沿用上次实测基线并按本地消息增量校正**，不再直接丢弃已知的上游输入规模。
+- **缺少上游 usage 时不再显示不准确的上下文数字和百分比**。界面直接显示“上下文未知”，并把 `1.4K` 之类的数字单独标为“本地可见消息”，明确不含网关注入提示词；获得实测值后自动切回“上游实测”。
+
+English:
+
+- **Fixed restored sessions falling back from real upstream input usage to a `1.4K` local estimate**. The latest upstream usage and matching local-message baseline are now atomically persisted in session metadata.
+- **When a new turn has not returned usage yet, the meter keeps the last measured baseline and adjusts it by the local message delta** instead of discarding known upstream overhead.
+- **Missing upstream usage no longer produces a misleading context number or percentage**. The UI shows “context unknown” and labels values such as `1.4K` only as local visible messages that exclude gateway-injected prompts.
+
 ## v0.1.0
 
 中文：

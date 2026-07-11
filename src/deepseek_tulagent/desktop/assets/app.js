@@ -414,26 +414,29 @@ function updateContextBadge(ctx) {
     setText("ctxPct", ctx.label || "统计中");
     return;
   }
-  const pct = Math.max(0, Math.min(100, Number(ctx.percent || 0)));
+  const known = ctx.usageState !== "missing" && ctx.tokens != null;
+  const pct = known ? Math.max(0, Math.min(100, Number(ctx.percent || 0))) : 0;
   const level = ctx.needsCompact || pct >= 92 ? "danger" : (ctx.nearLimit || pct >= 75 ? "warn" : "ok");
-  badge.className = `contextBadge ${level}`;
-  setText("ctxPct", `上下文 ${pct.toFixed(pct >= 10 ? 0 : 1)}%`);
-  setText("ctxUsage", `${fmtTokens(ctx.tokens)} / ${fmtTokens(ctx.limit)}`);
+  badge.className = `contextBadge ${known ? level : "idle"}`;
+  setText("ctxPct", known ? `上下文 ${pct.toFixed(pct >= 10 ? 0 : 1)}%` : "上下文未知");
+  setText("ctxUsage", known ? `${ctx.accurate ? "" : "≈"}${fmtTokens(ctx.tokens)} / ${fmtTokens(ctx.limit)}` : `未知 / ${fmtTokens(ctx.limit)}`);
   setText("ctxThreshold", `${fmtTokens(ctx.threshold)} (${ctx.thresholdPercent || 95}%)`);
-  setText("ctxRemaining", fmtTokens(ctx.remainingTokens || 0));
+  setText("ctxRemaining", known ? fmtTokens(ctx.remainingTokens || 0) : "未知");
   const limitSource = ctx.customLimit ? "手动窗口" : sourceLabel(ctx.limitSource || ctx.source);
-  setText("ctxSource", ctx.accurate ? `上游实测 · ${limitSource}` : limitSource);
+  setText("ctxSource", ctx.accurate ? `上游实测 · ${limitSource}` : (ctx.usageAvailable ? `上次实测校正 · ${limitSource}` : `上游未返回 · ${limitSource}`));
   const limitInput = $("ctxLimitInput");
   const thresholdInput = $("ctxThresholdInput");
   if (limitInput && document.activeElement !== limitInput) limitInput.value = ctx.customLimit ? String(ctx.limit || "") : "";
   if (thresholdInput && document.activeElement !== thresholdInput) thresholdInput.value = String(ctx.thresholdPercent || 95);
-  const measure = ctx.accurate ? "以上游输入为基准，并校正当前会话增量" : "按当前会话消息本地估算";
-  const basis = `${measure}；窗口 ${fmtTokens(ctx.limit)}，阈值 ${ctx.thresholdPercent || 95}%。`;
+  const measure = ctx.measure || (ctx.accurate ? "上游输入实测" : "按当前会话消息本地估算");
+  const basis = known
+    ? `${measure}；窗口 ${fmtTokens(ctx.limit)}，阈值 ${ctx.thresholdPercent || 95}%。`
+    : `上游未返回 usage；本地可见消息约 ${fmtTokens(ctx.localVisibleTokens || 0)}，不含网关注入提示词，不能代表实际上下文占用。`;
   setText("ctxHint", ctx.needsCompact ? `已达到自动压缩阈值。${basis}` : basis);
   const bar = $("ctxBarFill");
   if (bar) bar.style.width = `${pct}%`;
   const pop = $("ctxPopover");
-  if (pop) pop.className = `ctxPopover ${level}`;
+  if (pop) pop.className = `ctxPopover ${known ? level : "idle"}`;
   badge.title = "点击查看上下文窗口和压缩阈值";
 }
 

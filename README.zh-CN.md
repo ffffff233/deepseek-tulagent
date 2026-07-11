@@ -24,7 +24,7 @@ DeepSeekFathom 是一个专门适配 DeepSeek OpenAI 兼容接口的终端编程
 
 Windows 普通用户直接下载并运行：
 
-**[DeepSeekFathom-0.1.0-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.0/DeepSeekFathom-0.1.0-Setup.exe)**
+**[DeepSeekFathom-0.1.1-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.1/DeepSeekFathom-0.1.1-Setup.exe)**
 
 Linux / macOS：
 
@@ -151,7 +151,7 @@ cd DeepSeekFathom
 
 ```text
 dist\DeepSeekFathom\DeepSeekFathom.exe
-dist\installer\DeepSeekFathom-0.1.0-Setup.exe
+dist\installer\DeepSeekFathom-0.1.1-Setup.exe
 ```
 
 安装程序会安装到当前用户目录，并自动创建名为 **DeepSeekFathom** 的桌面和开始菜单入口。桌面端使用独立的 `desktop-vX.Y.Z` 标签；GitHub Actions 会在推送该标签时构建 Windows artifact，并把 Setup EXE 上传到对应 Release。
@@ -322,13 +322,12 @@ git config --global https.proxy http://127.0.0.1:7890
 
 如果源码目录里有你自己改过但还没提交的文件，更新会停止，避免覆盖你的改动。
 
-拉取老版本：
+拉取老版本时请区分 CLI 与桌面标签：
 
 ```bash
 git fetch --tags
-git checkout v0.1.2
-# 或
-git checkout v0.1.1
+git checkout v<CLI版本>
+# 桌面端：git checkout desktop-v<桌面版本>
 ```
 
 ## 会话恢复

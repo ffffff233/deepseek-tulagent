@@ -232,12 +232,15 @@ class DesktopApi:
 
     def delete_session(self, session_id: str) -> dict[str, Any]:
         SessionStore(self.settings.workspace).delete(session_id)
+        self._context_by_session.pop(session_id, None)
+        self._usage_by_session.pop(session_id, None)
         if self.session is not None and self.session.session_id == session_id:
             self.session = None
         return {"ok": True, "sessions": self.sessions(), "context": self.context_status()}
 
     def resume(self, session_id: str) -> dict[str, Any]:
         self.session = SessionStore(self.settings.workspace).load(session_id)
+        self._restore_context_usage(session_id)
         return {
             "ok": True,
             "sessionId": self.session.session_id,
@@ -264,6 +267,7 @@ class DesktopApi:
         )
         self._record_session_usage(self.session.session_id, getattr(client, "usage", UsageStats()))
         self._context_by_session.pop(self.session.session_id, None)
+        SessionStore(self.settings.workspace).update_metadata(self.session.session_id, context_usage=None)
         self.session.rewrite()
         after = estimate_message_tokens(self.session.messages)
         return {"ok": True, "before": before, "after": after, "messages": serialize_messages(self.session.messages), "context": self.context_status()}
@@ -279,14 +283,19 @@ class DesktopApi:
         local_tokens = estimate_message_tokens(messages) if messages else 0
         snapshot = self._context_by_session.get(session_id) if session_id else None
         use_upstream = bool(snapshot and snapshot.get("model") == self.settings.model)
-        context_tokens = int(snapshot["tokens"]) if use_upstream else local_tokens
+        baseline = int(snapshot.get("currentEstimate", local_tokens)) if use_upstream else local_tokens
+        local_delta = local_tokens - baseline if use_upstream else 0
+        context_tokens = max(0, int(snapshot["tokens"]) + local_delta) if use_upstream else local_tokens
         usage = snapshot.get("usage") if use_upstream else UsageStats()
-        percent = round((context_tokens / limit * 100), 1) if limit else 0
+        exact_upstream = bool(use_upstream and local_delta == 0)
+        known_context = use_upstream
+        percent = round((context_tokens / limit * 100), 1) if known_context and limit else None
         threshold_percent_used = round((threshold / limit * 100), 1) if limit else threshold_percent
         return {
             "ok": True,
-            "tokens": context_tokens,
-            "contextTokens": context_tokens,
+            "tokens": context_tokens if known_context else None,
+            "contextTokens": context_tokens if known_context else None,
+            "localVisibleTokens": local_tokens,
             "estimatedInputTokens": local_tokens,
             "estimatedOutputTokens": max(0, context_tokens - int(getattr(usage, "input_tokens", 0))),
             "inputTokens": int(getattr(usage, "input_tokens", 0)),
@@ -300,16 +309,18 @@ class DesktopApi:
             "threshold": threshold,
             "thresholdPercent": threshold_percent_used,
             "percent": percent,
-            "remainingTokens": max(0, threshold - context_tokens),
-            "source": "upstream" if use_upstream else ("custom" if self.settings.context_window_tokens else info.get("source", "fallback")),
+            "remainingTokens": max(0, threshold - context_tokens) if known_context else None,
+            "source": "upstream" if exact_upstream else ("upstream-stale" if use_upstream else ("custom" if self.settings.context_window_tokens else info.get("source", "fallback"))),
             "limitSource": "custom" if self.settings.context_window_tokens else info.get("source", "fallback"),
-            "accurate": use_upstream,
-            "measure": "上游输入 + 当前会话增量" if use_upstream else "本地上下文估算",
+            "accurate": exact_upstream,
+            "usageAvailable": use_upstream,
+            "usageState": "current" if exact_upstream else ("adjusted" if use_upstream else "missing"),
+            "measure": "上游输入实测" if exact_upstream else ("上次上游输入 + 当前会话增量" if use_upstream else "上游未返回 usage，仅估算本地可见消息"),
             "model": self.settings.model,
             "sessionId": session_id or None,
             "autoCompact": True,
-            "nearLimit": context_tokens >= int(threshold * 0.8),
-            "needsCompact": context_tokens >= threshold,
+            "nearLimit": known_context and context_tokens >= int(threshold * 0.8),
+            "needsCompact": known_context and context_tokens >= threshold,
         }
 
     def configure_context(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -711,15 +722,58 @@ class DesktopApi:
         current_messages: list[Message],
     ) -> None:
         if not usage.source or usage.input_tokens <= 0:
-            self._context_by_session.pop(session_id, None)
             return
         request_estimate = estimate_message_tokens(request_messages)
         current_estimate = estimate_message_tokens(current_messages)
         adjusted = max(0, usage.input_tokens + current_estimate - request_estimate) if request_messages else usage.input_tokens
-        self._context_by_session[session_id] = {
+        snapshot = {
             "model": self.settings.model,
             "tokens": adjusted,
             "usage": usage,
+            "currentEstimate": current_estimate,
+        }
+        self._context_by_session[session_id] = snapshot
+        SessionStore(self.settings.workspace).update_metadata(
+            session_id,
+            context_usage={
+                "model": self.settings.model,
+                "tokens": adjusted,
+                "current_estimate": current_estimate,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cached_input_tokens": usage.cached_input_tokens,
+                "total_tokens": usage.total_tokens,
+                "source": usage.source,
+            },
+        )
+
+    def _restore_context_usage(self, session_id: str) -> None:
+        stored = SessionStore(self.settings.workspace).metadata(session_id).get("context_usage")
+        if not isinstance(stored, dict):
+            self._context_by_session.pop(session_id, None)
+            return
+        try:
+            usage = UsageStats(
+                input_tokens=int(stored.get("input_tokens") or 0),
+                output_tokens=int(stored.get("output_tokens") or 0),
+                cached_input_tokens=int(stored.get("cached_input_tokens") or 0),
+                total_tokens=int(stored.get("total_tokens") or 0),
+                source=str(stored.get("source") or "upstream"),
+            )
+            tokens = int(stored.get("tokens") or 0)
+            current_estimate = int(stored.get("current_estimate") or 0)
+            model = str(stored.get("model") or "")
+        except (TypeError, ValueError):
+            self._context_by_session.pop(session_id, None)
+            return
+        if not model or tokens <= 0 or usage.input_tokens <= 0:
+            self._context_by_session.pop(session_id, None)
+            return
+        self._context_by_session[session_id] = {
+            "model": model,
+            "tokens": tokens,
+            "usage": usage,
+            "currentEstimate": current_estimate,
         }
 
     def _emit(self, event: str, payload: dict[str, Any]) -> None:

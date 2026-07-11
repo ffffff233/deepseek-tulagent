@@ -151,8 +151,11 @@ class SessionStore:
     def update_metadata(self, session_id: str, **changes) -> dict:
         data = self.metadata(session_id)
         data.update(changes)
-        self.metadata_path(session_id).parent.mkdir(parents=True, exist_ok=True)
-        self.metadata_path(session_id).write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        path = self.metadata_path(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid4().hex}")
+        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp_path, path)
         return data
 
 

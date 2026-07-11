@@ -1834,7 +1834,9 @@ def test_desktop_manual_compact(monkeypatch, tmp_path: Path):
     assert len(api.session.messages) < 21
     assert "handoff summary" in api.session.messages[1].content
     assert isinstance(result["messages"], list)
-    assert result["context"]["tokens"] == result["after"]
+    assert result["context"]["tokens"] is None
+    assert result["context"]["localVisibleTokens"] == result["after"]
+    assert result["context"]["usageState"] == "missing"
     reloaded = SessionStore(tmp_path).load("s")
     assert [message.content for message in reloaded.messages] == [message.content for message in api.session.messages]
 
@@ -1853,23 +1855,27 @@ def test_desktop_context_status_reports_local_context_threshold(monkeypatch, tmp
 
     status = api.context_status()
     assert status["ok"] is True
-    assert status["tokens"] > 1000
-    assert status["contextTokens"] == status["tokens"]
+    assert status["tokens"] is None
+    assert status["contextTokens"] is None
+    assert status["localVisibleTokens"] > 1000
     assert status["inputTokens"] == 0
     assert status["outputTokens"] == 0
     assert status["cachedTokens"] == 0
     assert status["cachePercent"] == 0
     assert status["accurate"] is False
-    assert status["measure"] == "本地上下文估算"
+    assert status["usageAvailable"] is False
+    assert status["usageState"] == "missing"
+    assert status["measure"] == "上游未返回 usage，仅估算本地可见消息"
     assert status["limit"] == 32_000
     assert status["threshold"] == int(32_000 * 0.95)
     assert status["thresholdPercent"] == 95
-    assert 0 < status["percent"] < 100
+    assert status["percent"] is None
+    assert status["remainingTokens"] is None
     assert status["source"] == "model-name"
 
     api._usage_by_session["s"] = UsageStats(input_tokens=2000, output_tokens=300, cached_input_tokens=1500, total_tokens=2300, source="upstream")
     unchanged = api.context_status()
-    assert unchanged["tokens"] == status["tokens"]
+    assert unchanged["tokens"] is None
     assert unchanged["usageTotalTokens"] == 0
     assert unchanged["source"] == "model-name"
 
@@ -1883,8 +1889,10 @@ def test_desktop_context_status_reports_local_context_threshold(monkeypatch, tmp
     assert measured["inputTokens"] == 2300
     assert measured["cachedTokens"] == 1200
     assert measured["accurate"] is True
+    assert measured["usageAvailable"] is True
+    assert measured["usageState"] == "current"
     assert measured["source"] == "upstream"
-    assert measured["measure"] == "上游输入 + 当前会话增量"
+    assert measured["measure"] == "上游输入实测"
 
     configured = api.configure_context({"contextWindowTokens": "64000", "compactThresholdPercent": "90"})
     assert configured["ok"] is True
@@ -1913,18 +1921,61 @@ def test_desktop_session_switch_returns_fresh_context(monkeypatch, tmp_path: Pat
 
     fresh = api.new_session()
     assert fresh["context"]["sessionId"] is None
-    assert fresh["context"]["tokens"] == 0
+    assert fresh["context"]["tokens"] is None
+    assert fresh["context"]["localVisibleTokens"] == 0
     assert fresh["context"]["accurate"] is False
 
     resumed = api.resume("second")
     assert resumed["context"]["sessionId"] == "second"
     assert resumed["context"]["accurate"] is False
-    assert 0 < resumed["context"]["tokens"] < 5500
+    assert resumed["context"]["tokens"] is None
+    assert 0 < resumed["context"]["localVisibleTokens"] < 5500
 
     old = api.resume("first")
     assert old["context"]["sessionId"] == "first"
-    assert old["context"]["tokens"] < 5500
+    assert old["context"]["tokens"] is None
     assert old["context"]["usageTotalTokens"] == 0
+
+
+def test_desktop_context_usage_survives_restart(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.messages import Message
+    from deepseek_tulagent.provider import UsageStats
+    from deepseek_tulagent.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    first = desktop.DesktopApi()
+    session = Session(tmp_path, session_id="persisted-usage")
+    session.messages = [Message("system", "system"), Message("user", "hello"), Message("assistant", "world")]
+    session.rewrite()
+    first.session = session
+    first._record_context_usage(
+        session.session_id,
+        UsageStats(input_tokens=140_000, output_tokens=500, cached_input_tokens=120_000, total_tokens=140_500, source="upstream"),
+        list(session.messages),
+        list(session.messages),
+    )
+
+    measured = first.context_status()
+    assert measured["tokens"] == 140_000
+    assert measured["accurate"] is True
+
+    restarted = desktop.DesktopApi()
+    restored = restarted.resume(session.session_id)["context"]
+    assert restored["tokens"] == 140_000
+    assert restored["inputTokens"] == 140_000
+    assert restored["cachedTokens"] == 120_000
+    assert restored["accurate"] is True
+    assert restored["usageState"] == "current"
+
+    restarted.session.append(Message("user", "new " * 400))
+    adjusted = restarted.context_status()
+    assert adjusted["tokens"] > 140_000
+    assert adjusted["accurate"] is False
+    assert adjusted["usageAvailable"] is True
+    assert adjusted["usageState"] == "adjusted"
+    assert adjusted["measure"] == "上次上游输入 + 当前会话增量"
 
 
 def test_desktop_send_only_exposes_folder_attachment_paths(monkeypatch, tmp_path: Path):
@@ -2717,10 +2768,10 @@ def test_cli_and_desktop_versions_are_independent():
     assert project["name"] == "deepseek-tulagent"
     assert project["version"] == __version__ == "0.1.108"
     assert project["scripts"]["deepseekfathom"] == "deepseek_tulagent.cli:main"
-    assert DESKTOP_VERSION == "0.1.0"
+    assert DESKTOP_VERSION == "0.1.1"
     assert REPO == "ffffff233/DeepSeekFathom"
-    assert '#define MyAppVersion "0.1.0"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
-    assert 'filevers=(0, 1, 0, 0)' in (root / "assets" / "windows-version-info.txt").read_text(encoding="utf-8")
+    assert '#define MyAppVersion "0.1.1"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
+    assert 'filevers=(0, 1, 1, 0)' in (root / "assets" / "windows-version-info.txt").read_text(encoding="utf-8")
 
 
 def test_update_refuses_dirty_source_tree(monkeypatch, tmp_path: Path):
