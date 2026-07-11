@@ -1,5 +1,19 @@
 # 桌面端更新记录 / Desktop Changelog
 
+## v0.1.10
+
+中文：
+
+- **新增 Markdown 会话导出**：对话菜单加入“导出 Markdown”，使用 Windows 原生另存为窗口并原子写入文件；导出内容包含标题、会话 ID、创建时间、用户/助手消息、工具参数摘要、执行状态和结果。
+- **导出内容遵循界面可见边界**：系统提示词、原始 DSML / JSON 工具协议、内部 `TOOL_RESULT` 以及图片 Base64 数据不会写入文件；图片只记录数量，旧版遗留的无结果工具调用明确标记为未执行。
+- **加固导出文件与并发边界**：自动清理 Windows 文件名非法字符和保留名，支持内容本身包含 Markdown 围栏；取消另存为不会创建文件，正在生成的目标会话会拒绝导出，避免保存半截回复。
+
+English:
+
+- **Added native Markdown conversation export** with an atomic Save-dialog workflow covering visible user/assistant messages, tool summaries, statuses, and results.
+- **Kept exports inside the visible transcript boundary**, excluding system prompts, raw DSML/JSON protocol, internal tool-result records, and Base64 image payloads while retaining image counts.
+- **Hardened filename and concurrency handling** for Windows reserved names, embedded Markdown fences, cancelled dialogs, and active generations.
+
 ## v0.1.9
 
 中文：

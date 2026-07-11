@@ -948,6 +948,116 @@ def test_desktop_marks_orphaned_legacy_tool_as_not_executed():
     }
 
 
+def test_session_markdown_exports_visible_transcript_without_protocol(tmp_path: Path):
+    from deepseek_tulagent.desktop.app import session_markdown
+    from deepseek_tulagent.session import Session
+
+    session = Session(tmp_path, session_id="export-test", created_at="2026-07-11T12:00:00+00:00", persist=False)
+    session.messages = [
+        Message("system", "SECRET SYSTEM PROMPT"),
+        Message("user", "请读取文件", images=["data:image/png;base64,SECRET_IMAGE"]),
+        Message("assistant", '{"tool":"read_file","arguments":{"path":"README.md"}}'),
+        Message("user", 'TOOL_RESULT name=read_file\n{"ok":true,"output":"hello ``` world"}'),
+        Message("assistant", "已经读取完成。"),
+    ]
+
+    exported = session_markdown(session, title="导出测试")
+
+    assert exported.startswith("# 导出测试\n")
+    assert "`export-test`" in exported
+    assert "## 用户" in exported and "## DeepSeekFathom" in exported
+    assert "### 工具 · `read_file` · 成功" in exported
+    assert "hello ``` world" in exported
+    assert "附带图片：1 张" in exported
+    assert "SECRET SYSTEM PROMPT" not in exported
+    assert "SECRET_IMAGE" not in exported
+    assert '"tool":"read_file"' not in exported
+    assert "TOOL_RESULT" not in exported
+
+
+def test_markdown_export_filename_is_windows_safe():
+    from deepseek_tulagent.desktop.app import safe_markdown_filename
+
+    assert safe_markdown_filename(' 项目：A/B*? ') == "项目：A_B__.md"
+    assert safe_markdown_filename('Project:A') == "Project_A.md"
+    assert safe_markdown_filename("CON") == "_CON.md"
+    assert safe_markdown_filename("CON.txt") == "_CON.txt.md"
+    assert safe_markdown_filename("notes.md") == "notes.md"
+    assert safe_markdown_filename("   ") == "DeepSeekFathom-会话.md"
+
+
+def test_desktop_export_session_uses_native_save_dialog(monkeypatch, tmp_path: Path):
+    import webview
+
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    session = Session(tmp_path, session_id="native-export")
+    session.append(Message("user", "导出这段对话"))
+    session.append(Message("assistant", "已经准备好。"))
+    destination = tmp_path / "saved conversation"
+
+    class Window:
+        def __init__(self):
+            self.calls = []
+
+        def create_file_dialog(self, dialog_type, **kwargs):
+            self.calls.append((dialog_type, kwargs))
+            return (str(destination),)
+
+    window = Window()
+    api = desktop.DesktopApi()
+    api.bind_window(window)
+    result = api.export_session(session.session_id)
+
+    exported_path = destination.with_suffix(".md")
+    assert result["ok"] is True
+    assert result["path"] == str(exported_path)
+    assert exported_path.read_text(encoding="utf-8").startswith("# 导出这段对话\n")
+    assert window.calls == [(webview.FileDialog.SAVE, {
+        "save_filename": "导出这段对话.md",
+        "file_types": ("Markdown (*.md)",),
+    })]
+    assert not list(tmp_path.glob(".*.tmp-*"))
+
+
+def test_desktop_export_session_cancel_does_not_write(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    session = Session(tmp_path, session_id="cancel-export")
+    session.append(Message("user", "不要保存"))
+
+    class Window:
+        def create_file_dialog(self, *_args, **_kwargs):
+            return None
+
+    api = desktop.DesktopApi()
+    api.bind_window(Window())
+    assert api.export_session(session.session_id) == {"ok": False, "cancelled": True}
+    assert list(tmp_path.glob("*.md")) == []
+
+
+def test_desktop_export_session_rejects_active_generation(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    api.session = Session(tmp_path, session_id="active-export")
+    api._running = True
+    api._active_turn_session_id = api.session.session_id
+
+    result = api.export_session(api.session.session_id)
+
+    assert result == {"ok": False, "error": "当前会话正在生成，回复完成后再导出"}
+
+
 def test_complex_task_gets_private_execution_hint(tmp_path: Path):
     class InspectClient:
         def chat(self, messages):
@@ -2645,7 +2755,7 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert '<img src="app-icon.png" alt="">' in brand
     assert "<svg" not in brand
     assert 'class="introLogo" src="app-icon.png"' in html
-    assert '<span id="version">v0.1.9</span>' in html
+    assert '<span id="version">v0.1.10</span>' in html
     assert 'id="settingsView"' in html and '<dialog id="settingsDialog"' not in html
     assert 'id="settingsBackTop"' in html and 'id="settingsBackBottom"' in html
     js = (root / "app.js").read_text(encoding="utf-8")
@@ -2659,7 +2769,9 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert ".logo img" in css
     assert "background: transparent" in css
     assert 'id="sessionScrollbar"' in html and 'id="sessionScrollThumb"' in html
-    assert 'style.css?v=0.1.9' in html and 'app.js?v=0.1.9' in html
+    assert 'class="convItem" data-act="exportMd">导出 Markdown</button>' in html
+    assert "window.pywebview.api.export_session(sid)" in js
+    assert 'style.css?v=0.1.10' in html and 'app.js?v=0.1.10' in html
     assert 'state.currentAssistant.remove();' in js
     assert "suppressedTurnIds: new Set()" in js
     assert "state.suppressedTurnIds.add(turnId)" in js
@@ -3680,12 +3792,12 @@ def test_cli_and_desktop_versions_are_independent():
     assert project["name"] == "deepseek-tulagent"
     assert project["version"] == __version__ == "0.1.108"
     assert project["scripts"]["deepseekfathom"] == "deepseek_tulagent.cli:main"
-    assert DESKTOP_VERSION == "0.1.9"
+    assert DESKTOP_VERSION == "0.1.10"
     assert REPO == "ffffff233/DeepSeekFathom"
-    assert '#define MyAppVersion "0.1.9"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
+    assert '#define MyAppVersion "0.1.10"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
     version_info = (root / "assets" / "windows-version-info.txt").read_text(encoding="utf-8")
-    assert 'filevers=(0, 1, 9, 0)' in version_info
-    assert "StringStruct('FileVersion', '0.1.9')" in version_info
+    assert 'filevers=(0, 1, 10, 0)' in version_info
+    assert "StringStruct('FileVersion', '0.1.10')" in version_info
 
 
 def test_update_refuses_dirty_source_tree(monkeypatch, tmp_path: Path):

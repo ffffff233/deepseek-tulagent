@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -316,6 +317,49 @@ class DesktopApi:
             return {"ok": False, "error": "empty title"}
         SessionStore(self.settings.workspace).update_metadata(session_id, title=title)
         return {"ok": True, "sessions": self.sessions()}
+
+    def export_session(self, session_id: str = "") -> dict[str, Any]:
+        """Export the visible conversation through the native Save dialog."""
+        resolved_id = str(session_id or (self.session.session_id if self.session else "")).strip()
+        if not resolved_id:
+            return {"ok": False, "error": "当前还没有可导出的会话"}
+        active_session_id = self._active_turn_session_id
+        if not active_session_id and self._running and self.session is not None:
+            active_session_id = self.session.session_id
+        if self._running and resolved_id == active_session_id:
+            return {"ok": False, "error": "当前会话正在生成，回复完成后再导出"}
+        if self._window is None:
+            return {"ok": False, "error": "window is not ready"}
+        try:
+            store = SessionStore(self.settings.workspace)
+            session = store.load(resolved_id)
+            metadata = store.metadata(resolved_id)
+            first_user = next((message.content for message in session.messages if message.role == "user"), "")
+            from ..session import session_title_from_text
+
+            title = str(metadata.get("title") or session_title_from_text(first_user))
+            default_name = safe_markdown_filename(title)
+            import webview
+
+            selected = self._window.create_file_dialog(
+                webview.FileDialog.SAVE,
+                save_filename=default_name,
+                file_types=("Markdown (*.md)",),
+            ) or []
+            if isinstance(selected, str):
+                selected = [selected]
+            if not selected:
+                return {"ok": False, "cancelled": True}
+            path = Path(str(selected[0])).expanduser()
+            if not path.suffix:
+                path = path.with_suffix(".md")
+            if path.exists() and path.is_dir():
+                return {"ok": False, "error": "导出目标是文件夹，请选择 Markdown 文件"}
+            content = session_markdown(session, title=title)
+            atomic_write_text(path, content)
+            return {"ok": True, "path": str(path), "bytes": len(content.encode("utf-8"))}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
 
     def pin_session(self, session_id: str, pinned: bool = True) -> dict[str, Any]:
         SessionStore(self.settings.workspace).update_metadata(session_id, pinned=bool(pinned))
@@ -1191,6 +1235,87 @@ def format_attachment_prompt(attachments: list[dict[str, Any]]) -> str:
     elif private_files:
         parts.append("普通文件不会把本地路径写入对话正文；如需读取内容，请让用户提供文件夹或明确路径。")
     return "\n".join(parts)
+
+
+def safe_markdown_filename(title: str) -> str:
+    cleaned = " ".join(str(title).strip().split())
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", cleaned).rstrip(" .")
+    reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+    if cleaned.split(".", 1)[0].upper() in reserved:
+        cleaned = f"_{cleaned}"
+    cleaned = cleaned[:80] or "DeepSeekFathom-会话"
+    return cleaned if cleaned.lower().endswith(".md") else f"{cleaned}.md"
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid4().hex}")
+    try:
+        with temp_path.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def markdown_code_block(content: str, language: str = "text") -> str:
+    longest = max((len(match.group(0)) for match in re.finditer(r"`+", content)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}{language}\n{content.rstrip()}\n{fence}"
+
+
+def exported_tool_result(raw_output: str) -> tuple[str, str]:
+    if not raw_output:
+        return "无结果", "（没有执行结果）"
+    try:
+        payload = json.loads(raw_output)
+    except json.JSONDecodeError:
+        return "完成", raw_output
+    if not isinstance(payload, dict):
+        return "完成", json.dumps(payload, ensure_ascii=False, indent=2)
+    status = "成功" if payload.get("ok") is True else "失败" if payload.get("ok") is False else "完成"
+    output = payload.get("output")
+    if isinstance(output, str):
+        return status, output or "（无输出）"
+    return status, json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def session_markdown(session: Session, *, title: str) -> str:
+    """Render only the visible transcript; omit system prompts and raw tool protocol."""
+    lines = [
+        f"# {title.strip() or '未命名会话'}",
+        "",
+        f"- 会话 ID：`{session.session_id}`",
+        f"- 创建时间：`{session.created_at}`",
+        "",
+        "---",
+    ]
+    for entry in serialize_messages(session.messages):
+        role = entry.get("role")
+        if role in {"user", "assistant"}:
+            label = "用户" if role == "user" else "DeepSeekFathom"
+            lines.extend(("", f"## {label}", ""))
+            content = str(entry.get("content") or "").strip()
+            if content:
+                lines.append(content)
+            src_index = entry.get("srcIndex")
+            if isinstance(src_index, int) and 0 <= src_index < len(session.messages):
+                image_count = len(session.messages[src_index].images)
+                if image_count:
+                    lines.extend(("", f"> 附带图片：{image_count} 张（图片二进制数据未写入导出文件）"))
+            continue
+        if role == "tool":
+            name = str(entry.get("name") or "tool").replace("`", "")
+            status, output = exported_tool_result(str(entry.get("output") or ""))
+            lines.extend(("", f"### 工具 · `{name}` · {status}"))
+            detail = str(entry.get("detail") or "").strip()
+            if detail:
+                lines.extend(("", "参数摘要：", "", markdown_code_block(detail)))
+            lines.extend(("", "执行结果：", "", markdown_code_block(output)))
+    lines.append("")
+    return "\n".join(lines)
 
 
 def serialize_messages(messages: list[Message]) -> list[dict[str, Any]]:
