@@ -2358,7 +2358,7 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert '<img src="app-icon.png" alt="">' in brand
     assert "<svg" not in brand
     assert 'class="introLogo" src="app-icon.png"' in html
-    assert '<span id="version">v0.1.6</span>' in html
+    assert '<span id="version">v0.1.7</span>' in html
     assert 'id="settingsView"' in html and '<dialog id="settingsDialog"' not in html
     assert 'id="settingsBackTop"' in html and 'id="settingsBackBottom"' in html
     js = (root / "app.js").read_text(encoding="utf-8")
@@ -2372,7 +2372,7 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert ".logo img" in css
     assert "background: transparent" in css
     assert 'id="sessionScrollbar"' in html and 'id="sessionScrollThumb"' in html
-    assert 'style.css?v=0.1.6' in html and 'app.js?v=0.1.6' in html
+    assert 'style.css?v=0.1.7' in html and 'app.js?v=0.1.7' in html
     assert 'state.currentAssistant.remove();' in js
     assert 'event === "native:drop"' in js
     assert "sessions.slice(0, 40)" not in js
@@ -2467,6 +2467,27 @@ def test_desktop_cancel_ignores_stale_turn_id(monkeypatch, tmp_path: Path):
     assert current == {"ok": True, "running": True, "cancelling": True}
     assert "current-turn" in api._abandoned_turn_ids
     assert api._cancel_requested is True
+
+
+def test_desktop_rejects_deleting_or_compacting_active_turn_session(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.messages import Message
+    from deepseek_tulagent.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    api.session = Session(tmp_path, session_id="active-session")
+    api.session.append(Message("user", "keep"))
+    api._running = True
+    api._active_turn_session_id = "active-session"
+
+    deleted = api.delete_session("active-session")
+    compacted = api.compact()
+
+    assert deleted["ok"] is False
+    assert compacted["ok"] is False
+    assert api.session.path.is_file()
 
 
 def test_desktop_turn_events_stay_bound_to_origin_session(monkeypatch, tmp_path: Path):
@@ -2626,6 +2647,165 @@ def test_desktop_edit_resend_preserves_later_turns_after_regeneration(monkeypatc
     assert captured["messages"] == ["system", "第一问", "第一答"]
     persisted = [message.content for message in SessionStore(tmp_path).load("edit-preserve-session").messages]
     assert persisted == ["system", "第一问", "第一答", "第二问新版", "第二答新版", "第三问", "第三答"]
+
+
+def test_desktop_retry_preserves_images_and_commits_only_after_success(monkeypatch, tmp_path: Path):
+    import time
+
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.agent import AgentResult
+    from deepseek_tulagent.messages import Message
+    from deepseek_tulagent.session import Session, SessionStore
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    api.session = Session(tmp_path, session_id="retry-image-session")
+    image = "data:image/png;base64,aW1hZ2U="
+    api.session.append(Message("user", "describe image", images=[image]))
+    api.session.append(Message("assistant", "old answer"))
+    original = api.session.path.read_bytes()
+
+    class FakeAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, prompt, **kwargs):
+            assert kwargs["images"] == [image]
+            assert kwargs["session"].persist is False
+            assert api.session.path.read_bytes() == original
+            kwargs["session"].append(Message("user", prompt, images=list(kwargs["images"])))
+            kwargs["session"].append(Message("assistant", "new answer"))
+            return AgentResult(kwargs["session"].session_id, "new answer", 1)
+
+    monkeypatch.setattr(desktop, "TuLAgent", FakeAgent)
+    result = api.retry({"srcIndex": 1})
+    assert result["ok"] is True
+    deadline = time.time() + 2
+    while api._running and time.time() < deadline:
+        time.sleep(0.02)
+
+    persisted = SessionStore(tmp_path).load("retry-image-session").messages
+    assert [(message.role, message.content) for message in persisted] == [
+        ("user", "describe image"),
+        ("assistant", "new answer"),
+    ]
+    assert persisted[0].images == [image]
+
+
+def test_desktop_retry_failure_keeps_original_jsonl_and_restores_transcript(monkeypatch, tmp_path: Path):
+    import json
+    import re
+    import time
+
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.messages import Message
+    from deepseek_tulagent.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    api.session = Session(tmp_path, session_id="retry-rollback-session")
+    api.session.append(Message("user", "keep prompt"))
+    api.session.append(Message("assistant", "keep answer"))
+    original = api.session.path.read_bytes()
+
+    class Window:
+        def __init__(self):
+            self.events = []
+
+        def evaluate_js(self, script):
+            match = re.search(r"onNativeEvent\((.*)\);$", script)
+            assert match, script
+            self.events.append(json.loads(match.group(1)))
+
+    class FailingAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, prompt, **kwargs):
+            assert api.session.path.read_bytes() == original
+            kwargs["session"].append(Message("user", prompt))
+            kwargs["session"].append(Message("assistant", "partial replacement"))
+            raise OSError("provider failed")
+
+    window = Window()
+    api.bind_window(window)
+    monkeypatch.setattr(desktop, "TuLAgent", FailingAgent)
+    result = api.retry({"srcIndex": 1})
+    assert result["ok"] is True
+    deadline = time.time() + 2
+    while api._running and time.time() < deadline:
+        time.sleep(0.02)
+
+    assert api.session.path.read_bytes() == original
+    error = next(event for event in window.events if event["event"] == "turn:error")
+    assert [(row["role"], row["content"]) for row in error["payload"]["messages"]] == [
+        ("user", "keep prompt"),
+        ("assistant", "keep answer"),
+    ]
+
+
+def test_desktop_cancelled_retry_keeps_original_jsonl(monkeypatch, tmp_path: Path):
+    import threading
+    import time
+
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.messages import Message
+    from deepseek_tulagent.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    api.session = Session(tmp_path, session_id="retry-cancel-session")
+    api.session.append(Message("user", "original prompt"))
+    api.session.append(Message("assistant", "original answer"))
+    original = api.session.path.read_bytes()
+    entered = threading.Event()
+
+    class CancelAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, prompt, **kwargs):
+            kwargs["session"].append(Message("user", prompt))
+            kwargs["session"].append(Message("assistant", "partial"))
+            entered.set()
+            deadline = time.time() + 2
+            while not kwargs["should_cancel"]() and time.time() < deadline:
+                time.sleep(0.01)
+            raise RuntimeError("turn cancelled")
+
+    monkeypatch.setattr(desktop, "TuLAgent", CancelAgent)
+    result = api.retry({"srcIndex": 1})
+    assert entered.wait(timeout=2)
+    cancelled = api.cancel({"turnId": result["turnId"]})
+    assert cancelled["cancelling"] is True
+    deadline = time.time() + 2
+    while api._running and time.time() < deadline:
+        time.sleep(0.02)
+
+    assert api._running is False
+    assert api.session.path.read_bytes() == original
+
+
+def test_desktop_branch_preserves_message_images(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.messages import Message
+    from deepseek_tulagent.session import Session, SessionStore
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    api.session = Session(tmp_path, session_id="branch-image-source")
+    image = "data:image/png;base64,aW1hZ2U="
+    api.session.append(Message("user", "look", images=[image]))
+    api.session.append(Message("assistant", "seen"))
+
+    result = api.branch({"srcIndex": 1})
+    assert result["ok"] is True
+    forked = SessionStore(tmp_path).load(result["sessionId"])
+    assert forked.messages[0].images == [image]
 
 
 def test_desktop_send_passes_goal_to_agent(monkeypatch, tmp_path: Path):
@@ -3209,9 +3389,9 @@ def test_cli_and_desktop_versions_are_independent():
     assert project["name"] == "deepseek-tulagent"
     assert project["version"] == __version__ == "0.1.108"
     assert project["scripts"]["deepseekfathom"] == "deepseek_tulagent.cli:main"
-    assert DESKTOP_VERSION == "0.1.6"
+    assert DESKTOP_VERSION == "0.1.7"
     assert REPO == "ffffff233/DeepSeekFathom"
-    assert '#define MyAppVersion "0.1.6"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
+    assert '#define MyAppVersion "0.1.7"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
     assert 'filevers=(0, 1, 5, 0)' in (root / "assets" / "windows-version-info.txt").read_text(encoding="utf-8")
 
 
@@ -3346,6 +3526,38 @@ def test_session_load_skips_corrupt_jsonl_rows_without_hiding_conversation(tmp_p
     assert [message.content for message in loaded.messages] == ["保留我", "还在"]
     assert listed[0]["session_id"] == session_id
     assert listed[0]["messages"] == 2
+
+
+def test_session_ids_cannot_escape_session_directory(tmp_path: Path):
+    import pytest
+
+    from deepseek_tulagent.session import SessionStore
+
+    store = SessionStore(tmp_path)
+    for unsafe in ("../outside", r"..\outside", ".", "", "id/child"):
+        with pytest.raises(ValueError, match="invalid session id"):
+            store.resolve_session_path(unsafe)
+        with pytest.raises(ValueError, match="invalid session id"):
+            store.metadata_path(unsafe)
+
+
+def test_concurrent_session_metadata_updates_preserve_all_fields(tmp_path: Path):
+    import threading
+
+    from deepseek_tulagent.session import SessionStore
+
+    store = SessionStore(tmp_path)
+    threads = [
+        threading.Thread(target=store.update_metadata, args=("metadata-session",), kwargs={f"field_{index}": index})
+        for index in range(24)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    metadata = store.metadata("metadata-session")
+    assert metadata == {f"field_{index}": index for index in range(24)}
 
 
 def test_desktop_transcript_does_not_hide_messages_before_320_limit():

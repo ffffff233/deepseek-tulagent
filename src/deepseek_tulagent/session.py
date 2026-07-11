@@ -5,9 +5,22 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
+import threading
 from uuid import uuid4
 
 from .messages import Message
+
+
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_METADATA_LOCK = threading.RLock()
+
+
+def validate_session_id(session_id: str) -> str:
+    value = str(session_id or "")
+    if not _SESSION_ID_RE.fullmatch(value) or value in {".", ".."}:
+        raise ValueError("invalid session id")
+    return value
 
 
 def _message_record(message: Message) -> dict:
@@ -32,6 +45,9 @@ class Session:
     # In-memory-only session (subagents): kept out of the on-disk sessions/ directory so
     # a delegated subagent never shows up as its own conversation in the sidebar.
     persist: bool = True
+
+    def __post_init__(self) -> None:
+        self.session_id = validate_session_id(self.session_id)
 
     @property
     def path(self) -> Path:
@@ -135,6 +151,7 @@ class SessionStore:
         return session
 
     def resolve_session_path(self, session_id: str) -> Path:
+        session_id = validate_session_id(session_id)
         candidates = [
             self.sessions_dir / f"{session_id}.jsonl",
             Path.home() / ".deepseek-tulagent" / "sessions" / f"{session_id}.jsonl",
@@ -152,6 +169,7 @@ class SessionStore:
                 pass
 
     def metadata_path(self, session_id: str) -> Path:
+        session_id = validate_session_id(session_id)
         return self.sessions_dir / f"{session_id}.meta.json"
 
     def metadata(self, session_id: str) -> dict:
@@ -165,17 +183,18 @@ class SessionStore:
         return data if isinstance(data, dict) else {}
 
     def update_metadata(self, session_id: str, **changes) -> dict:
-        data = self.metadata(session_id)
-        data.update(changes)
-        path = self.metadata_path(session_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid4().hex}")
-        try:
-            tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            os.replace(tmp_path, path)
-        finally:
-            tmp_path.unlink(missing_ok=True)
-        return data
+        with _METADATA_LOCK:
+            data = self.metadata(session_id)
+            data.update(changes)
+            path = self.metadata_path(session_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid4().hex}")
+            try:
+                tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                os.replace(tmp_path, path)
+            finally:
+                tmp_path.unlink(missing_ok=True)
+            return data
 
 
 def safe_mtime(path: Path) -> float:

@@ -1,5 +1,21 @@
 # 桌面端更新记录 / Desktop Changelog
 
+## v0.1.7
+
+中文：
+
+- **重试与编辑重发改为可回滚事务**：原会话不再提前截断，替换回复先在内存会话中生成，成功后才一次性原子写回；模型报错、用户取消或进程中断时，原始 JSONL 保持不变，界面会立即恢复原问题、回复和工具卡片。
+- **重试和分支完整保留图片上下文**：带截图或图片的用户消息重试时会把原图重新发送给模型；从任意回复创建分支时，历史消息中的图片数据也会一起复制，不再出现文字还在但视觉上下文消失。
+- **阻止生成期间删除或压缩活动会话**：侧栏和会话菜单现在会显示后端拒绝原因，避免后台写入与删除竞争造成“删掉后又出现”或会话文件被重建。
+- **加固会话存储边界与元数据并发更新**：会话 ID 只允许安全文件名字符，不能通过路径分隔符逃出 `sessions` 目录；标题、置顶、上下文 usage 等并发更新使用进程内锁合并，避免字段互相覆盖。
+
+English:
+
+- **Made retry and edit-resend transactional and rollback-safe**: replacement turns run in memory and atomically replace JSONL only after success. Provider errors, cancellation, or interruption leave the original conversation untouched and restore it in the UI.
+- **Preserved image context across retries and branches**, resending original user images to the model and copying image payloads into forked conversation history.
+- **Blocked deletion and manual compaction of an actively generated conversation**, preventing write/delete races and exposing the backend rejection in both delete entry points.
+- **Hardened session storage boundaries and metadata concurrency** with safe session ID validation and locked read-merge-write updates for titles, pins, context usage, and other metadata.
+
 ## v0.1.6
 
 中文：

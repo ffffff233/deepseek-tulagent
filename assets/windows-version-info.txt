@@ -16,12 +16,12 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'DeepSeekFathom'),
           StringStruct('FileDescription', 'DeepSeekFathom 桌面应用'),
-          StringStruct('FileVersion', '0.1.6'),
+          StringStruct('FileVersion', '0.1.7'),
           StringStruct('InternalName', 'DeepSeekFathom'),
           StringStruct('LegalCopyright', 'Copyright (c) DeepSeekFathom contributors'),
           StringStruct('OriginalFilename', 'DeepSeekFathom.exe'),
           StringStruct('ProductName', 'DeepSeekFathom'),
-          StringStruct('ProductVersion', '0.1.6')
+          StringStruct('ProductVersion', '0.1.7')
         ]
       )
     ]),

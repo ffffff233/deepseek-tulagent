@@ -317,6 +317,7 @@ window.DeepSeekDesktop = {
       dismissApproval();
       const summary = payload.summary || payload.error || "运行失败";
       const detail = payload.trace ? `${summary}\n\n调试详情：\n${payload.trace}` : summary;
+      restoreTranscriptFromEvent(payload);
       addEvent("error", "错误", detail);
       setSaveState("error", "出错", "查看上方错误卡片");
       toast(summary);
@@ -335,6 +336,7 @@ window.DeepSeekDesktop = {
       state.pendingOutbound = false;
       setRunning(false);
       dismissApproval();
+      restoreTranscriptFromEvent(payload);
       if (!wasSuppressed) {  // only if not already handled by the instant-cancel path
         addEvent("done", "已取消", payload.message || "");
         setSaveState("idle", "已取消", state.currentSessionId || "未保存");
@@ -343,6 +345,19 @@ window.DeepSeekDesktop = {
     }
   }
 };
+
+function restoreTranscriptFromEvent(payload) {
+  if (!payload || !Array.isArray(payload.messages)) return false;
+  const box = $("messages");
+  box.innerHTML = "";
+  payload.messages.forEach(replayMessage);
+  state.pendingVersions = null;
+  state.currentAssistant = null;
+  state.currentTool = null;
+  markMessageActions();
+  scrollMessages(true);
+  return true;
+}
 
 async function boot() {
   state.boot = await window.pywebview.api.boot();
@@ -779,7 +794,8 @@ async function refreshSessions() {
       e.stopPropagation();
       const ok = await uiConfirm(`删除会话「${session.title || session.session_id.slice(0, 8)}」？此操作不可恢复。`);
       if (!ok) return;
-      await window.pywebview.api.delete_session(session.session_id);
+      const result = await window.pywebview.api.delete_session(session.session_id);
+      if (!result.ok) { toast(result.error || "删除失败"); return; }
       await refreshSessions();
     };
     box.append(row);
@@ -1982,6 +1998,7 @@ convMenu.addEventListener("click", async (e) => {
     const ok = await uiConfirm("删除当前对话？此操作不可恢复。");
     if (!ok) return;
     const result = await window.pywebview.api.delete_session(sid);
+    if (!result.ok) { toast(result.error || "删除失败"); return; }
     $("newSession").click();
     updateContextBadge(result.context || null);
     await refreshSessions();
