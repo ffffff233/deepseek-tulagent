@@ -101,7 +101,7 @@ class SessionStore:
             try:
                 loaded = self.load(path.stem)
                 stat = path.stat()
-            except (OSError, FileNotFoundError):
+            except (OSError, FileNotFoundError, ValueError):
                 continue
             meta = self.metadata(loaded.session_id)
             first_user = next((message.content for message in loaded.messages if message.role == "user"), "")

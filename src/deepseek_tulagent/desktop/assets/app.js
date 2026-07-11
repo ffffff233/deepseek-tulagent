@@ -20,6 +20,8 @@ const state = {
   pendingOutbound: false,
   pendingOutboundId: "",
   cancelPromise: null,
+  suppressStream: false,
+  suppressedTurnIds: new Set(),
   goalCollapsed: false,
   goalsBySession: {},
   dismissedGoalSnapshots: {},
@@ -156,17 +158,20 @@ window.DeepSeekDesktop = {
     const sid = String((payload && payload.sessionId) || "");
     const tid = String((payload && payload.turnId) || "");
     const activeSid = currentSessionId();
+    const suppressedTurn = Boolean(tid && state.suppressedTurnIds.has(tid));
     const scopedToOtherSession = Boolean(
       (sid && activeSid && sid !== activeSid) ||
       (sid && !activeSid && !state.pendingOutbound && (!state.activeTurnId || tid !== state.activeTurnId)) ||
       (tid && state.activeTurnId && tid !== state.activeTurnId)
     );
     // after a user cancel, ignore this turn's late stream/tool events until it ends
-    if (state.suppressStream && event !== "turn:done" && event !== "turn:cancelled" && event !== "turn:error" && event !== "turn:start") {
+    if ((suppressedTurn || state.suppressStream) && event !== "turn:done" && event !== "turn:cancelled" && event !== "turn:error" && event !== "turn:start") {
       return;
     }
     if (scopedToOtherSession) {
       if (event === "turn:done" || event === "turn:error" || event === "turn:cancelled") {
+        if (tid) state.suppressedTurnIds.delete(tid);
+        state.suppressStream = state.suppressedTurnIds.size > 0;
         // A background turn finished in another conversation. Keep its transcript
         // bound to its own session; only refresh chrome/global availability here.
         refreshSessions();
@@ -286,8 +291,9 @@ window.DeepSeekDesktop = {
       hideThinking();
       state.currentAssistant = null;
       state.currentTool = null;
-      const wasSuppressed = state.suppressStream;
-      state.suppressStream = false;
+      const wasSuppressed = suppressedTurn || (!tid && state.suppressStream);
+      if (tid) state.suppressedTurnIds.delete(tid);
+      state.suppressStream = state.suppressedTurnIds.size > 0;
       setRunning(false);
       dismissApproval();
       refreshSessions();
@@ -310,7 +316,9 @@ window.DeepSeekDesktop = {
       hideThinking();
       state.currentAssistant = null;
       state.currentTool = null;
-      state.suppressStream = false;
+      const wasSuppressed = suppressedTurn || (!tid && state.suppressStream);
+      if (tid) state.suppressedTurnIds.delete(tid);
+      state.suppressStream = state.suppressedTurnIds.size > 0;
       if (!tid || tid === state.activeTurnId) state.activeTurnId = "";
       state.pendingOutbound = false;
       setRunning(false);
@@ -318,9 +326,11 @@ window.DeepSeekDesktop = {
       const summary = payload.summary || payload.error || "运行失败";
       const detail = payload.trace ? `${summary}\n\n调试详情：\n${payload.trace}` : summary;
       restoreTranscriptFromEvent(payload);
-      addEvent("error", "错误", detail);
-      setSaveState("error", "出错", "查看上方错误卡片");
-      toast(summary);
+      if (!wasSuppressed) {
+        addEvent("error", "错误", detail);
+        setSaveState("error", "出错", "查看上方错误卡片");
+        toast(summary);
+      }
       clearVersionInsertMarker();
     }
     if (event === "turn:cancel") {
@@ -330,8 +340,9 @@ window.DeepSeekDesktop = {
       hideThinking();
       state.currentAssistant = null;
       state.currentTool = null;
-      const wasSuppressed = state.suppressStream;
-      state.suppressStream = false;
+      const wasSuppressed = suppressedTurn || (!tid && state.suppressStream);
+      if (tid) state.suppressedTurnIds.delete(tid);
+      state.suppressStream = state.suppressedTurnIds.size > 0;
       if (!tid || tid === state.activeTurnId) state.activeTurnId = "";
       state.pendingOutbound = false;
       setRunning(false);
@@ -1806,6 +1817,8 @@ $("prompt").addEventListener("keydown", (event) => {
 $("cancel").onclick = async () => {
   // respond instantly: free the UI now, ignore late events from this turn, let the
   // backend wind down the in-flight request/tool in the background
+  const turnId = state.activeTurnId || "";
+  if (turnId) state.suppressedTurnIds.add(turnId);
   state.suppressStream = true;
   setRunning(false);
   hideThinking();
@@ -1815,7 +1828,6 @@ $("cancel").onclick = async () => {
   state.currentTool = null;
   // keep copy/retry/branch available on whatever was produced before the interrupt
   markMessageActions();
-  const turnId = state.activeTurnId || "";
   state.cancelPromise = window.pywebview.api.cancel({ turnId });
   try { await state.cancelPromise; } catch (_) {}
 };
