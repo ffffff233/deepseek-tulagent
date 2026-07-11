@@ -104,6 +104,27 @@ def test_parse_provider_usage_stats():
     assert responses.cached_input_tokens == 30
     assert responses.total_tokens == 100
 
+    cached_gateway = parse_usage_stats(
+        {
+            "usage": {
+                "prompt_tokens": 1236,
+                "completion_tokens": 95,
+                "prompt_tokens_details": {"cached_tokens": 140_000},
+            }
+        },
+        "upstream",
+    )
+    assert cached_gateway.input_tokens == 141_236
+    assert cached_gateway.cached_input_tokens == 140_000
+    assert cached_gateway.total_tokens == 141_331
+
+    deepseek_cache = parse_usage_stats(
+        {"usage": {"prompt_tokens": 1236, "prompt_cache_hit_tokens": 140_000, "prompt_cache_miss_tokens": 1236}},
+        "upstream",
+    )
+    assert deepseek_cache.input_tokens == 141_236
+    assert deepseek_cache.cached_input_tokens == 140_000
+
 
 def test_client_keeps_latest_usage_separate_from_cumulative(tmp_path: Path):
     from deepseek_tulagent.provider import DeepSeekClient
@@ -117,13 +138,20 @@ def test_client_keeps_latest_usage_separate_from_cumulative(tmp_path: Path):
     assert client.last_usage.input_tokens == 180
     assert client.last_usage.output_tokens == 30
 
+    http = client._http()
+    assert http.timeout.connect == 10.0
+    assert http.timeout.read == 180.0
+    client.close()
+    assert http.is_closed is True
+
     anthropic = parse_usage_stats(
         {"usage": {"input_tokens": 80, "output_tokens": 12, "cache_creation_input_tokens": 40, "cache_read_input_tokens": 25}},
         "upstream",
     )
+    assert anthropic.input_tokens == 145
     assert anthropic.cached_input_tokens == 25
     anthropic_stream = parse_usage_stats({"message": {"usage": {"input_tokens": 81, "cache_read_input_tokens": 26}}}, "upstream")
-    assert anthropic_stream.input_tokens == 81
+    assert anthropic_stream.input_tokens == 107
     assert anthropic_stream.cached_input_tokens == 26
 
     gemini = parse_usage_stats(
@@ -934,17 +962,20 @@ def test_thinking_mode_resolves_model_and_budget():
     assert fast.max_tokens == 384000
     assert deep.max_tokens == 384000
     assert ultra.max_tokens == 384000
-    assert ultra.reasoning_effort == "max"
+    assert fast.reasoning_effort == "low"
+    assert ThinkingMode.resolve("balanced").reasoning_effort == "medium"
+    assert deep.reasoning_effort == "high"
+    assert ultra.reasoning_effort == "xhigh"
     assert deep.deliberation_passes > 0
     assert deep.system_hint
 
 
 def test_deepseek_payload_includes_thinking_controls(tmp_path: Path):
-    settings_obj = settings(tmp_path).with_runtime(thinking_enabled=True, reasoning_effort="max")
+    settings_obj = settings(tmp_path).with_runtime(thinking_enabled=True, reasoning_effort="xhigh")
     payload = {}
     apply_thinking_payload(payload, settings_obj)
     assert payload["thinking"] == {"type": "enabled"}
-    assert payload["reasoning_effort"] == "max"
+    assert "reasoning_effort" not in payload
 
     payload = {}
     apply_thinking_payload(payload, settings(tmp_path).with_runtime(thinking_enabled=False))
@@ -1746,6 +1777,8 @@ def test_desktop_api_boot_and_runtime(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test")
     api = desktop.DesktopApi()
+    assert "window" not in api.__dict__
+    assert "_window" in api.__dict__
     boot = api.boot()
     assert boot["version"]
     assert boot["mode"] == "root"
@@ -1765,12 +1798,14 @@ def test_desktop_api_rejects_parallel_turn(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     api._running = True
+    api._active_turn_id = "active-turn"
+    api._active_turn_session_id = "session"
     result = api.send({"prompt": "hello"})
     assert result == {"ok": False, "error": "turn already running"}
     cancelled = api.cancel()
-    assert cancelled["ok"] is True
-    assert cancelled["running"] is False
-    assert api._running is False
+    assert cancelled == {"ok": True, "running": True, "cancelling": True}
+    assert api._running is True
+    assert api._cancel_requested is True
 
 
 def test_desktop_send_after_cancel_queues_next_turn(monkeypatch, tmp_path: Path):
@@ -1805,11 +1840,11 @@ def test_desktop_send_after_cancel_queues_next_turn(monkeypatch, tmp_path: Path)
     assert first["ok"] is True
     assert entered_first.wait(timeout=2)
     cancelled = api.cancel()
-    assert cancelled == {"ok": True, "running": False}
+    assert cancelled == {"ok": True, "running": True, "cancelling": True}
 
     second = api.send({"prompt": "第二条"})
     assert second["ok"] is True
-    assert "queued" not in second
+    assert second["queued"] is True
     assert second["sessionId"] == first["sessionId"]
     assert second["turnId"] != first["turnId"]
 
@@ -1840,13 +1875,20 @@ def test_desktop_configure_merges_existing_key(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
     merge_file_config({"api_key": "sk-old", "base_url": "https://api.deepseek.com", "model": "deepseek-v4-flash"})
     api = desktop.DesktopApi()
-    result = api.configure({"baseUrl": "https://example.com/v1", "model": "gpt-4o", "providerFormat": "openai-compatible"})
+    result = api.configure({
+        "baseUrl": "https://example.com/v1",
+        "model": "gpt-4o",
+        "providerFormat": "openai-compatible",
+        "requestTimeout": "45",
+    })
     settings_obj = get_settings()
     assert settings_obj.api_key == "sk-old"
     assert settings_obj.base_url == "https://example.com/v1"
     assert settings_obj.model == "gpt-4o"
     assert settings_obj.provider_format == "openai-compatible"
+    assert settings_obj.request_timeout == 45
     assert result["providerFormat"] == "openai-compatible"
+    assert result["requestTimeout"] == 45
 
 
 def test_desktop_manual_compact(monkeypatch, tmp_path: Path):
@@ -2027,6 +2069,35 @@ def test_desktop_context_usage_survives_restart(monkeypatch, tmp_path: Path):
     assert adjusted["measure"] == "上次上游输入 + 当前会话增量"
 
 
+def test_desktop_context_marks_upstream_usage_that_is_smaller_than_sent_prompt(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.messages import Message
+    from deepseek_tulagent.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    session = Session(tmp_path, session_id="underreported")
+    request = [Message("system", "x" * 40_000), Message("user", "hello")]
+    session.messages = list(request)
+    session.rewrite()
+    api.session = session
+    api._record_context_usage(
+        session.session_id,
+        UsageStats(input_tokens=1236, output_tokens=95, total_tokens=1331, source="upstream"),
+        request,
+        request,
+    )
+
+    status = api.context_status()
+    assert status["usageState"] == "underreported"
+    assert status["accurate"] is False
+    assert status["reportedInputTokens"] == 1236
+    assert status["inputTokens"] > 9000
+    assert status["tokens"] == status["inputTokens"]
+    assert status["source"] == "upstream-underreported"
+
+
 def test_desktop_brand_uses_transparent_whale_asset():
     root = Path(__file__).parents[1] / "src" / "deepseek_tulagent" / "desktop" / "assets"
     html = (root / "index.html").read_text(encoding="utf-8")
@@ -2037,11 +2108,25 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert '<img src="app-icon.png" alt="">' in brand
     assert "<svg" not in brand
     assert 'class="introLogo" src="app-icon.png"' in html
-    assert '<span id="version">v0.1.3</span>' in html
+    assert '<span id="version">v0.1.4</span>' in html
     assert 'id="settingsView"' in html and '<dialog id="settingsDialog"' not in html
     assert 'id="settingsBackTop"' in html and 'id="settingsBackBottom"' in html
+    js = (root / "app.js").read_text(encoding="utf-8")
+    boot_body = js.split("async function boot()", 1)[1].split("function fillSelect", 1)[0]
+    assert "refreshModels().catch" in boot_body
+    assert '$("requestTimeout").value = String(state.boot.requestTimeout || 60)' in js
+    assert ":root[data-theme=\"light\"]" in css and "--bg: #f6f6f6" in css
+    sidebar_css = css.split(".sidebarSettings {", 1)[1].split("}", 1)[0]
+    assert "position: static" in sidebar_css
+    assert "position: fixed" not in sidebar_css
     assert ".logo img" in css
     assert "background: transparent" in css
+    assert 'id="sessionScrollbar"' in html and 'id="sessionScrollThumb"' in html
+    assert "sessions.slice(0, 40)" not in js
+    assert "sessions.forEach" in js
+    assert "function initSessionScrollbar()" in js
+    assert 'THINKING_TIERS = ["fast", "balanced", "deep", "ultra"]' in (root.parent / "app.py").read_text(encoding="utf-8")
+    assert '"ultra": "XHigh"' in (root.parent / "app.py").read_text(encoding="utf-8")
     assert icon.startswith(b"\x89PNG\r\n\x1a\n")
 
 
@@ -2091,8 +2176,9 @@ def test_desktop_cancel_ignores_stale_turn_id(monkeypatch, tmp_path: Path):
     assert "current-turn" not in api._abandoned_turn_ids
 
     current = api.cancel({"turnId": "current-turn"})
-    assert current == {"ok": True, "running": False}
+    assert current == {"ok": True, "running": True, "cancelling": True}
     assert "current-turn" in api._abandoned_turn_ids
+    assert api._cancel_requested is True
 
 
 def test_desktop_turn_events_stay_bound_to_origin_session(monkeypatch, tmp_path: Path):
@@ -2835,10 +2921,10 @@ def test_cli_and_desktop_versions_are_independent():
     assert project["name"] == "deepseek-tulagent"
     assert project["version"] == __version__ == "0.1.108"
     assert project["scripts"]["deepseekfathom"] == "deepseek_tulagent.cli:main"
-    assert DESKTOP_VERSION == "0.1.3"
+    assert DESKTOP_VERSION == "0.1.4"
     assert REPO == "ffffff233/DeepSeekFathom"
-    assert '#define MyAppVersion "0.1.3"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
-    assert 'filevers=(0, 1, 3, 0)' in (root / "assets" / "windows-version-info.txt").read_text(encoding="utf-8")
+    assert '#define MyAppVersion "0.1.4"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
+    assert 'filevers=(0, 1, 4, 0)' in (root / "assets" / "windows-version-info.txt").read_text(encoding="utf-8")
 
 
 def test_update_refuses_dirty_source_tree(monkeypatch, tmp_path: Path):

@@ -49,13 +49,12 @@ def coerce_permission_tier(mode: str) -> str:
     return {"review": "agent", "trusted": "agent", "yolo": "root"}.get(mode, "root")
 # Codex-style reasoning effort tiers exposed in the desktop UI, mapped onto the
 # richer internal ThinkingMode set (CLI keeps the full list).
-THINKING_TIERS = ["instant", "fast", "balanced", "deep", "ultra"]
+THINKING_TIERS = ["fast", "balanced", "deep", "ultra"]
 THINKING_LABELS = {
-    "instant": "Minimal",
     "fast": "Low",
     "balanced": "Medium",
     "deep": "High",
-    "ultra": "Extra High",
+    "ultra": "XHigh",
 }
 
 
@@ -111,8 +110,17 @@ class DesktopApi:
         self.settings = get_desktop_settings()
         self.mode = coerce_permission_tier(self.settings.default_mode)
         self.thinking = ThinkingMode.resolve(self.settings.default_thinking)
+        if self.thinking.name not in THINKING_TIERS:
+            self.thinking = ThinkingMode.resolve("fast")
+        self.settings = self.settings.with_runtime(
+            max_tokens=self.thinking.max_tokens,
+            thinking_enabled=True,
+            reasoning_effort=self.thinking.reasoning_effort,
+        )
         self.session: Session | None = None
-        self.window: Any = None
+        # pywebview recursively exposes public js_api attributes. Keeping the native
+        # Window public makes it walk window.native and can deadlock WebView2 startup.
+        self._window: Any = None
         self._lock = threading.Lock()
         self._running = False
         self._cancel_requested = False
@@ -121,6 +129,7 @@ class DesktopApi:
         self._active_turn_id: str | None = None
         self._pending_turn: dict[str, Any] | None = None
         self._abandoned_turn_ids: set[str] = set()
+        self._active_client: DeepSeekClient | None = None
         self._models_cache: dict[str, tuple[float, list[str]]] = {}
         self._last_usage = UsageStats()
         self._usage_total = UsageStats()
@@ -128,7 +137,7 @@ class DesktopApi:
         self._context_by_session: dict[str, dict[str, Any]] = {}
 
     def bind_window(self, window: Any) -> None:
-        self.window = window
+        self._window = window
 
     def boot(self) -> dict[str, Any]:
         return {
@@ -151,6 +160,7 @@ class DesktopApi:
             "autoCompact": True,
             "contextWindowTokens": self.settings.context_window_tokens,
             "compactThresholdPercent": self.settings.compact_threshold_percent,
+            "requestTimeout": self.settings.request_timeout,
             "compatFormats": ["deepseek", "openai", "openai-responses", "gemini", "anthropic"],
             "formatLabels": {
                 "deepseek": "DeepSeek",
@@ -175,6 +185,9 @@ class DesktopApi:
             value = data.get(source)
             if isinstance(value, str) and value.strip():
                 config[target] = value.strip().rstrip("/") if source == "baseUrl" else value.strip()
+        request_timeout = parse_float_setting(data.get("requestTimeout"), minimum=15.0, maximum=300.0)
+        if request_timeout is not None:
+            config["request_timeout"] = request_timeout
         # keep the currently-selected model across the reload — get_settings() would
         # otherwise reset it to the file default (deepseek-v4-flash) every time the user
         # changes provider or saves settings.
@@ -185,6 +198,13 @@ class DesktopApi:
             self.settings = self.settings.with_runtime(model=keep_model)
         self.mode = coerce_permission_tier(self.settings.default_mode)
         self.thinking = ThinkingMode.resolve(self.settings.default_thinking)
+        if self.thinking.name not in THINKING_TIERS:
+            self.thinking = ThinkingMode.resolve("fast")
+        self.settings = self.settings.with_runtime(
+            max_tokens=self.thinking.max_tokens,
+            thinking_enabled=True,
+            reasoning_effort=self.thinking.reasoning_effort,
+        )
         return self.boot()
 
     def set_runtime(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -251,7 +271,7 @@ class DesktopApi:
         reasoning_sent = {k: sample[k] for k in ("reasoning_effort", "reasoning", "thinking") if k in sample}
         if "generationConfig" in sample and sample["generationConfig"].get("thinkingConfig"):
             reasoning_sent["thinkingConfig"] = sample["generationConfig"]["thinkingConfig"]
-        client = DeepSeekClient(probe)
+        client = DeepSeekClient(probe, timeout=min(20.0, probe.request_timeout))
         try:
             reply = client.chat([Message("user", "连接测试：只回复 ok。")])
             return {
@@ -264,6 +284,8 @@ class DesktopApi:
             }
         except Exception as exc:
             return {"ok": False, "error": str(exc), "reasoning": reasoning_sent, "resolved": client._base_url()}
+        finally:
+            client.close()
 
     def sessions(self) -> list[dict[str, Any]]:
         return SessionStore(self.settings.workspace).list()
@@ -337,8 +359,10 @@ class DesktopApi:
         local_delta = local_tokens - baseline if use_upstream else 0
         context_tokens = max(0, int(snapshot["tokens"]) + local_delta) if use_upstream else local_tokens
         usage = snapshot.get("usage") if use_upstream else UsageStats()
+        usage_quality = str(snapshot.get("quality") or "upstream") if use_upstream else "missing"
+        request_tokens = int(snapshot.get("requestTokens") or getattr(usage, "input_tokens", 0)) if use_upstream else 0
         session_usage = self._usage_by_session.get(session_id, UsageStats()) if session_id else UsageStats()
-        exact_upstream = bool(use_upstream and local_delta == 0)
+        exact_upstream = bool(use_upstream and local_delta == 0 and usage_quality == "upstream")
         known_context = use_upstream
         percent = round((context_tokens / limit * 100), 1) if known_context and limit else None
         threshold_percent_used = round((threshold / limit * 100), 1) if limit else threshold_percent
@@ -349,7 +373,8 @@ class DesktopApi:
             "localVisibleTokens": local_tokens,
             "estimatedInputTokens": local_tokens,
             "estimatedOutputTokens": max(0, context_tokens - int(getattr(usage, "input_tokens", 0))),
-            "inputTokens": int(getattr(usage, "input_tokens", 0)),
+            "inputTokens": request_tokens,
+            "reportedInputTokens": int(getattr(usage, "input_tokens", 0)),
             "outputTokens": int(getattr(usage, "output_tokens", 0)),
             "cachedTokens": int(getattr(usage, "cached_input_tokens", 0)),
             "cachePercent": round(int(getattr(usage, "cached_input_tokens", 0)) / max(1, int(getattr(usage, "input_tokens", 0))) * 100, 1),
@@ -364,12 +389,12 @@ class DesktopApi:
             "thresholdPercent": threshold_percent_used,
             "percent": percent,
             "remainingTokens": max(0, threshold - context_tokens) if known_context else None,
-            "source": "upstream" if exact_upstream else ("upstream-stale" if use_upstream else ("custom" if self.settings.context_window_tokens else info.get("source", "fallback"))),
+            "source": "upstream" if exact_upstream else ("upstream-underreported" if usage_quality == "underreported" else ("upstream-stale" if use_upstream else ("custom" if self.settings.context_window_tokens else info.get("source", "fallback")))),
             "limitSource": "custom" if self.settings.context_window_tokens else info.get("source", "fallback"),
             "accurate": exact_upstream,
             "usageAvailable": use_upstream,
-            "usageState": "current" if exact_upstream else ("adjusted" if use_upstream else "missing"),
-            "measure": "上游输入实测" if exact_upstream else ("上次上游输入 + 当前会话增量" if use_upstream else "上游未返回 usage，仅估算本地可见消息"),
+            "usageState": "current" if exact_upstream else ("underreported" if usage_quality == "underreported" else ("adjusted" if use_upstream else "missing")),
+            "measure": "上游输入实测" if exact_upstream else ("上游 usage 少报，按本地实际发送内容估算" if usage_quality == "underreported" else ("上次上游输入 + 当前会话增量" if use_upstream else "上游未返回 usage，仅估算本地可见消息")),
             "model": self.settings.model,
             "sessionId": session_id or None,
             "autoCompact": True,
@@ -623,11 +648,16 @@ class DesktopApi:
             "sessionId": self._active_turn_session_id,
             "turnId": self._active_turn_id,
         })
-        self._running = False
-        self._cancel_requested = False
-        self._active_turn_session_id = None
-        self._active_turn_id = None
-        return {"ok": True, "running": False}
+        active_client = self._active_client
+        if active_client is not None:
+            try:
+                active_client.close()
+            except Exception:
+                pass
+        # Keep the backend busy until the worker actually exits. A new send is queued
+        # by send() while _cancel_requested is true, so two workers never write the same
+        # session concurrently.
+        return {"ok": True, "running": True, "cancelling": True}
 
     def _request_approval(self, name: str, arguments: dict[str, Any]) -> bool:
         """Blocking approval bridge: emit a request to the UI, wait for the user's
@@ -713,6 +743,7 @@ class DesktopApi:
                     emit_turn("agent:event", parse_agent_event(text))
 
                 client = DeepSeekClient(self.settings)
+                self._active_client = client
                 result_session_id = turn_session_id
                 try:
                     runner = TuLAgent(
@@ -727,6 +758,9 @@ class DesktopApi:
                 finally:
                     self._last_usage = client.usage
                     self._record_session_usage(result_session_id, client.usage)
+                    client.close()
+                    if self._active_client is client:
+                        self._active_client = None
                 # Only adopt the finished turn's session if the user hasn't switched to a
                 # different conversation meanwhile — otherwise the next send would land in
                 # the OLD conversation (context bleeding across chats).
@@ -751,7 +785,10 @@ class DesktopApi:
                     emit_turn("turn:error", desktop_error_payload(exc))
             except Exception as exc:
                 self._restore_regenerated_suffix(turn_session_id, restore_suffix)
-                emit_turn("turn:error", desktop_error_payload(exc))
+                if is_cancelled():
+                    emit_turn("turn:cancelled", {"message": "当前回复已取消"})
+                else:
+                    emit_turn("turn:error", desktop_error_payload(exc))
             finally:
                 self._abandoned_turn_ids.discard(turn_id)
                 if self._active_turn_id == turn_id:
@@ -810,20 +847,27 @@ class DesktopApi:
             return
         request_estimate = estimate_message_tokens(request_messages)
         current_estimate = estimate_message_tokens(current_messages)
-        adjusted = max(0, usage.input_tokens + current_estimate - request_estimate) if request_messages else usage.input_tokens
+        underreported = bool(request_messages and usage.input_tokens < int(request_estimate * 0.8))
+        request_tokens = max(usage.input_tokens, request_estimate) if underreported else usage.input_tokens
+        adjusted = max(0, request_tokens + current_estimate - request_estimate) if request_messages else request_tokens
         snapshot = {
             "model": self.settings.model,
             "tokens": adjusted,
             "usage": usage,
             "currentEstimate": current_estimate,
+            "requestTokens": request_tokens,
+            "quality": "underreported" if underreported else "upstream",
         }
         self._context_by_session[session_id] = snapshot
         SessionStore(self.settings.workspace).update_metadata(
             session_id,
             context_usage={
+                "schema": 2,
                 "model": self.settings.model,
                 "tokens": adjusted,
                 "current_estimate": current_estimate,
+                "request_tokens": request_tokens,
+                "quality": snapshot["quality"],
                 "input_tokens": usage.input_tokens,
                 "output_tokens": usage.output_tokens,
                 "cached_input_tokens": usage.cached_input_tokens,
@@ -837,6 +881,12 @@ class DesktopApi:
         if not isinstance(stored, dict):
             self._context_by_session.pop(session_id, None)
             return
+        # v1 snapshots treated any positive upstream number as complete context. That
+        # is exactly how cache-heavy 140K requests became a fake 1.2K display. Do not
+        # resurrect those snapshots; one fresh request will write a validated v2 value.
+        if stored.get("schema") not in (2, "2"):
+            self._context_by_session.pop(session_id, None)
+            return
         try:
             usage = UsageStats(
                 input_tokens=int(stored.get("input_tokens") or 0),
@@ -847,6 +897,8 @@ class DesktopApi:
             )
             tokens = int(stored.get("tokens") or 0)
             current_estimate = int(stored.get("current_estimate") or 0)
+            request_tokens = int(stored.get("request_tokens") or usage.input_tokens)
+            quality = str(stored.get("quality") or "upstream")
             model = str(stored.get("model") or "")
         except (TypeError, ValueError):
             self._context_by_session.pop(session_id, None)
@@ -859,17 +911,19 @@ class DesktopApi:
             "tokens": tokens,
             "usage": usage,
             "currentEstimate": current_estimate,
+            "requestTokens": request_tokens,
+            "quality": quality,
         }
 
     def _emit(self, event: str, payload: dict[str, Any]) -> None:
-        if self.window is None:
+        if self._window is None:
             return
         data = json.dumps({"event": event, "payload": payload}, ensure_ascii=False)
         # U+2028/U+2029 are valid inside JSON strings but are line terminators in
         # JS source, which would break evaluate_js and silently drop the event.
         data = data.replace(" ", "\\u2028").replace(" ", "\\u2029")
         try:
-            self.window.evaluate_js(f"window.DeepSeekDesktop.onNativeEvent({data});")
+            self._window.evaluate_js(f"window.DeepSeekDesktop.onNativeEvent({data});")
         except Exception:
             pass
 
@@ -893,6 +947,8 @@ def user_error_summary(error: str) -> str:
         return "上游 API 返回错误：" + text.removeprefix("API error ").strip()
     if "上游返回的是网页而不是 API 响应" in text:
         return text
+    if "timed out" in text.lower() or "timeout" in text.lower():
+        return "上游 API 响应超时。可在设置中调整接口超时，或检查 Base URL 和网络。"
     if "NoneType" in text and "not subscriptable" in text:
         return "工具返回了空输出，旧版本处理空输出时崩溃。请更新到最新版本后重试。"
     return text[:500]

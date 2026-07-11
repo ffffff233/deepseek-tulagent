@@ -69,10 +69,11 @@ function installDemoApi() {
         mode: "root",
         thinking: "fast",
         providerFormat: "deepseek",
+        requestTimeout: 60,
         modes: ["plan", "agent", "root"],
         modeLabels: { plan: "只读", agent: "受限", root: "完全访问" },
-        thinkingModes: ["instant", "fast", "balanced", "deep", "ultra"],
-        thinkingLabels: { instant: "Minimal", fast: "Low", balanced: "Medium", deep: "High", ultra: "Extra High" },
+        thinkingModes: ["fast", "balanced", "deep", "ultra"],
+        thinkingLabels: { fast: "Low", balanced: "Medium", deep: "High", ultra: "XHigh" },
         modeDescriptions: {
           plan: "只读：可以阅读文件和回答，不写文件、不执行命令",
           agent: "受限：危险操作会弹出批准请求，同意后才执行",
@@ -353,11 +354,11 @@ async function boot() {
   fillSelect("providerFormat", state.boot.compatFormats, state.boot.providerFormat || "deepseek", labels);
   fillSelect("model", ensureIncludes((state.models && state.models.length ? state.models : [state.boot.model]), state.boot.model), state.boot.model);
   updateModeHelp();  $("baseUrl").value = state.boot.baseUrl || "";
+  $("requestTimeout").value = String(state.boot.requestTimeout || 60);
   state.skills = state.boot.skills || [];
   loadGoalStore();
-  // Don't block the UI on the network model list — the dropdown already shows the saved
-  // model; fetch the full list in the background and refresh it when it arrives. Awaiting
-  // here made every load wait on a slow GET /models round-trip.
+  // Keep the saved model immediately usable, then refresh the upstream list without
+  // awaiting it so the initial interface remains interactive.
   refreshModels().catch(() => {});
   refreshSessions().catch(() => {});
   refreshContextBadge().catch(() => {});
@@ -426,7 +427,8 @@ function updateContextBadge(ctx) {
   setText("ctxThreshold", `${fmtTokens(ctx.threshold)} (${ctx.thresholdPercent || 95}%)`);
   setText("ctxRemaining", known ? fmtTokens(ctx.remainingTokens || 0) : "未知");
   const limitSource = ctx.customLimit ? "手动窗口" : sourceLabel(ctx.limitSource || ctx.source);
-  setText("ctxSource", ctx.accurate ? `上游实测 · ${limitSource}` : (ctx.usageAvailable ? `上次实测校正 · ${limitSource}` : `上游未返回 · ${limitSource}`));
+  const underreported = ctx.usageState === "underreported";
+  setText("ctxSource", ctx.accurate ? `上游实测 · ${limitSource}` : (underreported ? `上游少报 · 本地估算 · ${limitSource}` : (ctx.usageAvailable ? `上次实测校正 · ${limitSource}` : `上游未返回 · ${limitSource}`)));
   const limitInput = $("ctxLimitInput");
   const thresholdInput = $("ctxThresholdInput");
   if (limitInput && document.activeElement !== limitInput) limitInput.value = ctx.customLimit ? String(ctx.limit || "") : "";
@@ -444,7 +446,7 @@ function updateContextBadge(ctx) {
 }
 
 function sourceLabel(source) {
-  const labels = { upstream: "上游 usage", openai: "OpenAI", anthropic: "Claude", google: "Gemini", deepseek: "DeepSeek", qwen: "通义千问", moonshot: "Kimi", zhipu: "智谱 GLM", minimax: "MiniMax", "model-name": "模型名", fallback: "保守估算" };
+  const labels = { upstream: "上游 usage", "upstream-underreported": "上游少报", "upstream-stale": "上次上游 usage", openai: "OpenAI", anthropic: "Claude", google: "Gemini", deepseek: "DeepSeek", qwen: "通义千问", moonshot: "Kimi", zhipu: "智谱 GLM", minimax: "MiniMax", "model-name": "模型名", fallback: "保守估算" };
   return labels[source] || source || "估算";
 }
 
@@ -712,12 +714,14 @@ async function refreshSessions() {
   }
   if (!Array.isArray(sessions)) return;
   const box = $("sessions");
+  const previousScrollTop = box.scrollTop;
   box.innerHTML = "";
   if (!sessions.length) {
     box.textContent = "暂无会话";
+    requestAnimationFrame(syncSessionScrollbar);
     return;
   }
-  sessions.slice(0, 40).forEach((session) => {
+  sessions.forEach((session) => {
     const row = document.createElement("div");
     row.className = `sessionItem${session.pinned ? " pinned" : ""}`;
     row.innerHTML = `
@@ -772,6 +776,70 @@ async function refreshSessions() {
     };
     box.append(row);
   });
+  box.scrollTop = previousScrollTop;
+  requestAnimationFrame(syncSessionScrollbar);
+}
+
+function syncSessionScrollbar() {
+  const box = $("sessions");
+  const rail = $("sessionScrollbar");
+  const thumb = $("sessionScrollThumb");
+  if (!box || !rail || !thumb) return;
+  const maxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
+  rail.hidden = maxScroll <= 1;
+  if (rail.hidden) return;
+  const railHeight = rail.clientHeight;
+  const thumbHeight = Math.max(30, Math.round(railHeight * box.clientHeight / box.scrollHeight));
+  const travel = Math.max(0, railHeight - thumbHeight);
+  const top = maxScroll ? Math.round(travel * box.scrollTop / maxScroll) : 0;
+  thumb.style.height = `${thumbHeight}px`;
+  thumb.style.transform = `translateY(${top}px)`;
+}
+
+function initSessionScrollbar() {
+  const box = $("sessions");
+  const rail = $("sessionScrollbar");
+  const thumb = $("sessionScrollThumb");
+  if (!box || !rail || !thumb || rail.dataset.ready) return;
+  rail.dataset.ready = "1";
+  box.addEventListener("scroll", syncSessionScrollbar, { passive: true });
+  window.addEventListener("resize", syncSessionScrollbar);
+  if (window.ResizeObserver) new ResizeObserver(syncSessionScrollbar).observe(box);
+
+  rail.addEventListener("pointerdown", (event) => {
+    if (event.target === thumb) return;
+    const rect = rail.getBoundingClientRect();
+    const thumbHeight = thumb.getBoundingClientRect().height;
+    const travel = Math.max(1, rect.height - thumbHeight);
+    const target = Math.max(0, Math.min(travel, event.clientY - rect.top - thumbHeight / 2));
+    box.scrollTop = target / travel * Math.max(0, box.scrollHeight - box.clientHeight);
+  });
+
+  thumb.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const startY = event.clientY;
+    const startScroll = box.scrollTop;
+    const railHeight = rail.clientHeight;
+    const thumbHeight = thumb.getBoundingClientRect().height;
+    const travel = Math.max(1, railHeight - thumbHeight);
+    const maxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
+    thumb.classList.add("dragging");
+    thumb.setPointerCapture(event.pointerId);
+    const move = (moveEvent) => {
+      box.scrollTop = startScroll + (moveEvent.clientY - startY) / travel * maxScroll;
+    };
+    const finish = () => {
+      thumb.classList.remove("dragging");
+      thumb.removeEventListener("pointermove", move);
+      thumb.removeEventListener("pointerup", finish);
+      thumb.removeEventListener("pointercancel", finish);
+    };
+    thumb.addEventListener("pointermove", move);
+    thumb.addEventListener("pointerup", finish);
+    thumb.addEventListener("pointercancel", finish);
+  });
+  syncSessionScrollbar();
 }
 
 // replay a serialized transcript entry: text bubble or a completed tool card
@@ -1821,6 +1889,7 @@ $("saveSettings").onclick = async (event) => {
     baseUrl: $("baseUrl").value,
     apiKey: $("apiKey").value,
     providerFormat: $("providerFormat").value,
+    requestTimeout: $("requestTimeout").value,
     defaultMode: $("mode").value,
     defaultThinking: $("thinking").value,
   });
@@ -2494,4 +2563,5 @@ function tryStart() {
   setTimeout(tryStart, 100);
 }
 window.addEventListener("pywebviewready", tryStart);
+initSessionScrollbar();
 tryStart();
