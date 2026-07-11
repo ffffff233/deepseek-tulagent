@@ -2009,6 +2009,135 @@ def test_desktop_send_after_cancel_queues_next_turn(monkeypatch, tmp_path: Path)
     assert prompts == ["第一条", "第二条"]
 
 
+def test_desktop_queued_turn_does_not_steal_later_session(monkeypatch, tmp_path: Path):
+    import time
+    import threading
+
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.agent import AgentResult
+    from deepseek_tulagent.messages import Message
+    from deepseek_tulagent.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    first_session = Session(tmp_path, session_id="first-session")
+    queued_session = Session(tmp_path, session_id="queued-session")
+    visible_session = Session(tmp_path, session_id="visible-session")
+    for session, text in (
+        (first_session, "第一段历史"),
+        (queued_session, "第二段历史"),
+        (visible_session, "当前可见历史"),
+    ):
+        session.append(Message("user", text))
+    api.session = first_session
+
+    entered_first = threading.Event()
+    release_first = threading.Event()
+    seen: list[tuple[str, str]] = []
+
+    class FakeAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, prompt, **kwargs):
+            seen.append((prompt, kwargs["session"].session_id))
+            if prompt == "第一条":
+                entered_first.set()
+                assert release_first.wait(timeout=2)
+                kwargs["on_delta"]("迟到输出")
+            return AgentResult(kwargs["session"].session_id, "完成", 1)
+
+    monkeypatch.setattr(desktop, "TuLAgent", FakeAgent)
+
+    api.send({"prompt": "第一条"})
+    assert entered_first.wait(timeout=2)
+    api.cancel()
+    api.resume(queued_session.session_id)
+    queued = api.send({"prompt": "第二条"})
+    assert queued["queued"] is True
+    api.resume(visible_session.session_id)
+
+    release_first.set()
+    deadline = time.time() + 3
+    while api._running and time.time() < deadline:
+        time.sleep(0.02)
+
+    assert seen == [("第一条", "first-session"), ("第二条", "queued-session")]
+    assert api.session is not None
+    assert api.session.session_id == "visible-session"
+
+
+def test_desktop_queued_turn_can_be_cancelled_before_it_starts(monkeypatch, tmp_path: Path):
+    import time
+    import threading
+
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.agent import AgentResult
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    entered_first = threading.Event()
+    release_first = threading.Event()
+    prompts: list[str] = []
+
+    class FakeAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, prompt, **kwargs):
+            prompts.append(prompt)
+            if prompt == "第一条":
+                entered_first.set()
+                assert release_first.wait(timeout=2)
+                kwargs["on_delta"]("迟到输出")
+            return AgentResult(kwargs["session"].session_id, "完成", 1)
+
+    monkeypatch.setattr(desktop, "TuLAgent", FakeAgent)
+
+    api.send({"prompt": "第一条"})
+    assert entered_first.wait(timeout=2)
+    api.cancel()
+    queued = api.send({"prompt": "不应执行"})
+    assert queued["queued"] is True
+
+    cancelled = api.cancel({"turnId": queued["turnId"]})
+    assert cancelled == {"ok": True, "running": True, "queuedCancelled": True}
+    assert api._pending_turn is None
+
+    release_first.set()
+    deadline = time.time() + 3
+    while api._running and time.time() < deadline:
+        time.sleep(0.02)
+    assert prompts == ["第一条"]
+
+
+def test_desktop_rejects_deleting_a_queued_turn_session(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.messages import Message
+    from deepseek_tulagent.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    pending = Session(tmp_path, session_id="pending-session")
+    pending.append(Message("user", "保留"))
+    api._pending_turn = {
+        "prompt": "稍后执行",
+        "images": [],
+        "session_id": pending.session_id,
+        "turn_id": "pending-turn",
+        "goal": None,
+    }
+
+    deleted = api.delete_session(pending.session_id)
+
+    assert deleted["ok"] is False
+    assert "排队" in deleted["error"]
+    assert pending.path.is_file()
+
+
 def test_desktop_upload_saves_file(monkeypatch, tmp_path: Path):
     import deepseek_tulagent.desktop.app as desktop
 
@@ -2141,6 +2270,52 @@ def test_desktop_configure_merges_existing_key(monkeypatch, tmp_path: Path):
     assert result["requestTimeout"] == 45
 
 
+def test_desktop_configure_can_clear_custom_base_url(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.config import load_file_config
+    from deepseek_tulagent.provider import DeepSeekClient
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://stale-env.example/v1")
+    merge_file_config({
+        "api_key": "sk-old",
+        "base_url": "https://custom.example/v1",
+        "provider_format": "openai",
+    })
+    api = desktop.DesktopApi()
+
+    result = api.configure({"baseUrl": ""})
+
+    assert result["baseUrl"] == ""
+    assert api.settings.base_url == ""
+    assert load_file_config()["base_url"] == ""
+    client = DeepSeekClient(api.settings)
+    try:
+        assert client._base_url() == "https://api.openai.com/v1"
+    finally:
+        client.close()
+
+
+def test_concurrent_config_merges_preserve_all_fields(monkeypatch, tmp_path: Path):
+    import threading
+
+    from deepseek_tulagent.config import load_file_config
+
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    threads = [
+        threading.Thread(target=merge_file_config, args=({f"field_{index}": index},))
+        for index in range(24)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert load_file_config() == {f"field_{index}": index for index in range(24)}
+    assert not list((tmp_path / "config-home").glob("*.tmp-*"))
+
+
 def test_desktop_manual_compact(monkeypatch, tmp_path: Path):
     import deepseek_tulagent.desktop.app as desktop
     from deepseek_tulagent.messages import Message
@@ -2231,7 +2406,17 @@ def test_desktop_context_status_reports_local_context_threshold(monkeypatch, tmp
     assert configured["ok"] is True
     assert configured["context"]["limit"] == 64_000
     assert configured["context"]["threshold"] == 57_600
-    assert configured["context"]["source"] == "custom"
+    assert configured["context"]["source"] == "upstream"
+    assert configured["context"]["limitSource"] == "custom"
+    assert configured["context"]["customLimit"] is True
+
+    api.settings = api.settings.with_runtime(model="custom-32k")
+    automatic = api.configure_context({"contextWindowTokens": "", "compactThresholdPercent": ""})
+    assert automatic["ok"] is True
+    assert automatic["context"]["customLimit"] is False
+    assert automatic["context"]["limit"] == 32_000
+    assert automatic["context"]["thresholdPercent"] == 95
+    assert automatic["boot"]["model"] == "custom-32k"
 
 
 def test_desktop_session_switch_returns_fresh_context(monkeypatch, tmp_path: Path):
@@ -2358,7 +2543,7 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert '<img src="app-icon.png" alt="">' in brand
     assert "<svg" not in brand
     assert 'class="introLogo" src="app-icon.png"' in html
-    assert '<span id="version">v0.1.7</span>' in html
+    assert '<span id="version">v0.1.8</span>' in html
     assert 'id="settingsView"' in html and '<dialog id="settingsDialog"' not in html
     assert 'id="settingsBackTop"' in html and 'id="settingsBackBottom"' in html
     js = (root / "app.js").read_text(encoding="utf-8")
@@ -2372,8 +2557,10 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert ".logo img" in css
     assert "background: transparent" in css
     assert 'id="sessionScrollbar"' in html and 'id="sessionScrollThumb"' in html
-    assert 'style.css?v=0.1.7' in html and 'app.js?v=0.1.7' in html
+    assert 'style.css?v=0.1.8' in html and 'app.js?v=0.1.8' in html
     assert 'state.currentAssistant.remove();' in js
+    assert "suppressedTurnIds: new Set()" in js
+    assert "state.suppressedTurnIds.add(turnId)" in js
     assert 'event === "native:drop"' in js
     assert "sessions.slice(0, 40)" not in js
     assert "sessions.forEach" in js
@@ -3389,9 +3576,9 @@ def test_cli_and_desktop_versions_are_independent():
     assert project["name"] == "deepseek-tulagent"
     assert project["version"] == __version__ == "0.1.108"
     assert project["scripts"]["deepseekfathom"] == "deepseek_tulagent.cli:main"
-    assert DESKTOP_VERSION == "0.1.7"
+    assert DESKTOP_VERSION == "0.1.8"
     assert REPO == "ffffff233/DeepSeekFathom"
-    assert '#define MyAppVersion "0.1.7"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
+    assert '#define MyAppVersion "0.1.8"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
     assert 'filevers=(0, 1, 5, 0)' in (root / "assets" / "windows-version-info.txt").read_text(encoding="utf-8")
 
 
@@ -3539,6 +3726,20 @@ def test_session_ids_cannot_escape_session_directory(tmp_path: Path):
             store.resolve_session_path(unsafe)
         with pytest.raises(ValueError, match="invalid session id"):
             store.metadata_path(unsafe)
+
+
+def test_session_list_skips_invalid_legacy_filenames(tmp_path: Path):
+    from deepseek_tulagent.messages import Message
+    from deepseek_tulagent.session import Session, SessionStore
+
+    valid = Session(tmp_path, session_id="valid-session")
+    valid.append(Message("user", "保留的会话"))
+    invalid = tmp_path / ".deepseek-tulagent" / "sessions" / "bad name.jsonl"
+    invalid.write_text("{}\n", encoding="utf-8")
+
+    rows = SessionStore(tmp_path).list()
+
+    assert [row["session_id"] for row in rows] == ["valid-session"]
 
 
 def test_concurrent_session_metadata_updates_preserve_all_fields(tmp_path: Path):

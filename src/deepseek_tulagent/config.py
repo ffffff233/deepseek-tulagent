@@ -4,6 +4,11 @@ from dataclasses import dataclass, replace
 import json
 import os
 from pathlib import Path
+import threading
+from uuid import uuid4
+
+
+_CONFIG_LOCK = threading.RLock()
 
 MODEL_ALIASES = {
     "v4-pro": "deepseek-v4-pro",
@@ -59,7 +64,12 @@ def get_settings() -> Settings:
     # not silently shadow what the user just saved ("保存后不生效 / 无法发送").
     model = string_or_none(file_config.get("model")) or os.getenv("DEEPSEEK_MODEL") or "deepseek-v4-flash"
     api_key = string_or_none(file_config.get("api_key")) or os.getenv("DEEPSEEK_API_KEY")
-    base_url = string_or_none(file_config.get("base_url")) or os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com"
+    if "base_url" in file_config and isinstance(file_config.get("base_url"), str):
+        # An explicitly saved empty value means "use the selected provider's default".
+        # Preserve it instead of falling back to a stale launch-time environment value.
+        base_url = str(file_config["base_url"]).strip()
+    else:
+        base_url = os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com"
     provider_format = string_or_none(file_config.get("provider_format")) or os.getenv("DEEPSEEK_PROVIDER_FORMAT") or "deepseek"
     return Settings(
         api_key=api_key,
@@ -101,20 +111,25 @@ def load_file_config() -> dict:
 
 
 def save_file_config(data: dict) -> Path:
-    path = config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.chmod(0o600)
-    tmp.replace(path)
-    path.chmod(0o600)
-    return path
+    with _CONFIG_LOCK:
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid4().hex}")
+        try:
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            tmp.chmod(0o600)
+            tmp.replace(path)
+            path.chmod(0o600)
+            return path
+        finally:
+            tmp.unlink(missing_ok=True)
 
 
 def merge_file_config(data: dict) -> Path:
-    merged = load_file_config()
-    merged.update({key: value for key, value in data.items() if value is not None})
-    return save_file_config(merged)
+    with _CONFIG_LOCK:
+        merged = load_file_config()
+        merged.update({key: value for key, value in data.items() if value is not None})
+        return save_file_config(merged)
 
 
 def string_or_none(value: object) -> str | None:

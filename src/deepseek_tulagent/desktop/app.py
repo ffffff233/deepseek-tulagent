@@ -133,6 +133,7 @@ class DesktopApi:
         self._active_turn_session_id: str | None = None
         self._active_turn_id: str | None = None
         self._pending_turn: dict[str, Any] | None = None
+        self._pending_turn_lock = threading.Lock()
         self._abandoned_turn_ids: set[str] = set()
         self._active_client: DeepSeekClient | None = None
         self._models_cache: dict[str, tuple[float, list[str]]] = {}
@@ -181,7 +182,6 @@ class DesktopApi:
         config: dict[str, Any] = {}
         for source, target in {
             "apiKey": "api_key",
-            "baseUrl": "base_url",
             "model": "model",
             "providerFormat": "provider_format",
             "defaultMode": "default_mode",
@@ -189,7 +189,10 @@ class DesktopApi:
         }.items():
             value = data.get(source)
             if isinstance(value, str) and value.strip():
-                config[target] = value.strip().rstrip("/") if source == "baseUrl" else value.strip()
+                config[target] = value.strip()
+        base_url = data.get("baseUrl")
+        if isinstance(base_url, str):
+            config["base_url"] = base_url.strip().rstrip("/")
         request_timeout = parse_float_setting(data.get("requestTimeout"), minimum=15.0, maximum=300.0)
         if request_timeout is not None:
             config["request_timeout"] = request_timeout
@@ -312,6 +315,10 @@ class DesktopApi:
             active_session_id = self.session.session_id
         if self._running and session_id == active_session_id:
             return {"ok": False, "error": "当前会话正在生成，停止回复后再删除"}
+        with self._pending_turn_lock:
+            pending_session_id = str((self._pending_turn or {}).get("session_id") or "")
+        if session_id == pending_session_id:
+            return {"ok": False, "error": "当前会话有一条回复正在排队，停止回复后再删除"}
         SessionStore(self.settings.workspace).delete(session_id)
         self._context_by_session.pop(session_id, None)
         self._usage_by_session.pop(session_id, None)
@@ -422,10 +429,16 @@ class DesktopApi:
         current: dict[str, Any] = {}
         if limit is not None:
             current["context_window_tokens"] = limit
+        elif "contextWindowTokens" in data and not str(limit_raw or "").strip():
+            current["context_window_tokens"] = ""
         if threshold is not None:
             current["compact_threshold_percent"] = threshold
+        elif "compactThresholdPercent" in data and not str(threshold_raw or "").strip():
+            current["compact_threshold_percent"] = ""
+        keep_model = self.settings.model
         merge_file_config(current)
         self.settings = get_desktop_settings().with_runtime(
+            model=keep_model,
             max_tokens=self.thinking.max_tokens,
             thinking_enabled=self.thinking.api_thinking,
             reasoning_effort=self.thinking.reasoning_effort,
@@ -584,26 +597,28 @@ class DesktopApi:
             self.session = Session(self.settings.workspace)
         session_id = self.session.session_id
         turn_id = uuid4().hex
-        self._pending_turn = {
-            "prompt": prompt,
-            "images": images or [],
-            "session_id": session_id,
-            "turn_id": turn_id,
-            "goal": goal,
-        }
+        with self._pending_turn_lock:
+            if self._pending_turn is not None:
+                return {"ok": False, "error": "已有一条回复正在等待当前取消完成"}
+            self._pending_turn = {
+                "prompt": prompt,
+                "images": images or [],
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "goal": goal,
+            }
         return {"ok": True, "queued": True, "sessionId": session_id, "turnId": turn_id}
 
     def _start_pending_turn_if_any(self) -> None:
-        pending = self._pending_turn
-        self._pending_turn = None
+        with self._pending_turn_lock:
+            pending = self._pending_turn
+            self._pending_turn = None
         if not pending:
             return
         session_id = str(pending["session_id"])
-        if self.session is None or self.session.session_id != session_id:
-            try:
-                self.session = SessionStore(self.settings.workspace).load(session_id)
-            except FileNotFoundError:
-                self.session = Session(self.settings.workspace, session_id=session_id)
+        # Do not adopt the queued conversation here. The user may have switched again
+        # while the cancelled worker was winding down; _run_agent_turn loads the queued
+        # session by id and keeps its events scoped without changing the visible session.
         self._cancel_requested = False
         self._running = True
         thread = threading.Thread(
@@ -740,9 +755,26 @@ class DesktopApi:
         }
 
     def cancel(self, data: dict[str, Any] | None = None) -> dict[str, Any]:
-        if not self._running:
-            return {"ok": True, "running": False}
         requested_turn_id = str((data or {}).get("turnId") or "").strip()
+        cancelled_pending: dict[str, Any] | None = None
+        with self._pending_turn_lock:
+            pending = self._pending_turn
+            pending_turn_id = str((pending or {}).get("turn_id") or "")
+            if pending is not None and (not requested_turn_id or requested_turn_id == pending_turn_id):
+                cancelled_pending = pending
+                self._pending_turn = None
+        if cancelled_pending is not None:
+            self._emit("turn:cancelled", {
+                "message": "排队中的回复已取消",
+                "sessionId": cancelled_pending.get("session_id"),
+                "turnId": cancelled_pending.get("turn_id"),
+            })
+            # A turn id identifies exactly one request. Cancelling the queued request
+            # must not accidentally target the older worker that is already winding down.
+            if requested_turn_id:
+                return {"ok": True, "running": self._running, "queuedCancelled": True}
+        if not self._running:
+            return {"ok": True, "running": False, "queuedCancelled": bool(cancelled_pending)}
         if requested_turn_id and self._active_turn_id and requested_turn_id != self._active_turn_id:
             return {"ok": True, "running": self._running, "ignored": True}
         self._cancel_requested = True

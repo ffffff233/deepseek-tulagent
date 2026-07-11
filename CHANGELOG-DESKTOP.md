@@ -1,5 +1,23 @@
 # 桌面端更新记录 / Desktop Changelog
 
+## v0.1.8
+
+中文：
+
+- **修复取消后排队回复的会话串线**：旧请求结束时不再把后端当前会话强行切回排队会话；即使连续切换多个对话，排队回复仍写入原目标会话，后续发送也不会误落到别的对话。
+- **排队中的回复现在可以真正停止**：停止按钮会按 `turnId` 移除尚未启动的回复，并阻止删除仍有回复排队的会话；迟到的旧请求事件按请求隔离，不再重复显示取消或污染当前界面。
+- **设置保存改为并发安全的原子合并**：API、模型、上下文等设置同时保存时不再互相覆盖，临时文件使用唯一名称并在失败后清理。
+- **支持恢复自动 API 地址与上下文窗口**：清空基础地址会使用当前接口格式的默认域名，清空模型上下文会恢复自动识别，清空压缩阈值会恢复 95%；保存这些设置不再重置当前选择的模型。
+- **侧栏跳过非法旧会话文件**：会话目录中的异常文件名不会再导致整个对话列表加载失败。
+
+English:
+
+- **Prevented queued turns from stealing the active conversation after cancellation and multiple session switches**, keeping every queued reply bound to its original session.
+- **Made queued replies genuinely cancellable by turn id**, blocked deletion while a reply is queued, and isolated late terminal events to prevent duplicate cancellation UI.
+- **Made configuration merges atomic and concurrency-safe** with unique temporary files and cleanup on failure.
+- **Allowed clearing custom API and context settings to restore automatic defaults** without resetting the currently selected model.
+- **Skipped invalid legacy session filenames** instead of failing the entire sidebar conversation list.
+
 ## v0.1.7
 
 中文：
