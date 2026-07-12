@@ -1,4 +1,4 @@
 """Desktop launcher for DeepSeekFathom."""
 
-DESKTOP_VERSION = "0.1.12"
+DESKTOP_VERSION = "0.1.13"
 

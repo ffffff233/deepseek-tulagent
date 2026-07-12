@@ -437,6 +437,14 @@ function fmtTokens(n) {
   return String(Math.round(n));
 }
 
+function fmtCacheSplit(hit, miss, percent) {
+  hit = Number(hit || 0);
+  miss = Number(miss || 0);
+  if (hit + miss <= 0) return "未上报";
+  const pct = Number.isFinite(Number(percent)) ? Number(percent) : (hit / (hit + miss) * 100);
+  return `${fmtTokens(hit)} 命中 / ${fmtTokens(miss)} 新增 · ${pct.toFixed(2)}%`;
+}
+
 function updateContextBadge(ctx) {
   const badge = $("contextBadge");
   if (!badge) return;
@@ -457,6 +465,9 @@ function updateContextBadge(ctx) {
   setText("ctxPct", known ? `上下文 ${pct.toFixed(pct >= 10 ? 0 : 1)}%` : "上下文未知");
   setText("ctxUsage", known ? `${ctx.accurate ? "" : "≈"}${fmtTokens(ctx.tokens)} / ${fmtTokens(ctx.limit)}` : `未知 / ${fmtTokens(ctx.limit)}`);
   setText("ctxInput", ctx.inputTokens > 0 ? fmtTokens(ctx.inputTokens) : "未知");
+  setText("ctxOutput", ctx.outputTokens > 0 ? fmtTokens(ctx.outputTokens) : (ctx.usageAvailable ? "0" : "未知"));
+  setText("ctxCache", fmtCacheSplit(ctx.cacheHitTokens, ctx.cacheMissTokens, ctx.cachePercent));
+  setText("ctxSessionCache", fmtCacheSplit(ctx.sessionCacheHitTokens, ctx.sessionCacheMissTokens, ctx.sessionCachePercent));
   setText("ctxSessionInput", ctx.sessionInputTokens > 0 ? fmtTokens(ctx.sessionInputTokens) : "未知");
   setText("ctxThreshold", `${fmtTokens(ctx.threshold)} (${ctx.thresholdPercent || 95}%)`);
   setText("ctxRemaining", known ? fmtTokens(ctx.remainingTokens || 0) : "未知");
@@ -467,9 +478,12 @@ function updateContextBadge(ctx) {
   const thresholdInput = $("ctxThresholdInput");
   if (limitInput && document.activeElement !== limitInput) limitInput.value = ctx.customLimit ? String(ctx.limit || "") : "";
   if (thresholdInput && document.activeElement !== thresholdInput) thresholdInput.value = String(ctx.thresholdPercent || 95);
-  const measure = ctx.measure || (ctx.accurate ? "上游输入实测" : "按当前会话消息本地估算");
+  const measure = ctx.measure || (ctx.accurate ? "上游输入+输出实测" : "按当前会话消息本地估算");
+  const cacheBasis = ctx.cacheAvailable
+    ? `本次缓存 ${fmtCacheSplit(ctx.cacheHitTokens, ctx.cacheMissTokens, ctx.cachePercent)}。`
+    : "上游未返回缓存命中/新增字段，缓存率保持未知。";
   const basis = known
-    ? `${measure}；窗口 ${fmtTokens(ctx.limit)}，阈值 ${ctx.thresholdPercent || 95}%。`
+    ? `${measure}；窗口 ${fmtTokens(ctx.limit)}，阈值 ${ctx.thresholdPercent || 95}%。${cacheBasis}`
     : `上游未返回 usage；本地可见消息约 ${fmtTokens(ctx.localVisibleTokens || 0)}，不含网关注入提示词，不能代表实际上下文占用。`;
   setText("ctxHint", ctx.needsCompact ? `已达到自动压缩阈值。${basis}` : basis);
   const bar = $("ctxBarFill");

@@ -109,7 +109,14 @@ def test_parse_provider_usage_stats():
         },
         "upstream",
     )
-    assert chat == UsageStats(input_tokens=100, output_tokens=20, cached_input_tokens=60, total_tokens=120, source="upstream")
+    assert chat == UsageStats(
+        input_tokens=100,
+        output_tokens=20,
+        cached_input_tokens=60,
+        cache_miss_input_tokens=40,
+        total_tokens=120,
+        source="upstream",
+    )
 
     responses = parse_usage_stats(
         {
@@ -127,6 +134,7 @@ def test_parse_provider_usage_stats():
     assert responses.input_tokens == 90
     assert responses.output_tokens == 10
     assert responses.cached_input_tokens == 30
+    assert responses.cache_miss_input_tokens == 60
     assert responses.total_tokens == 100
 
     cached_gateway = parse_usage_stats(
@@ -141,6 +149,7 @@ def test_parse_provider_usage_stats():
     )
     assert cached_gateway.input_tokens == 141_236
     assert cached_gateway.cached_input_tokens == 140_000
+    assert cached_gateway.cache_miss_input_tokens == 1236
     assert cached_gateway.total_tokens == 141_331
 
     deepseek_cache = parse_usage_stats(
@@ -149,6 +158,15 @@ def test_parse_provider_usage_stats():
     )
     assert deepseek_cache.input_tokens == 141_236
     assert deepseek_cache.cached_input_tokens == 140_000
+    assert deepseek_cache.cache_miss_input_tokens == 1236
+
+    deepseek_hit_only_gateway = parse_usage_stats(
+        {"usage": {"prompt_tokens": 1236, "completion_tokens": 95, "prompt_cache_hit_tokens": 140_000}},
+        "upstream",
+    )
+    assert deepseek_hit_only_gateway.input_tokens == 141_236
+    assert deepseek_hit_only_gateway.cached_input_tokens == 140_000
+    assert deepseek_hit_only_gateway.cache_miss_input_tokens == 1236
 
 
 def test_client_keeps_latest_usage_separate_from_cumulative(tmp_path: Path):
@@ -175,9 +193,11 @@ def test_client_keeps_latest_usage_separate_from_cumulative(tmp_path: Path):
     )
     assert anthropic.input_tokens == 145
     assert anthropic.cached_input_tokens == 25
+    assert anthropic.cache_miss_input_tokens == 120
     anthropic_stream = parse_usage_stats({"message": {"usage": {"input_tokens": 81, "cache_read_input_tokens": 26}}}, "upstream")
     assert anthropic_stream.input_tokens == 107
     assert anthropic_stream.cached_input_tokens == 26
+    assert anthropic_stream.cache_miss_input_tokens == 81
 
     gemini = parse_usage_stats(
         {"usageMetadata": {"promptTokenCount": 70, "candidatesTokenCount": 8, "totalTokenCount": 78}},
@@ -186,6 +206,25 @@ def test_client_keeps_latest_usage_separate_from_cumulative(tmp_path: Path):
     assert gemini.input_tokens == 70
     assert gemini.output_tokens == 8
     assert gemini.total_tokens == 78
+
+    first_uncached = parse_usage_stats(
+        {"usage": {"prompt_tokens": 100, "completion_tokens": 4, "prompt_tokens_details": {"cached_tokens": 0}}},
+        "upstream",
+    )
+    assert first_uncached.cached_input_tokens == 0
+    assert first_uncached.cache_miss_input_tokens == 100
+
+    reasoning = parse_usage_stats(
+        {
+            "usage": {
+                "prompt_tokens": 80,
+                "completion_tokens": 30,
+                "completion_tokens_details": {"reasoning_tokens": 18},
+            }
+        },
+        "upstream",
+    )
+    assert reasoning.reasoning_tokens == 18
 
 
 def test_provider_cache_affinity_is_stable_and_non_secret(tmp_path: Path):
@@ -2706,7 +2745,8 @@ def test_desktop_context_status_reports_local_context_threshold(monkeypatch, tmp
     assert status["inputTokens"] == 0
     assert status["outputTokens"] == 0
     assert status["cachedTokens"] == 0
-    assert status["cachePercent"] == 0
+    assert status["cachePercent"] is None
+    assert status["cacheAvailable"] is False
     assert status["accurate"] is False
     assert status["usageAvailable"] is False
     assert status["usageState"] == "missing"
@@ -2733,11 +2773,13 @@ def test_desktop_context_status_reports_local_context_threshold(monkeypatch, tmp
     assert measured["tokens"] == 2450
     assert measured["inputTokens"] == 2300
     assert measured["cachedTokens"] == 1200
+    assert measured["cacheMissTokens"] == 1100
+    assert measured["cachePercent"] == round(1200 / 2300 * 100, 2)
     assert measured["accurate"] is True
     assert measured["usageAvailable"] is True
     assert measured["usageState"] == "current"
     assert measured["source"] == "upstream"
-    assert measured["measure"] == "上游输入实测"
+    assert measured["measure"] == "上游输入+输出实测"
 
     configured = api.configure_context({"contextWindowTokens": "64000", "compactThresholdPercent": "90"})
     assert configured["ok"] is True
@@ -2817,15 +2859,22 @@ def test_desktop_context_usage_survives_restart(monkeypatch, tmp_path: Path):
     )
 
     measured = first.context_status()
-    assert measured["tokens"] == 140_000
+    assert measured["tokens"] == 140_500
     assert measured["sessionInputTokens"] == 180_000
+    assert measured["outputTokens"] == 500
+    assert measured["cacheHitTokens"] == 120_000
+    assert measured["cacheMissTokens"] == 20_000
+    assert measured["cachePercent"] == round(120_000 / 140_000 * 100, 2)
+    assert measured["sessionCacheHitTokens"] == 150_000
+    assert measured["sessionCacheMissTokens"] == 30_000
     assert measured["accurate"] is True
 
     restarted = desktop.DesktopApi()
     restored = restarted.resume(session.session_id)["context"]
-    assert restored["tokens"] == 140_000
+    assert restored["tokens"] == 140_500
     assert restored["inputTokens"] == 140_000
     assert restored["cachedTokens"] == 120_000
+    assert restored["cacheMissTokens"] == 20_000
     assert restored["sessionInputTokens"] == 180_000
     assert restored["sessionOutputTokens"] == 800
     assert restored["sessionTotalTokens"] == 180_800
@@ -2834,11 +2883,76 @@ def test_desktop_context_usage_survives_restart(monkeypatch, tmp_path: Path):
 
     restarted.session.append(Message("user", "new " * 400))
     adjusted = restarted.context_status()
-    assert adjusted["tokens"] > 140_000
+    assert adjusted["tokens"] > 140_500
     assert adjusted["accurate"] is False
     assert adjusted["usageAvailable"] is True
     assert adjusted["usageState"] == "adjusted"
-    assert adjusted["measure"] == "上次上游输入 + 当前会话增量"
+    assert adjusted["measure"] == "上次上游输入+输出 + 校准后的当前增量"
+
+
+def test_desktop_context_calibrates_local_delta_from_upstream_tokenizer(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.messages import Message
+    from deepseek_tulagent.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    session = Session(tmp_path, session_id="calibrated")
+    request = [Message("system", "system " * 200), Message("user", "hello " * 80)]
+    session.messages = list(request)
+    session.rewrite()
+    api.session = session
+    request_estimate = estimate_message_tokens(request)
+    api._record_context_usage(
+        session.session_id,
+        UsageStats(input_tokens=request_estimate * 2, output_tokens=50, total_tokens=request_estimate * 2 + 50, source="upstream"),
+        request,
+        request,
+    )
+
+    base = api.context_status()
+    assert base["tokens"] == request_estimate * 2 + 50
+    assert base["calibrationFactor"] == 2.0
+    session.append(Message("user", "new local tail " * 60))
+    raw_delta = estimate_message_tokens(session.messages) - estimate_message_tokens(request)
+    adjusted = api.context_status()
+    assert adjusted["localDeltaTokens"] == raw_delta * 2
+    assert adjusted["tokens"] == base["tokens"] + raw_delta * 2
+
+
+def test_desktop_migrates_v2_context_snapshot_to_full_prompt_plus_output(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.messages import Message
+    from deepseek_tulagent.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    session = Session(tmp_path, session_id="legacy-v2")
+    session.messages = [Message("system", "system"), Message("user", "hello"), Message("assistant", "world")]
+    session.rewrite()
+    estimate = estimate_message_tokens(session.messages)
+    SessionStore(tmp_path).update_metadata(
+        session.session_id,
+        context_usage={
+            "schema": 2,
+            "model": "deepseek-v4-flash",
+            "tokens": 140_000,
+            "current_estimate": estimate,
+            "request_tokens": 140_000,
+            "quality": "upstream",
+            "input_tokens": 140_000,
+            "output_tokens": 500,
+            "cached_input_tokens": 120_000,
+            "total_tokens": 140_500,
+            "source": "upstream",
+        },
+    )
+
+    restored = desktop.DesktopApi().resume(session.session_id)["context"]
+    assert restored["tokens"] == 140_500
+    assert restored["cacheHitTokens"] == 120_000
+    assert restored["cacheMissTokens"] == 20_000
 
 
 def test_desktop_context_marks_upstream_usage_that_is_smaller_than_sent_prompt(monkeypatch, tmp_path: Path):
@@ -2866,7 +2980,7 @@ def test_desktop_context_marks_upstream_usage_that_is_smaller_than_sent_prompt(m
     assert status["accurate"] is False
     assert status["reportedInputTokens"] == 1236
     assert status["inputTokens"] > 9000
-    assert status["tokens"] == status["inputTokens"]
+    assert status["tokens"] == status["inputTokens"] + status["outputTokens"]
     assert status["source"] == "upstream-underreported"
 
 
@@ -2880,7 +2994,7 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert '<img src="app-icon.png" alt="">' in brand
     assert "<svg" not in brand
     assert 'class="introLogo" src="app-icon.png"' in html
-    assert '<span id="version">v0.1.12</span>' in html
+    assert '<span id="version">v0.1.13</span>' in html
     assert 'id="settingsView"' in html and '<dialog id="settingsDialog"' not in html
     assert 'id="settingsBackTop"' in html and 'id="settingsBackBottom"' in html
     js = (root / "app.js").read_text(encoding="utf-8")
@@ -2894,9 +3008,10 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert ".logo img" in css
     assert "background: transparent" in css
     assert 'id="sessionScrollbar"' in html and 'id="sessionScrollThumb"' in html
+    assert 'id="ctxOutput"' in html and 'id="ctxCache"' in html and 'id="ctxSessionCache"' in html
     assert 'class="convItem" data-act="exportMd">导出 Markdown</button>' in html
     assert "window.pywebview.api.export_session(sid)" in js
-    assert 'style.css?v=0.1.12' in html and 'app.js?v=0.1.12' in html
+    assert 'style.css?v=0.1.13' in html and 'app.js?v=0.1.13' in html
     assert 'state.currentAssistant.remove();' in js
     assert "suppressedTurnIds: new Set()" in js
     assert "state.suppressedTurnIds.add(turnId)" in js
@@ -3917,12 +4032,16 @@ def test_cli_and_desktop_versions_are_independent():
     assert project["name"] == "deepseek-tulagent"
     assert project["version"] == __version__ == "0.1.108"
     assert project["scripts"]["deepseekfathom"] == "deepseek_tulagent.cli:main"
-    assert DESKTOP_VERSION == "0.1.12"
+    assert DESKTOP_VERSION == "0.1.13"
     assert REPO == "ffffff233/DeepSeekFathom"
-    assert '#define MyAppVersion "0.1.12"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
+    assert '#define MyAppVersion "0.1.13"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
     version_info = (root / "assets" / "windows-version-info.txt").read_text(encoding="utf-8")
-    assert 'filevers=(0, 1, 12, 0)' in version_info
-    assert "StringStruct('FileVersion', '0.1.12')" in version_info
+    assert 'filevers=(0, 1, 13, 0)' in version_info
+    assert "StringStruct('FileVersion', '0.1.13')" in version_info
+    notice = (root / "NOTICE").read_text(encoding="utf-8")
+    assert "Copyright (c) 2026 Reasonix Contributors" in notice
+    assert "78e9e2656ae5275cbdd29429053fdcc1cc97373c" in notice
+    assert 'Source: "..\\NOTICE"; DestDir: "{app}"; DestName: "NOTICE.txt"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
 
 
 def test_update_refuses_dirty_source_tree(monkeypatch, tmp_path: Path):

@@ -1,5 +1,25 @@
 # 桌面端更新记录 / Desktop Changelog
 
+## v0.1.13
+
+中文：
+
+- **上下文占用改为上游完整快照**：当前窗口使用最后一次执行模型的真实 `prompt + completion`，不再只显示输入，也不会拿会话累计 token 冒充当前上下文；旧版 v2 快照会自动补上真实输出 token 后迁移。
+- **缓存判断拆分为本次与会话平均**：统一解析 DeepSeek 顶层 hit/miss、OpenAI `cached_tokens`、Anthropic cache read/create 等格式；缓存率严格按 `hit / (hit + miss)` 计算，上游未提供缓存字段时显示“未上报”，不再伪造 0%。
+- **修复 14 万缓存提示词被显示成 1.2K 的兼容网关形态**：当网关把 `prompt_tokens` 只返回为新增部分、另把缓存前缀单独返回时，会重建完整输入为 `cached + new`；只返回 hit 没返回 miss 时也会可靠推导新增 token。
+- **本地增量使用真实 tokenizer 校准**：完成一次有可靠 usage 的请求后，记录上游输入与本地估算的比例；用户继续追加尚未发送的消息时，按该模型最近一次比例估算，而不是固定字符公式。
+- **上下文面板新增输出、缓存命中/新增和会话平均缓存**：缓存数值使用绝对 token 与两位小数命中率，弹层支持滚动和长数字换行，不会在小窗口重叠。
+- **保留 Reasonix 版权与来源证明**：上下文/缓存遥测模型参考 `esengine/DeepSeek-Reasonix` 的 MIT 设计，`NOTICE` 记录仓库、参考提交 `78e9e265...`、完整 MIT 文本与独立重写说明，并随 Windows 安装包分发为 `NOTICE.txt`。
+
+English:
+
+- **Changed context usage to the full upstream prompt-plus-completion snapshot**, keeping current-window occupancy separate from cumulative session usage and migrating v2 metadata safely.
+- **Separated per-request and session-average prompt-cache telemetry**, normalizing DeepSeek, OpenAI-compatible, Anthropic, and Gemini usage while leaving cache rate unknown when the provider reports no cache fields.
+- **Reconstructed cache-heavy gateway usage correctly** when prompt tokens contain only the fresh tail or only cache hits are reported.
+- **Calibrated unsent local context deltas against the latest reliable upstream tokenizer ratio** instead of relying on a fixed character heuristic.
+- **Expanded the context panel** with exact output, cache hit/new splits, session-average cache rate, responsive wrapping, and scrolling.
+- **Preserved Reasonix MIT attribution and provenance** in the repository and installed `NOTICE.txt`.
+
 ## v0.1.12
 
 中文：

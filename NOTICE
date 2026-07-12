@@ -3,6 +3,12 @@ DeepSeek TuLAgent desktop UI attribution
 The desktop workspace UI in this project is inspired by Reasonix Desktop:
 https://github.com/esengine/DeepSeek-Reasonix
 
+The context-window and prompt-cache telemetry model was studied from Reasonix
+commit 78e9e2656ae5275cbdd29429053fdcc1cc97373c (main-v2), including its separation
+of current executor context, per-request cache hit/miss, session-average cache
+telemetry, and provider-calibrated local estimates. DeepSeekFathom's Python and
+JavaScript implementation is independently written for this project's APIs.
+
 Reasonix is distributed under the MIT License:
 
 Copyright (c) 2026 Reasonix Contributors

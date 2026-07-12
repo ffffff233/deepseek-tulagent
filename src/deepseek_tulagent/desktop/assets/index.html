@@ -7,7 +7,7 @@
   <link rel="icon" type="image/png" href="app-icon.png">
   <script>document.documentElement.dataset.theme = localStorage.getItem("deepseekfathom.theme") === "light" ? "light" : "dark";</script>
   <link rel="stylesheet" href="katex-fathom.css">
-  <link rel="stylesheet" href="style.css?v=0.1.12">
+  <link rel="stylesheet" href="style.css?v=0.1.13">
 </head>
 <body>
   <main class="app">
@@ -18,7 +18,7 @@
         </div>
         <div class="brandText">
           <strong>DeepSeekFathom</strong>
-          <span id="version">v0.1.12</span>
+          <span id="version">v0.1.13</span>
         </div>
         <button id="toggleSidebar" class="collapseBtn" title="收起 / 展开侧栏" aria-label="折叠侧栏"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M11 17l-5-5 5-5"/><path d="M18 17l-5-5 5-5"/></svg></button>
       </div>
@@ -85,6 +85,9 @@
             </div>
             <div class="ctxMetric"><span>当前上下文</span><strong id="ctxUsage">0 / 0</strong></div>
             <div class="ctxMetric"><span>当前请求输入</span><strong id="ctxInput">未知</strong></div>
+            <div class="ctxMetric"><span>当前请求输出</span><strong id="ctxOutput">未知</strong></div>
+            <div class="ctxMetric ctxMetricWide"><span>本次提示缓存</span><strong id="ctxCache">未上报</strong></div>
+            <div class="ctxMetric ctxMetricWide"><span>会话平均缓存</span><strong id="ctxSessionCache">未上报</strong></div>
             <div class="ctxMetric"><span>会话累计输入</span><strong id="ctxSessionInput">未知</strong></div>
             <div class="ctxMetric"><span>压缩阈值</span><strong id="ctxThreshold">0</strong></div>
             <div class="ctxMetric"><span>阈值剩余</span><strong id="ctxRemaining">0</strong></div>
@@ -192,6 +195,6 @@
       </div>
     </section>
   </main>
-  <script src="app.js?v=0.1.12"></script>
+  <script src="app.js?v=0.1.13"></script>
 </body>
 </html>

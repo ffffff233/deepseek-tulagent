@@ -35,7 +35,7 @@ The product, repository, and CLI all use **DeepSeekFathom**. Only the pip distri
 
 Windows users can download and run the installer directly:
 
-**[DeepSeekFathom-0.1.12-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.12/DeepSeekFathom-0.1.12-Setup.exe)**
+**[DeepSeekFathom-0.1.13-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.13/DeepSeekFathom-0.1.13-Setup.exe)**
 
 Linux / macOS:
 
@@ -169,7 +169,7 @@ cd DeepSeekFathom
 .\scripts\build_windows_exe.ps1
 ```
 
-Outputs: `dist\DeepSeekFathom\DeepSeekFathom.exe` and, when Inno Setup 6 is installed, `dist\installer\DeepSeekFathom-0.1.12-Setup.exe`. The installer installs per user and creates branded **DeepSeekFathom** desktop and Start menu entries. Desktop releases use independent `desktop-vX.Y.Z` tags; GitHub Actions builds the installer from those tags and attaches it to the matching Release.
+Outputs: `dist\DeepSeekFathom\DeepSeekFathom.exe` and, when Inno Setup 6 is installed, `dist\installer\DeepSeekFathom-0.1.13-Setup.exe`. The installer installs per user and creates branded **DeepSeekFathom** desktop and Start menu entries. Desktop releases use independent `desktop-vX.Y.Z` tags; GitHub Actions builds the installer from those tags and attaches it to the matching Release.
 
 ## Conversations
 

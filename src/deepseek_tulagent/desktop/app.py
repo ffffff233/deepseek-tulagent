@@ -431,13 +431,27 @@ class DesktopApi:
         snapshot = self._context_by_session.get(session_id) if session_id else None
         use_upstream = bool(snapshot and snapshot.get("model") == self.settings.model)
         baseline = int(snapshot.get("currentEstimate", local_tokens)) if use_upstream else local_tokens
-        local_delta = local_tokens - baseline if use_upstream else 0
+        local_delta_raw = local_tokens - baseline if use_upstream else 0
+        calibration = float(snapshot.get("calibration") or 1.0) if use_upstream else 1.0
+        if not 0.2 <= calibration <= 5.0:
+            calibration = 1.0
+        local_delta = round(local_delta_raw * calibration) if use_upstream else 0
         context_tokens = max(0, int(snapshot["tokens"]) + local_delta) if use_upstream else local_tokens
         usage = snapshot.get("usage") if use_upstream else UsageStats()
         usage_quality = str(snapshot.get("quality") or "upstream") if use_upstream else "missing"
         request_tokens = int(snapshot.get("requestTokens") or getattr(usage, "input_tokens", 0)) if use_upstream else 0
         session_usage = self._usage_by_session.get(session_id, UsageStats()) if session_id else UsageStats()
-        exact_upstream = bool(use_upstream and local_delta == 0 and usage_quality == "upstream")
+        cache_hit = int(getattr(usage, "cached_input_tokens", 0))
+        cache_miss = int(getattr(usage, "cache_miss_input_tokens", 0))
+        if cache_miss <= 0 and cache_hit > 0 and request_tokens > cache_hit:
+            cache_miss = request_tokens - cache_hit
+        cache_total = cache_hit + cache_miss
+        session_cache_hit = int(getattr(session_usage, "cached_input_tokens", 0))
+        session_cache_miss = int(getattr(session_usage, "cache_miss_input_tokens", 0))
+        if session_cache_miss <= 0 and session_cache_hit > 0 and session_usage.input_tokens > session_cache_hit:
+            session_cache_miss = session_usage.input_tokens - session_cache_hit
+        session_cache_total = session_cache_hit + session_cache_miss
+        exact_upstream = bool(use_upstream and local_delta_raw == 0 and usage_quality == "upstream")
         known_context = use_upstream
         percent = round((context_tokens / limit * 100), 1) if known_context and limit else None
         threshold_percent_used = round((threshold / limit * 100), 1) if limit else threshold_percent
@@ -447,16 +461,27 @@ class DesktopApi:
             "contextTokens": context_tokens if known_context else None,
             "localVisibleTokens": local_tokens,
             "estimatedInputTokens": local_tokens,
-            "estimatedOutputTokens": max(0, context_tokens - int(getattr(usage, "input_tokens", 0))),
+            "estimatedOutputTokens": int(getattr(usage, "output_tokens", 0)),
             "inputTokens": request_tokens,
             "reportedInputTokens": int(getattr(usage, "input_tokens", 0)),
             "outputTokens": int(getattr(usage, "output_tokens", 0)),
-            "cachedTokens": int(getattr(usage, "cached_input_tokens", 0)),
-            "cachePercent": round(int(getattr(usage, "cached_input_tokens", 0)) / max(1, int(getattr(usage, "input_tokens", 0))) * 100, 1),
+            "reasoningTokens": int(getattr(usage, "reasoning_tokens", 0)),
+            "cachedTokens": cache_hit,
+            "cacheHitTokens": cache_hit,
+            "cacheMissTokens": cache_miss,
+            "cacheAvailable": cache_total > 0,
+            "cachePercent": round(cache_hit / cache_total * 100, 2) if cache_total > 0 else None,
             "usageTotalTokens": int(getattr(usage, "total_tokens", 0)),
             "sessionInputTokens": int(getattr(session_usage, "input_tokens", 0)),
             "sessionOutputTokens": int(getattr(session_usage, "output_tokens", 0)),
+            "sessionReasoningTokens": int(getattr(session_usage, "reasoning_tokens", 0)),
+            "sessionCacheHitTokens": session_cache_hit,
+            "sessionCacheMissTokens": session_cache_miss,
+            "sessionCacheAvailable": session_cache_total > 0,
+            "sessionCachePercent": round(session_cache_hit / session_cache_total * 100, 2) if session_cache_total > 0 else None,
             "sessionTotalTokens": int(getattr(session_usage, "total_tokens", 0)),
+            "localDeltaTokens": local_delta,
+            "calibrationFactor": round(calibration, 4),
             "limit": limit,
             "detectedLimit": detected_limit,
             "customLimit": bool(self.settings.context_window_tokens),
@@ -469,7 +494,7 @@ class DesktopApi:
             "accurate": exact_upstream,
             "usageAvailable": use_upstream,
             "usageState": "current" if exact_upstream else ("underreported" if usage_quality == "underreported" else ("adjusted" if use_upstream else "missing")),
-            "measure": "上游输入实测" if exact_upstream else ("上游 usage 少报，按本地实际发送内容估算" if usage_quality == "underreported" else ("上次上游输入 + 当前会话增量" if use_upstream else "上游未返回 usage，仅估算本地可见消息")),
+            "measure": "上游输入+输出实测" if exact_upstream else ("上游 usage 少报，按本地实际发送内容估算" if usage_quality == "underreported" else ("上次上游输入+输出 + 校准后的当前增量" if use_upstream else "上游未返回 usage，仅估算本地可见消息")),
             "model": self.settings.model,
             "sessionId": session_id or None,
             "autoCompact": True,
@@ -1047,6 +1072,8 @@ class DesktopApi:
                 "input_tokens": bucket.input_tokens,
                 "output_tokens": bucket.output_tokens,
                 "cached_input_tokens": bucket.cached_input_tokens,
+                "cache_miss_input_tokens": bucket.cache_miss_input_tokens,
+                "reasoning_tokens": bucket.reasoning_tokens,
                 "total_tokens": bucket.total_tokens,
                 "source": bucket.source,
             },
@@ -1064,6 +1091,15 @@ class DesktopApi:
                 cached_input_tokens=int(stored.get("cached_input_tokens") or 0),
                 total_tokens=int(stored.get("total_tokens") or 0),
                 source=str(stored.get("source") or "upstream"),
+                cache_miss_input_tokens=(
+                    int(stored.get("cache_miss_input_tokens") or 0)
+                    or (
+                        max(0, int(stored.get("input_tokens") or 0) - int(stored.get("cached_input_tokens") or 0))
+                        if int(stored.get("cached_input_tokens") or 0) > 0
+                        else 0
+                    )
+                ),
+                reasoning_tokens=int(stored.get("reasoning_tokens") or 0),
             )
         except (TypeError, ValueError):
             self._usage_by_session.pop(session_id, None)
@@ -1086,28 +1122,40 @@ class DesktopApi:
         current_estimate = estimate_message_tokens(current_messages)
         underreported = bool(request_messages and usage.input_tokens < int(request_estimate * 0.8))
         request_tokens = max(usage.input_tokens, request_estimate) if underreported else usage.input_tokens
-        adjusted = max(0, request_tokens + current_estimate - request_estimate) if request_messages else request_tokens
+        # Match the provider's actual context snapshot: the request prompt plus the
+        # completion it just produced. Local message estimates are used only for text
+        # appended after that snapshot, never instead of exact completion usage.
+        adjusted = max(0, request_tokens + usage.output_tokens)
+        calibration = 1.0
+        if not underreported and request_estimate > 0:
+            candidate = request_tokens / request_estimate
+            if 0.2 <= candidate <= 5.0:
+                calibration = candidate
         snapshot = {
             "model": self.settings.model,
             "tokens": adjusted,
             "usage": usage,
             "currentEstimate": current_estimate,
             "requestTokens": request_tokens,
+            "calibration": calibration,
             "quality": "underreported" if underreported else "upstream",
         }
         self._context_by_session[session_id] = snapshot
         SessionStore(self.settings.workspace).update_metadata(
             session_id,
             context_usage={
-                "schema": 2,
+                "schema": 3,
                 "model": self.settings.model,
                 "tokens": adjusted,
                 "current_estimate": current_estimate,
                 "request_tokens": request_tokens,
+                "calibration": calibration,
                 "quality": snapshot["quality"],
                 "input_tokens": usage.input_tokens,
                 "output_tokens": usage.output_tokens,
                 "cached_input_tokens": usage.cached_input_tokens,
+                "cache_miss_input_tokens": usage.cache_miss_input_tokens,
+                "reasoning_tokens": usage.reasoning_tokens,
                 "total_tokens": usage.total_tokens,
                 "source": usage.source,
             },
@@ -1120,8 +1168,10 @@ class DesktopApi:
             return
         # v1 snapshots treated any positive upstream number as complete context. That
         # is exactly how cache-heavy 140K requests became a fake 1.2K display. Do not
-        # resurrect those snapshots; one fresh request will write a validated v2 value.
-        if stored.get("schema") not in (2, "2"):
+        # resurrect those snapshots. v2 is migrated by adding its exact completion
+        # usage; v3 stores the full prompt+completion snapshot directly.
+        schema = int(stored.get("schema") or 0)
+        if schema not in (2, 3):
             self._context_by_session.pop(session_id, None)
             return
         try:
@@ -1131,10 +1181,22 @@ class DesktopApi:
                 cached_input_tokens=int(stored.get("cached_input_tokens") or 0),
                 total_tokens=int(stored.get("total_tokens") or 0),
                 source=str(stored.get("source") or "upstream"),
+                cache_miss_input_tokens=(
+                    int(stored.get("cache_miss_input_tokens") or 0)
+                    or (
+                        max(0, int(stored.get("input_tokens") or 0) - int(stored.get("cached_input_tokens") or 0))
+                        if int(stored.get("cached_input_tokens") or 0) > 0
+                        else 0
+                    )
+                ),
+                reasoning_tokens=int(stored.get("reasoning_tokens") or 0),
             )
             tokens = int(stored.get("tokens") or 0)
+            if schema == 2:
+                tokens += usage.output_tokens
             current_estimate = int(stored.get("current_estimate") or 0)
             request_tokens = int(stored.get("request_tokens") or usage.input_tokens)
+            calibration = float(stored.get("calibration") or 1.0)
             quality = str(stored.get("quality") or "upstream")
             model = str(stored.get("model") or "")
         except (TypeError, ValueError):
@@ -1149,6 +1211,7 @@ class DesktopApi:
             "usage": usage,
             "currentEstimate": current_estimate,
             "requestTokens": request_tokens,
+            "calibration": calibration if 0.2 <= calibration <= 5.0 else 1.0,
             "quality": quality,
         }
 

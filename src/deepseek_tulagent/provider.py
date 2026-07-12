@@ -51,6 +51,8 @@ class UsageStats:
     cached_input_tokens: int = 0
     total_tokens: int = 0
     source: str = ""
+    cache_miss_input_tokens: int = 0
+    reasoning_tokens: int = 0
 
     def merge(self, other: "UsageStats") -> None:
         if not other.source:
@@ -58,6 +60,8 @@ class UsageStats:
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
         self.cached_input_tokens += other.cached_input_tokens
+        self.cache_miss_input_tokens += other.cache_miss_input_tokens
+        self.reasoning_tokens += other.reasoning_tokens
         self.total_tokens += other.total_tokens or (other.input_tokens + other.output_tokens)
         self.source = other.source
 
@@ -72,6 +76,8 @@ class UsageStats:
         self.input_tokens = other.input_tokens or self.input_tokens
         self.output_tokens = other.output_tokens or self.output_tokens
         self.cached_input_tokens = other.cached_input_tokens or self.cached_input_tokens
+        self.cache_miss_input_tokens = other.cache_miss_input_tokens or self.cache_miss_input_tokens
+        self.reasoning_tokens = other.reasoning_tokens or self.reasoning_tokens
         self.total_tokens = other.total_tokens or self.total_tokens
         self.source = other.source
 
@@ -106,24 +112,53 @@ def parse_usage_stats(data: dict, source: str) -> UsageStats:
     output_tokens = intval("completion_tokens", "output_tokens", "outputTokens", "candidatesTokenCount")
     total_tokens = intval("total_tokens", "totalTokens", "totalTokenCount")
     cached = 0
+    cache_miss = 0
+    cache_fields_seen = False
     for key in ("prompt_tokens_details", "input_tokens_details", "inputTokenDetails"):
         details = usage.get(key)
         if isinstance(details, dict):
-            cached += int(details.get("cached_tokens") or details.get("cachedTokens") or 0)
+            detail_cached = int(details.get("cached_tokens") or details.get("cachedTokens") or 0)
+            if "cached_tokens" in details or "cachedTokens" in details:
+                cache_fields_seen = True
+                cached += detail_cached
     # Standard OpenAI usage includes cached tokens in input_tokens. A few compatible
     # gateways instead report only the uncached portion there. cached > input proves
     # that shape, so reconstruct the complete input without double-counting compliant
     # responses.
     if cached > input_tokens:
+        cache_miss = input_tokens
         input_tokens += cached
+    elif cache_fields_seen:
+        cache_miss = max(0, input_tokens - cached)
     # DeepSeek and several compatible gateways expose cache hits/misses beside
     # prompt_tokens. Some gateways incorrectly put only the cache miss count in
     # prompt_tokens, so hit + miss is the reliable full request size there.
     cache_hit = intval("prompt_cache_hit_tokens", "cache_hit_tokens", "cached_input_tokens")
-    cache_miss = intval("prompt_cache_miss_tokens", "cache_miss_tokens")
+    reported_cache_miss = intval("prompt_cache_miss_tokens", "cache_miss_tokens")
+    top_cache_fields_seen = any(
+        key in usage
+        for key in (
+            "prompt_cache_hit_tokens",
+            "cache_hit_tokens",
+            "cached_input_tokens",
+            "prompt_cache_miss_tokens",
+            "cache_miss_tokens",
+        )
+    )
+    if top_cache_fields_seen:
+        cache_fields_seen = True
     cached = max(cached, cache_hit)
-    if cache_hit or cache_miss:
-        input_tokens = max(input_tokens, cache_hit + cache_miss)
+    if reported_cache_miss:
+        cache_miss = reported_cache_miss
+    elif top_cache_fields_seen:
+        if cached > input_tokens:
+            # Some compatible gateways put only the uncached tail in
+            # prompt_tokens while reporting the full cached prefix separately.
+            cache_miss = input_tokens
+        elif input_tokens > cached:
+            cache_miss = input_tokens - cached
+    if cache_fields_seen:
+        input_tokens = max(input_tokens, cached + cache_miss)
 
     # Anthropic reports cache creation/read separately from uncached input_tokens.
     # All three parts occupy the current context window, while only cache reads are
@@ -131,11 +166,30 @@ def parse_usage_stats(data: dict, source: str) -> UsageStats:
     cache_read = intval("cache_read_input_tokens")
     cache_creation = intval("cache_creation_input_tokens")
     if cache_read or cache_creation:
+        uncached_input = input_tokens
         input_tokens += cache_read + cache_creation
-        cached += cache_read
+        cached = cache_read
+        cache_miss = uncached_input + cache_creation
+        cache_fields_seen = True
+    reasoning_tokens = intval("reasoning_tokens", "thoughtsTokenCount")
+    for key in ("completion_tokens_details", "output_tokens_details", "outputTokenDetails"):
+        details = usage.get(key)
+        if isinstance(details, dict):
+            reasoning_tokens = max(
+                reasoning_tokens,
+                int(details.get("reasoning_tokens") or details.get("reasoningTokens") or 0),
+            )
     if input_tokens or output_tokens:
         total_tokens = max(total_tokens, input_tokens + output_tokens)
-    return UsageStats(input_tokens, output_tokens, cached, total_tokens, source)
+    return UsageStats(
+        input_tokens,
+        output_tokens,
+        cached,
+        total_tokens,
+        source,
+        cache_miss if cache_fields_seen else 0,
+        reasoning_tokens,
+    )
 
 
 def prompt_cache_key(settings: Settings) -> str:
