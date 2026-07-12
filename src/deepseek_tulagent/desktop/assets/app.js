@@ -30,6 +30,7 @@ const state = {
   katexLoadPromise: null,
   activeGoal: "",
   pendingNativeDrop: null,
+  capabilityReport: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -120,6 +121,29 @@ function installDemoApi() {
       cancel: async () => ({ ok: true }),
       resolve_approval: async () => ({ ok: true }),
       test_connection: async () => ({ ok: true, reply: "ok", model: "deepseek-v4-flash", thinking: "deep", reasoning: { reasoning_effort: "high" }, resolved: "https://api.deepseek.com/v1" }),
+      capability_diagnostics: async () => ({
+        schemaVersion: 1, root: "<workspace>", mode: "root", static: true,
+        summary: { errors: 0, warnings: 1, infos: 2, skillRoots: 6, skills: 2, shadowedSkills: 1, tools: 17, enabledTools: 17, toolSchemaTokenEstimate: 860, fixedSystemPromptTokenEstimate: 1700, skillPromptTokenEstimate: 34 },
+        skills: {
+          roots: [
+            { path: "<workspace>/.deepseek-tulagent/skills", scope: "project", priority: 0, status: "ok" },
+            { path: "~/.deepseek-tulagent/skills", scope: "user", priority: 3, status: "ok" },
+          ],
+          entries: [
+            { name: "repo-debug", description: "调试仓库时先运行测试", scope: "project", status: "winner", path: "<workspace>/.deepseek-tulagent/skills/repo-debug/SKILL.md", winnerPath: null, descriptionDeclared: true },
+            { name: "repo-debug", description: "旧版调试流程", scope: "user", status: "shadowed", path: "~/.deepseek-tulagent/skills/repo-debug/SKILL.md", winnerPath: "<workspace>/.deepseek-tulagent/skills/repo-debug/SKILL.md", descriptionDeclared: true },
+          ],
+        },
+        tools: { protocol: "json-in-text", entries: [
+          { name: "read_file", description: "read: read UTF-8 text from a workspace file", readOnly: true, enabled: true, gate: "none", schemaTokenEstimate: 38, promptTokenEstimate: 10, schema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
+          { name: "write_file", description: "gated write: create or overwrite a workspace file", readOnly: false, enabled: true, gate: "none", schemaTokenEstimate: 52, promptTokenEstimate: 10, schema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } },
+        ] },
+        issues: [
+          { severity: "info", code: "skill.shadowed", name: "repo-debug", message: "同名技能由更高优先级项目路径生效。" },
+          { severity: "warning", code: "instruction.not_loaded", name: "AGENTS.md", message: "检测到项目指令文件，但当前运行时尚未自动加载它。" },
+          { severity: "info", code: "extensions.not_integrated", name: "mcp-plugins-hooks", message: "当前版本尚未集成 MCP、插件包和 Hooks。" },
+        ],
+      }),
       branch: async () => ({ ok: true, sessionId: "branch-0001", messages: [
         { role: "user", content: "检查项目并修复问题" }, { role: "assistant", content: "已读取项目结构，下一步运行测试。" },
       ] }),
@@ -977,12 +1001,92 @@ function openSettings() {
   $("settingsView").hidden = false;
   $("settingsBtn").classList.add("active");
   applyTheme(document.documentElement.dataset.theme);
+  if (!state.capabilityReport) loadCapabilityDiagnostics();
 }
 
 function closeSettings() {
   $("settingsView").hidden = true;
   $("chatPane")?.removeAttribute("hidden");
   $("settingsBtn").classList.remove("active");
+}
+
+function diagnosticMetric(label, value) {
+  return `<div class="diagnosticsMetric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+}
+
+function diagnosticRows(items, renderer, emptyText) {
+  if (!items || !items.length) return `<div class="diagnosticEmpty">${escapeHtml(emptyText)}</div>`;
+  return items.map(renderer).join("");
+}
+
+function renderCapabilityDiagnostics(report) {
+  state.capabilityReport = report;
+  const summary = report.summary || {};
+  $("diagnosticsSummary").innerHTML = [
+    diagnosticMetric("问题", `${summary.errors || 0} 错误 · ${summary.warnings || 0} 警告`),
+    diagnosticMetric("技能", `${summary.skills || 0} 生效 · ${summary.shadowedSkills || 0} 被覆盖`),
+    diagnosticMetric("工具", `${summary.enabledTools || 0} / ${summary.tools || 0} 可用`),
+    diagnosticMetric("固定提示词", `约 ${summary.fixedSystemPromptTokenEstimate || 0} tokens`),
+  ].join("");
+
+  const issues = report.issues || [];
+  $("diagnosticsIssues").innerHTML = diagnosticRows(issues, (item) => `
+    <div class="diagnosticIssue" data-severity="${escapeHtml(item.severity || "info")}">
+      <span class="diagnosticSeverity">${escapeHtml(item.severity || "info")}</span>
+      <div><strong>${escapeHtml(item.code || item.name || "诊断")}</strong><p>${escapeHtml(item.message || "")}</p></div>
+    </div>`, "未发现问题");
+
+  const skills = report.skills?.entries || [];
+  $("diagnosticsSkillCount").textContent = String(skills.length);
+  $("diagnosticsSkills").innerHTML = diagnosticRows(skills, (skill) => {
+    const winner = skill.status === "winner";
+    const detail = [skill.description || "无描述", skill.path || ""];
+    if (skill.winnerPath) detail.push(`生效：${skill.winnerPath}`);
+    return `<div class="diagnosticRow">
+      <span class="diagnosticName">${escapeHtml(skill.name || "")}</span>
+      <span class="diagnosticDetail">${escapeHtml(detail.filter(Boolean).join(" · "))}</span>
+      <span class="diagnosticMeta ${winner ? "ok" : "warn"}">${winner ? "生效" : "被覆盖"}</span>
+    </div>`;
+  }, "未发现技能");
+
+  const roots = report.skills?.roots || [];
+  $("diagnosticsRootCount").textContent = String(roots.length);
+  $("diagnosticsRoots").innerHTML = diagnosticRows(roots, (root) => `<div class="diagnosticRow">
+    <span class="diagnosticName">优先级 ${Number(root.priority || 0) + 1}</span>
+    <span class="diagnosticDetail">${escapeHtml(root.path || "")}</span>
+    <span class="diagnosticMeta ${root.status === "ok" ? "ok" : "off"}">${escapeHtml(root.scope || "")} · ${escapeHtml(root.status || "")}</span>
+  </div>`, "没有技能搜索路径");
+
+  const tools = report.tools?.entries || [];
+  $("diagnosticsToolCount").textContent = String(tools.length);
+  $("diagnosticsTools").innerHTML = diagnosticRows(tools, (tool) => {
+    const stateLabel = !tool.enabled ? "禁用" : tool.gate === "approval" ? "需审批" : tool.readOnly ? "只读" : "可执行";
+    const stateClass = !tool.enabled ? "off" : tool.gate === "approval" ? "warn" : "ok";
+    const cost = `schema 约 ${tool.schemaTokenEstimate || 0} · 提示约 ${tool.promptTokenEstimate || 0} tokens`;
+    return `<details class="diagnosticTool">
+      <summary class="diagnosticRow">
+        <span class="diagnosticName">${escapeHtml(tool.name || "")}</span>
+        <span class="diagnosticDetail">${escapeHtml((tool.description || "") + " · " + cost)}</span>
+        <span class="diagnosticMeta ${stateClass}">${stateLabel}</span>
+      </summary>
+      <pre>${escapeHtml(JSON.stringify(tool.schema || {}, null, 2))}</pre>
+    </details>`;
+  }, "未发现工具");
+  $("copyDiagnostics").disabled = false;
+}
+
+async function loadCapabilityDiagnostics() {
+  const summary = $("diagnosticsSummary");
+  summary.textContent = "正在读取能力状态…";
+  $("refreshDiagnostics").disabled = true;
+  try {
+    const diagnose = await apiMethod("capability_diagnostics");
+    renderCapabilityDiagnostics(await diagnose());
+  } catch (error) {
+    summary.textContent = `诊断读取失败：${String(error && error.message ? error.message : error)}`;
+  } finally {
+    $("refreshDiagnostics").disabled = false;
+  }
 }
 
 function initialFilePath(name, args) {
@@ -1872,6 +1976,12 @@ $("format").addEventListener("change", async () => {
 $("settingsBtn").onclick = openSettings;
 $("settingsBackTop").onclick = closeSettings;
 $("settingsBackBottom").onclick = closeSettings;
+$("refreshDiagnostics").onclick = loadCapabilityDiagnostics;
+$("copyDiagnostics").onclick = () => {
+  if (!state.capabilityReport) return;
+  copyToClipboard(JSON.stringify(state.capabilityReport, null, 2), $("copyDiagnostics"));
+  toast("脱敏诊断 JSON 已复制");
+};
 document.querySelectorAll("[data-theme-value]").forEach((button) => {
   button.onclick = () => applyTheme(button.dataset.themeValue);
 });

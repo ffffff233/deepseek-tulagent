@@ -21,6 +21,7 @@ from uuid import uuid4
 
 from . import DESKTOP_VERSION
 from ..agent import TuLAgent, compact_context_messages, context_window_info, estimate_message_tokens, summarize_arguments
+from ..capabilities import collect_capability_report
 from ..config import Settings, get_settings, merge_file_config
 from ..messages import Message
 from ..policy import ThinkingMode
@@ -178,6 +179,9 @@ class DesktopApi:
             },
             "context": self.context_status(),
         }
+
+    def capability_diagnostics(self) -> dict[str, Any]:
+        return collect_capability_report(self.settings.workspace, mode=self.mode)
 
     def configure(self, data: dict[str, Any]) -> dict[str, Any]:
         config: dict[str, Any] = {}

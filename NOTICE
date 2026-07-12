@@ -9,6 +9,12 @@ of current executor context, per-request cache hit/miss, session-average cache
 telemetry, and provider-calibrated local estimates. DeepSeekFathom's Python and
 JavaScript implementation is independently written for this project's APIs.
 
+The read-only capability diagnostics model also studied Reasonix's skill
+winner/shadowed reporting, deterministic tool contract snapshots, prompt-cost
+visibility, path redaction, and explicit unsupported-capability reporting at the
+same reference commit. DeepSeekFathom's implementation remains independently
+written and currently reports MCP, plugin packages, and Hooks as not integrated.
+
 Reasonix is distributed under the MIT License:
 
 Copyright (c) 2026 Reasonix Contributors

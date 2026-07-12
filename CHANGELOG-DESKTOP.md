@@ -1,5 +1,26 @@
 # 桌面端更新记录 / Desktop Changelog
 
+## v0.1.14
+
+中文：
+
+- **设置页新增只读能力诊断**：静态读取当前工作区的技能、技能搜索路径和工具契约，不联网、不启动外部进程，也不修改配置；报告中的路径会脱敏为 `<workspace>`、`~` 或 `<external>`。
+- **同名技能不再静默消失**：诊断页会同时展示生效技能与所有被覆盖候选，并明确生效文件路径和搜索优先级。
+- **创建技能禁止覆盖已有文件**：`skills new` 或后续界面创建技能时，已有 `SKILL.md` 会直接拒绝写入，用户自己添加的技能不会被重新创建或更新流程覆盖。
+- **新增确定性工具契约快照**：17 个当前工具按固定名称顺序展示参数 JSON schema、只读状态、审批/禁用门控，以及 schema 与固定提示词的 token 成本估算；测试会阻止运行时、提示词和契约列表漂移。
+- **明确未接入能力**：MCP、插件包和 Hooks 当前显示“尚未集成”，不会伪装成健康；检测到 `AGENTS.md` / `REASONIX.md` / `CLAUDE.md` 时也会提示当前运行时尚未自动加载。
+- **继续保留 Reasonix MIT 版权证明**：`NOTICE` 增加技能覆盖、工具契约、路径脱敏和能力诊断设计的参考说明，实现仍为针对本项目接口的独立重写。
+- CLI 发行版本继续保持 `0.1.108`，本次只提升桌面端到 `0.1.14`，不新增 CLI 命令。
+
+English:
+
+- Added static, read-only capability diagnostics to Desktop Settings.
+- Reported skill winners, shadowed candidates, discovery roots, and priority instead of silently dropping duplicates.
+- Refused to overwrite an existing user `SKILL.md` when creating a skill.
+- Added deterministic contracts for all 17 current tools, including schemas, permission gates, and prompt-cost estimates.
+- Reported MCP, plugin packages, Hooks, and unloaded instruction documents explicitly instead of fabricating healthy states.
+- Extended Reasonix MIT provenance while keeping the implementation independently written.
+
 ## v0.1.13
 
 中文：

@@ -12,9 +12,32 @@ class Skill:
     body: str
     path: Path
     source: str = "user"
+    scope: str = "user"
+    description_declared: bool = False
 
     def summary(self) -> str:
         return f"- {self.name}: {self.description}"
+
+
+@dataclass(frozen=True)
+class SkillRoot:
+    path: Path
+    scope: str
+    priority: int
+    status: str
+
+
+@dataclass(frozen=True)
+class SkillCandidate:
+    skill: Skill
+    status: str
+    winner_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class SkillInspection:
+    roots: list[SkillRoot]
+    candidates: list[SkillCandidate]
 
 
 class SkillStore:
@@ -23,35 +46,62 @@ class SkillStore:
         self.home = (home or Path.home()).resolve()
 
     @property
-    def search_dirs(self) -> list[Path]:
-        return [
-            self.workspace / ".deepseek-tulagent" / "skills",
-            self.workspace / ".agents" / "skills",
-            self.workspace / "skills",
-            self.home / ".deepseek-tulagent" / "skills",
-            self.home / ".agents" / "skills",
-            Path(__file__).resolve().parent / "builtin_skills",
+    def search_roots(self) -> list[SkillRoot]:
+        candidates = [
+            (self.workspace / ".deepseek-tulagent" / "skills", "project"),
+            (self.workspace / ".agents" / "skills", "project"),
+            (self.workspace / "skills", "project"),
+            (self.home / ".deepseek-tulagent" / "skills", "user"),
+            (self.home / ".agents" / "skills", "user"),
+            (Path(__file__).resolve().parent / "builtin_skills", "official"),
         ]
+        roots: list[SkillRoot] = []
+        seen: set[Path] = set()
+        for path, scope in candidates:
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            roots.append(SkillRoot(resolved, scope, len(roots), skill_root_status(resolved)))
+        return roots
+
+    @property
+    def search_dirs(self) -> list[Path]:
+        return [root.path for root in self.search_roots]
 
     @property
     def writable_dir(self) -> Path:
         return self.workspace / ".deepseek-tulagent" / "skills"
 
     def list(self) -> list[Skill]:
-        skills: dict[str, Skill] = {}
-        seen_roots: set[Path] = set()
-        official_dir = (Path(__file__).resolve().parent / "builtin_skills").resolve()
-        for root in self.search_dirs:
-            root = root.resolve()
-            if root in seen_roots:
+        winners = [candidate.skill for candidate in self.inspect().candidates if candidate.status == "winner"]
+        return sorted(winners, key=lambda skill: skill.name)
+
+    def inspect(self) -> SkillInspection:
+        roots = self.search_roots
+        candidates: list[SkillCandidate] = []
+        winners: dict[str, Skill] = {}
+        for root in roots:
+            if root.status != "ok":
                 continue
-            seen_roots.add(root)
-            if not root.exists():
+            try:
+                skill_files = sorted(root.path.glob("*/SKILL.md"))
+            except OSError:
                 continue
-            for skill_md in sorted(root.glob("*/SKILL.md")):
-                skill = parse_skill(skill_md, source="official" if root == official_dir else "user")
-                skills.setdefault(skill.name, skill)
-        return [skills[name] for name in sorted(skills)]
+            for skill_md in skill_files:
+                skill = parse_skill(
+                    skill_md,
+                    source="official" if root.scope == "official" else "user",
+                    scope=root.scope,
+                )
+                winner = winners.get(skill.name)
+                if winner is None:
+                    winners[skill.name] = skill
+                    candidates.append(SkillCandidate(skill, "winner"))
+                else:
+                    candidates.append(SkillCandidate(skill, "shadowed", winner.path))
+        candidates.sort(key=lambda candidate: (candidate.skill.name, 0 if candidate.status == "winner" else 1, str(candidate.skill.path)))
+        return SkillInspection(roots, candidates)
 
     def get(self, name: str) -> Skill | None:
         for skill in self.list():
@@ -72,8 +122,9 @@ class SkillStore:
             f"# {safe}\n\n"
             f"{body.strip()}\n"
         )
-        path.write_text(content, encoding="utf-8")
-        return parse_skill(path)
+        with path.open("x", encoding="utf-8") as handle:
+            handle.write(content)
+        return parse_skill(path, scope="project")
 
     def prompt_context(self, max_skills: int = 12) -> str:
         skills = self.list()[:max_skills]
@@ -82,13 +133,14 @@ class SkillStore:
         return "Available skills:\n" + "\n".join(skill.summary() for skill in skills)
 
 
-def parse_skill(path: Path, *, source: str = "user") -> Skill:
+def parse_skill(path: Path, *, source: str = "user", scope: str = "user") -> Skill:
     text = path.read_text(encoding="utf-8", errors="replace")
     name = path.parent.name
     description = ""
+    description_declared = False
     body = text
     if text.startswith("---"):
-        match = re.match(r"---\n(.*?)\n---\n?(.*)", text, flags=re.DOTALL)
+        match = re.match(r"---\r?\n(.*?)\r?\n---\r?\n?(.*)", text, flags=re.DOTALL)
         if match:
             frontmatter, body = match.groups()
             for line in frontmatter.splitlines():
@@ -101,13 +153,34 @@ def parse_skill(path: Path, *, source: str = "user") -> Skill:
                     name = value
                 elif key == "description":
                     description = value
+                    description_declared = bool(value)
     if not description:
         for line in body.splitlines():
             stripped = line.strip()
             if stripped and not stripped.startswith("#"):
                 description = stripped[:200]
                 break
-    return Skill(name=name, description=description, body=body.strip(), path=path, source=source)
+    return Skill(
+        name=name,
+        description=description,
+        body=body.strip(),
+        path=path,
+        source=source,
+        scope=scope,
+        description_declared=description_declared,
+    )
+
+
+def skill_root_status(path: Path) -> str:
+    if not path.exists():
+        return "missing"
+    if not path.is_dir():
+        return "not_directory"
+    try:
+        next(path.iterdir(), None)
+    except OSError:
+        return "unreadable"
+    return "ok"
 
 
 def safe_skill_name(name: str) -> str:

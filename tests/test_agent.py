@@ -9,8 +9,10 @@ import re
 import subprocess
 import urllib.parse
 import zipfile
+import pytest
 
 from deepseek_tulagent.agent import RECOVER_AFTER_TOOL_FAILURE_PROMPT, TuLAgent, compact_context_messages, context_window_info, context_window_tokens, estimate_message_tokens, filter_internal_automation_messages, is_question_mark_only, normalize_subagent_mode_and_thinking, normalize_subagent_specs, normalize_user_question, parse_tool_call, plainify_assistant_text, promises_more_work, trim_tool_content, tool_result_message
+from deepseek_tulagent.capabilities import collect_capability_report
 from deepseek_tulagent.cli import main
 from deepseek_tulagent.config import Settings, get_settings, merge_file_config, resolve_model
 from deepseek_tulagent.messages import Message
@@ -2180,6 +2182,59 @@ def test_skill_store_discovers_and_creates_workspace_skills(tmp_path: Path):
     assert skills[0].source == "user"
 
 
+def test_skill_inspection_reports_winner_shadowed_and_root_priority(tmp_path: Path):
+    home = tmp_path / "home"
+    project_skill = tmp_path / ".deepseek-tulagent" / "skills" / "repo-debug" / "SKILL.md"
+    user_skill = home / ".deepseek-tulagent" / "skills" / "repo-debug" / "SKILL.md"
+    project_skill.parent.mkdir(parents=True)
+    user_skill.parent.mkdir(parents=True)
+    project_skill.write_text("---\nname: repo-debug\ndescription: project winner\n---\n\nProject", encoding="utf-8")
+    user_skill.write_text("---\nname: repo-debug\ndescription: user fallback\n---\n\nUser", encoding="utf-8")
+
+    inspection = SkillStore(tmp_path, home=home).inspect()
+    candidates = [candidate for candidate in inspection.candidates if candidate.skill.name == "repo-debug"]
+
+    assert [candidate.status for candidate in candidates] == ["winner", "shadowed"]
+    assert candidates[0].skill.path == project_skill
+    assert candidates[1].winner_path == project_skill
+    assert inspection.roots[0].path == (tmp_path / ".deepseek-tulagent" / "skills").resolve()
+    assert inspection.roots[0].priority == 0
+
+
+def test_skill_create_never_overwrites_existing_user_file(tmp_path: Path):
+    store = SkillStore(tmp_path, home=tmp_path / "home")
+    created = store.create("keep-me", "original", "first body")
+
+    with pytest.raises(FileExistsError):
+        store.create("keep-me", "replacement", "second body")
+
+    assert created.path.read_text(encoding="utf-8").endswith("first body\n")
+
+
+def test_capability_report_is_deterministic_and_path_redacted(tmp_path: Path):
+    home = tmp_path / "home"
+    project_skill = tmp_path / ".deepseek-tulagent" / "skills" / "demo" / "SKILL.md"
+    user_skill = home / ".deepseek-tulagent" / "skills" / "demo" / "SKILL.md"
+    project_skill.parent.mkdir(parents=True)
+    user_skill.parent.mkdir(parents=True)
+    project_skill.write_text("---\nname: demo\ndescription: project\n---\n\nProject", encoding="utf-8")
+    user_skill.write_text("---\nname: demo\ndescription: user\n---\n\nUser", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("API_KEY=never-copy-this", encoding="utf-8")
+
+    report = collect_capability_report(tmp_path, mode="agent", home=home)
+    serialized = json.dumps(report, ensure_ascii=False)
+    tools = report["tools"]["entries"]
+
+    assert [tool["name"] for tool in tools] == sorted(tool["name"] for tool in tools)
+    assert all(tool["schema"] and tool["schemaTokenEstimate"] > 0 for tool in tools)
+    assert report["summary"]["tools"] == 17
+    assert report["summary"]["shadowedSkills"] == 1
+    assert {issue["code"] for issue in report["issues"]} >= {"skill.shadowed", "instruction.not_loaded"}
+    assert str(tmp_path.resolve()) not in serialized
+    assert "never-copy-this" not in serialized
+    assert "<workspace>/.deepseek-tulagent/skills/demo/SKILL.md" in serialized
+
+
 def test_desktop_user_data_migration_never_overwrites_existing_files(tmp_path: Path):
     from deepseek_tulagent.desktop.app import _copy_missing_user_data
 
@@ -2994,7 +3049,7 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert '<img src="app-icon.png" alt="">' in brand
     assert "<svg" not in brand
     assert 'class="introLogo" src="app-icon.png"' in html
-    assert '<span id="version">v0.1.13</span>' in html
+    assert '<span id="version">v0.1.14</span>' in html
     assert 'id="settingsView"' in html and '<dialog id="settingsDialog"' not in html
     assert 'id="settingsBackTop"' in html and 'id="settingsBackBottom"' in html
     js = (root / "app.js").read_text(encoding="utf-8")
@@ -3011,7 +3066,7 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert 'id="ctxOutput"' in html and 'id="ctxCache"' in html and 'id="ctxSessionCache"' in html
     assert 'class="convItem" data-act="exportMd">导出 Markdown</button>' in html
     assert "window.pywebview.api.export_session(sid)" in js
-    assert 'style.css?v=0.1.13' in html and 'app.js?v=0.1.13' in html
+    assert 'style.css?v=0.1.14' in html and 'app.js?v=0.1.14' in html
     assert 'state.currentAssistant.remove();' in js
     assert "suppressedTurnIds: new Set()" in js
     assert "state.suppressedTurnIds.add(turnId)" in js
@@ -4032,12 +4087,12 @@ def test_cli_and_desktop_versions_are_independent():
     assert project["name"] == "deepseek-tulagent"
     assert project["version"] == __version__ == "0.1.108"
     assert project["scripts"]["deepseekfathom"] == "deepseek_tulagent.cli:main"
-    assert DESKTOP_VERSION == "0.1.13"
+    assert DESKTOP_VERSION == "0.1.14"
     assert REPO == "ffffff233/DeepSeekFathom"
-    assert '#define MyAppVersion "0.1.13"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
+    assert '#define MyAppVersion "0.1.14"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
     version_info = (root / "assets" / "windows-version-info.txt").read_text(encoding="utf-8")
-    assert 'filevers=(0, 1, 13, 0)' in version_info
-    assert "StringStruct('FileVersion', '0.1.13')" in version_info
+    assert 'filevers=(0, 1, 14, 0)' in version_info
+    assert "StringStruct('FileVersion', '0.1.14')" in version_info
     notice = (root / "NOTICE").read_text(encoding="utf-8")
     assert "Copyright (c) 2026 Reasonix Contributors" in notice
     assert "78e9e2656ae5275cbdd29429053fdcc1cc97373c" in notice

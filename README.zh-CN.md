@@ -14,7 +14,7 @@ DeepSeekFathom 是一个专门适配 DeepSeek OpenAI 兼容接口的终端编程
 - DeepSeek V4 模型别名：`pro`、`v4-pro`、`flash`、`v4-flash`
 - 工具：读写文件、本地搜索、联网搜索、任务目标清单、Git 状态、Shell、补丁、下载、仓库拉取、后台服务
 - 子代理：`delegate_agent` 支持单个子代理，也支持 `agents=[...]` 一次委派多个隔离子任务
-- 桌面端：聊天、文件发送、技能列表、任务目标 dock、工具调用折叠展示、内部思考折叠展示、模型/思考/权限切换、第三方 OpenAI 兼容 API 配置
+- 桌面端：聊天、文件发送、技能列表、任务目标 dock、工具调用折叠展示、内部思考折叠展示、模型/思考/权限切换、第三方 OpenAI 兼容 API 配置、只读能力诊断
 - 权限模式：`plan`、`review`、`agent`、`trusted`、`yolo`、`root`
 - 思考模式：`off`、`instant`、`fast`、`standard`、`balanced`、`careful`、`deep`、`deeper`、`max`、`ultra`
 - 本地技能目录：自动发现 `SKILL.md`
@@ -24,7 +24,7 @@ DeepSeekFathom 是一个专门适配 DeepSeek OpenAI 兼容接口的终端编程
 
 Windows 普通用户直接下载并运行：
 
-**[DeepSeekFathom-0.1.13-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.13/DeepSeekFathom-0.1.13-Setup.exe)**
+**[DeepSeekFathom-0.1.14-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.14/DeepSeekFathom-0.1.14-Setup.exe)**
 
 Linux / macOS：
 
@@ -134,6 +134,7 @@ deepseekfathom desktop
 桌面端提供：
 
 - 左侧会话和技能目录
+- 设置页能力诊断：技能生效/覆盖候选、搜索路径、工具契约、权限门控和提示词成本估算
 - 顶部模型、思考模式、权限模式、兼容接口选择
 - 右上角第三方 API / OpenAI-compatible Base URL 配置
 - 底部 `+` 上传文件
@@ -151,7 +152,7 @@ cd DeepSeekFathom
 
 ```text
 dist\DeepSeekFathom\DeepSeekFathom.exe
-dist\installer\DeepSeekFathom-0.1.13-Setup.exe
+dist\installer\DeepSeekFathom-0.1.14-Setup.exe
 ```
 
 安装程序会安装到当前用户目录，并自动创建名为 **DeepSeekFathom** 的桌面和开始菜单入口。桌面端使用独立的 `desktop-vX.Y.Z` 标签；GitHub Actions 会在推送该标签时构建 Windows artifact，并把 Setup EXE 上传到对应 Release。
@@ -366,6 +367,8 @@ DeepSeekFathom 会发现这些目录里的技能：
 - `<workspace>/skills`
 - `~/.deepseek-tulagent/skills`
 - `~/.agents/skills`
+
+同名技能按上面的目录顺序取第一个生效。桌面端“设置 → 能力诊断”会同时显示生效文件与所有被覆盖候选；创建技能时如果 `SKILL.md` 已存在会直接拒绝，不会覆盖用户内容。
 
 每个技能是一个包含 `SKILL.md` 的目录：
 
