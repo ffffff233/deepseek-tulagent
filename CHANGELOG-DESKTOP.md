@@ -1,5 +1,30 @@
 # 桌面端更新记录 / Desktop Changelog
 
+## v0.1.15
+
+中文：
+
+- **OpenAI / DeepSeek 原生工具调用**：Chat Completions 请求会发送当前权限允许的工具 schema，支持流式和非流式 `tool_calls`，同一轮可顺序执行多个工具；不支持原生工具的接口继续使用文本协议兜底，原始参数不会先作为普通回复显示。
+- **技能现在会真正进入工作流**：新增只读 `list_skills` 与 `read_skill`；固定前缀只保留有字符预算的名称/描述索引，正文、`references/*.md` 和脚本清单仅在调用时加载。技能发现兼容 `.deepseek-tulagent`、`.agents`、`.agent`、`.claude` 和项目 `skills` 目录。
+- **自动加载项目指令**：用户级、Git 项目层级和本地覆盖的 `REASONIX.md`、`AGENTS.md`、`CLAUDE.md` 会按确定顺序加载，按物理文件去重并限制单文件/总提示词体积；诊断页展示真实加载状态和 token 成本，不再报“尚未加载”。
+- **旧对话同步到当前运行规则**：继续旧会话时会刷新当前系统提示、项目指令和技能索引；上下文压缩会保留这些稳定前缀与已加载技能，不再只保留第一条 system 消息。自动压缩改用上游返回的完整上下文快照，并按完整工具调用组切分，短消息列表也能在真实 token 超限时触发压缩。
+- **修复快速切换会话串线**：前后端共同使用递增导航序号，过期的慢请求不能覆盖最后点击的会话，也不能让下一次发送写入错误对话。
+- **长回复与侧边栏明显减负**：后端合并高频流式片段后再送到界面，前端按浏览器帧批量更新纯文本，最终只做一次 Markdown/高亮/公式渲染；会话列表使用轻量索引和文件签名缓存，不再每 5 秒反复解析全部 JSONL 与图片 Base64；恢复长对话只滚动一次。
+- **侧栏滚动条按真实内容工作**：会话行固定高度且不再被布局压缩，自定义滑块与原生滚动位置双向同步，长对话目录可以一直滚到真正的最后一项。
+- **权限和失败状态更严格**：子代理只能继承或降低父代理权限，不能从 `plan` / `agent` 提升到 `root`；失败的 `apply_patch` 不再携带绿色成功差异，界面明确显示“修改失败”。
+- **大差异与上下文统计更准确**：超长 diff 保留首尾并展示完整增删计数和省略行数；补充 Gemini `cachedContentTokenCount`，当前窗口优先采用包含推理 token 的上游总量。
+- CLI 发行版本继续保持 `0.1.108`，本次只提升桌面端到 `0.1.15`。
+
+English:
+
+- Added native OpenAI/DeepSeek tool calls, streaming assembly, and multiple calls per model round with text fallback.
+- Added on-demand `list_skills` / `read_skill`, broader skill conventions, reference loading, and script discovery.
+- Loaded hierarchical project instruction files with deduplication, safety budgets, diagnostics, and legacy-session refresh.
+- Preserved runtime instructions and loaded skills across compaction, using upstream context snapshots and complete tool-call groups.
+- Prevented stale session navigation, subagent permission escalation, and false-success patch diffs.
+- Reduced streaming and sidebar costs with backend chunk batching, two-phase rendering, lightweight session indexes, and a correctly mapped long-list scrollbar.
+- Added balanced large-diff truncation and Gemini cache/total-token accounting.
+
 ## v0.1.14
 
 中文：

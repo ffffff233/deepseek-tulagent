@@ -5,6 +5,16 @@ from pathlib import Path
 import re
 
 
+SKILL_CONTEXT_PREFIX = '<runtime-context kind="skills" version="1">'
+SKILL_CONTEXT_SUFFIX = "</runtime-context>"
+SKILL_PIN_PREFIX = '<skill-pin name="{name}">'
+SKILL_PIN_SUFFIX = "</skill-pin>"
+MAX_SKILL_BODY_CHARS = 24_000
+MAX_SKILL_REFERENCE_CHARS = 16_000
+MAX_SKILL_TOTAL_CHARS = 48_000
+SCRIPT_EXTENSIONS = {"", ".sh", ".py", ".js", ".ts", ".rb", ".pl", ".php", ".ps1"}
+
+
 @dataclass(frozen=True)
 class Skill:
     name: str
@@ -16,7 +26,8 @@ class Skill:
     description_declared: bool = False
 
     def summary(self) -> str:
-        return f"- {self.name}: {self.description}"
+        description = " ".join(self.description.split())[:180] or "(description missing)"
+        return f"- {self.name}: {description}"
 
 
 @dataclass(frozen=True)
@@ -50,9 +61,13 @@ class SkillStore:
         candidates = [
             (self.workspace / ".deepseek-tulagent" / "skills", "project"),
             (self.workspace / ".agents" / "skills", "project"),
+            (self.workspace / ".agent" / "skills", "project"),
+            (self.workspace / ".claude" / "skills", "project"),
             (self.workspace / "skills", "project"),
             (self.home / ".deepseek-tulagent" / "skills", "user"),
             (self.home / ".agents" / "skills", "user"),
+            (self.home / ".agent" / "skills", "user"),
+            (self.home / ".claude" / "skills", "user"),
             (Path(__file__).resolve().parent / "builtin_skills", "official"),
         ]
         roots: list[SkillRoot] = []
@@ -85,7 +100,9 @@ class SkillStore:
             if root.status != "ok":
                 continue
             try:
-                skill_files = sorted(root.path.glob("*/SKILL.md"))
+                directory_skills = list(root.path.glob("*/SKILL.md"))
+                flat_skills = [path for path in root.path.glob("*.md") if path.name.casefold() != "skill.md"]
+                skill_files = sorted(directory_skills + flat_skills)
             except OSError:
                 continue
             for skill_md in skill_files:
@@ -94,6 +111,8 @@ class SkillStore:
                     source="official" if root.scope == "official" else "user",
                     scope=root.scope,
                 )
+                if skill_md.name.casefold() != "skill.md" and not skill.description_declared:
+                    continue
                 winner = winners.get(skill.name)
                 if winner is None:
                     winners[skill.name] = skill
@@ -104,10 +123,20 @@ class SkillStore:
         return SkillInspection(roots, candidates)
 
     def get(self, name: str) -> Skill | None:
+        requested = clean_skill_reference(name)
         for skill in self.list():
-            if skill.name == name:
+            if skill.name.casefold() == requested.casefold():
                 return skill
         return None
+
+    def search(self, query: str = "", limit: int = 100) -> list[Skill]:
+        needle = query.strip().casefold()
+        matches = [
+            skill
+            for skill in self.list()
+            if not needle or needle in skill.name.casefold() or needle in skill.description.casefold()
+        ]
+        return matches[: max(1, min(int(limit), 200))]
 
     def create(self, name: str, description: str, body: str = "") -> Skill:
         safe = safe_skill_name(name)
@@ -126,16 +155,37 @@ class SkillStore:
             handle.write(content)
         return parse_skill(path, scope="project")
 
-    def prompt_context(self, max_skills: int = 12) -> str:
-        skills = self.list()[:max_skills]
+    def prompt_context(self, max_chars: int = 4000) -> str:
+        prompt, _, _ = self.prompt_context_info(max_chars=max_chars)
+        return prompt
+
+    def prompt_context_info(self, max_chars: int = 4000) -> tuple[str, int, bool]:
+        skills = self.list()
         if not skills:
-            return "Skills: none discovered."
-        return "Available skills:\n" + "\n".join(skill.summary() for skill in skills)
+            return "", 0, False
+        header = "\n".join((
+            SKILL_CONTEXT_PREFIX,
+            "# Skills available on demand",
+            "",
+            "Before non-trivial work, scan this index. When a skill is plausibly relevant, call read_skill with its bare name before acting. Use list_skills to search beyond this bounded index. Only names and descriptions are pinned here; full bodies load on demand.",
+            "",
+        ))
+        lines: list[str] = []
+        for skill in skills:
+            line = skill.summary()
+            projected = len(header) + len("\n".join(lines)) + len(line) + len(SKILL_CONTEXT_SUFFIX) + 3
+            if projected > max_chars:
+                break
+            lines.append(line)
+        truncated = len(lines) < len(skills)
+        if truncated:
+            lines.append(f"- ... {len(skills) - len(lines)} more skills; call list_skills to search them")
+        return "\n".join((header, *lines, SKILL_CONTEXT_SUFFIX)), len(lines) - int(truncated), truncated
 
 
 def parse_skill(path: Path, *, source: str = "user", scope: str = "user") -> Skill:
     text = path.read_text(encoding="utf-8", errors="replace")
-    name = path.parent.name
+    name = path.parent.name if path.name.casefold() == "skill.md" else path.stem
     description = ""
     description_declared = False
     body = text
@@ -188,4 +238,68 @@ def safe_skill_name(name: str) -> str:
     if not cleaned:
         raise ValueError("skill name cannot be empty")
     return cleaned[:80]
+
+
+def clean_skill_reference(name: str) -> str:
+    cleaned = re.sub(r"\[[^\]]*\]", " ", str(name or "")).strip().lstrip("/")
+    if cleaned.lower().startswith("skill "):
+        cleaned = cleaned[6:].strip()
+    return cleaned.split()[0] if cleaned else ""
+
+
+def render_skill(skill: Skill, arguments: str = "") -> str:
+    body = load_skill_body(skill)
+    lines = [
+        SKILL_PIN_PREFIX.format(name=skill.name),
+        f"# Skill: {skill.name}",
+    ]
+    if skill.description:
+        lines.append(f"> {skill.description}")
+    lines.extend((f"(scope: {skill.scope}; source: {skill.path})", "", body))
+    if arguments.strip():
+        lines.extend(("", f"Arguments: {arguments.strip()}"))
+    lines.append(SKILL_PIN_SUFFIX)
+    return "\n".join(lines)
+
+
+def load_skill_body(skill: Skill) -> str:
+    body = skill.body[:MAX_SKILL_BODY_CHARS]
+    truncated = len(skill.body) > MAX_SKILL_BODY_CHARS
+    remaining = MAX_SKILL_TOTAL_CHARS - len(body)
+    if skill.path.name.casefold() == "skill.md" and remaining > 0:
+        references_dir = skill.path.parent / "references"
+        try:
+            references = sorted(path for path in references_dir.glob("*.md") if path.is_file())
+        except OSError:
+            references = []
+        for reference in references:
+            if remaining <= 0:
+                truncated = True
+                break
+            try:
+                content = reference.read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                continue
+            content = content[: min(MAX_SKILL_REFERENCE_CHARS, remaining)]
+            addition = f"\n\n## Reference: {reference.stem}\n\n{content}"
+            body += addition[:remaining]
+            remaining = MAX_SKILL_TOTAL_CHARS - len(body)
+
+        scripts = skill_script_paths(skill)
+        if scripts and remaining > 0:
+            listing = "\n\n## Scripts\n\n" + "\n".join(f"- `{path}`" for path in scripts)
+            body += listing[:remaining]
+            remaining = MAX_SKILL_TOTAL_CHARS - len(body)
+    if truncated or remaining <= 0:
+        body = body.rstrip() + "\n\n[Skill content truncated at the runtime safety limit.]"
+    return body
+
+
+def skill_script_paths(skill: Skill) -> list[str]:
+    scripts_dir = skill.path.parent / "scripts"
+    try:
+        entries = sorted(path for path in scripts_dir.iterdir() if path.is_file())
+    except OSError:
+        return []
+    return [str(path) for path in entries if not path.name.startswith(".") and path.suffix.lower() in SCRIPT_EXTENSIONS]
 

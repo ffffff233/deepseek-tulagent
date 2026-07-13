@@ -18,7 +18,7 @@ from deepseek_tulagent.config import Settings, get_settings, merge_file_config, 
 from deepseek_tulagent.messages import Message
 from deepseek_tulagent.policy import ApprovalPolicy, ThinkingMode
 from deepseek_tulagent.provider import UsageStats, apply_anthropic_cache_control, apply_thinking_payload, cache_affinity_headers, extract_error_message, parse_usage_stats, prompt_cache_key
-from deepseek_tulagent.session import SessionStore
+from deepseek_tulagent.session import Session, SessionStore
 from deepseek_tulagent.skills import SkillStore
 from deepseek_tulagent.tui import ChatTui, TuiState
 from deepseek_tulagent.ui import ThinkingSpinner, composer_display_text, composer_prompt, display_width, filter_slash_items, format_agent_event, palette_footer_text, print_box, read_bracketed_paste, read_escape_suffix, read_raw_char, redraw_composer, selected_window_start, should_submit_newline, tail_for_width, slash_selection_insertion
@@ -169,6 +169,139 @@ def test_parse_provider_usage_stats():
     assert deepseek_hit_only_gateway.input_tokens == 141_236
     assert deepseek_hit_only_gateway.cached_input_tokens == 140_000
     assert deepseek_hit_only_gateway.cache_miss_input_tokens == 1236
+
+    gemini_cache = parse_usage_stats(
+        {
+            "usageMetadata": {
+                "promptTokenCount": 141_236,
+                "candidatesTokenCount": 95,
+                "cachedContentTokenCount": 140_000,
+                "totalTokenCount": 141_331,
+            }
+        },
+        "upstream",
+    )
+    assert gemini_cache.input_tokens == 141_236
+    assert gemini_cache.cached_input_tokens == 140_000
+    assert gemini_cache.cache_miss_input_tokens == 1236
+    assert gemini_cache.total_tokens == 141_331
+
+
+def test_openai_native_tool_schema_and_stream_fragments_are_normalized():
+    from deepseek_tulagent.provider import (
+        append_openai_tool_call_deltas,
+        finalize_openai_tool_call_deltas,
+        openai_tool_definitions,
+        parse_openai_tool_calls,
+    )
+
+    definitions = openai_tool_definitions(["read_file", "write_file"])
+    assert [item["function"]["name"] for item in definitions] == ["read_file", "write_file"]
+    assert definitions[0]["function"]["parameters"]["required"] == ["path"]
+
+    parsed = parse_openai_tool_calls({
+        "tool_calls": [{
+            "id": "call-read",
+            "function": {"name": "read_file", "arguments": '{"path":"README.md"}'},
+        }]
+    })
+    assert parsed[0].name == "read_file"
+    assert parsed[0].arguments == {"path": "README.md"}
+    assert parsed[0].call_id == "call-read"
+
+    parts = {}
+    append_openai_tool_call_deltas(parts, {"tool_calls": [{"index": 0, "id": "call-stream", "function": {"name": "read_", "arguments": '{"path":'}}]})
+    append_openai_tool_call_deltas(parts, {"tool_calls": [{"index": 0, "function": {"name": "file", "arguments": '"README.md"}'}}]})
+    streamed = finalize_openai_tool_call_deltas(parts)
+    assert streamed[0].name == "read_file"
+    assert streamed[0].arguments == {"path": "README.md"}
+    assert streamed[0].call_id == "call-stream"
+
+
+def test_native_tool_history_preserves_call_ids_after_session_reload(tmp_path: Path):
+    from deepseek_tulagent.agent import append_native_tool_call_record
+    from deepseek_tulagent.provider import NativeToolCall, openai_messages
+
+    session = Session(tmp_path, session_id="native-history")
+    session.append(
+        Message(
+            "assistant",
+            append_native_tool_call_record(
+                "Checking both files.",
+                [
+                    NativeToolCall("read_file", {"path": "a.txt"}, "call_a"),
+                    NativeToolCall("read_file", {"path": "b.txt"}, "call_b"),
+                ],
+            ),
+        )
+    )
+    session.append(Message("user", 'TOOL_RESULT name=read_file\n{"ok":true,"output":"alpha"}'))
+    session.append(Message("user", 'TOOL_RESULT name=read_file\n{"ok":true,"output":"beta"}'))
+
+    payload = openai_messages(SessionStore(tmp_path).load(session.session_id).messages)
+    assistant = next(message for message in payload if message.get("tool_calls"))
+    results = [message for message in payload if message["role"] == "tool"]
+
+    assert [call["id"] for call in assistant["tool_calls"]] == ["call_a", "call_b"]
+    assert [message["tool_call_id"] for message in results] == ["call_a", "call_b"]
+    assert [json.loads(message["content"])["output"] for message in results] == ["alpha", "beta"]
+
+
+@pytest.mark.parametrize(
+    ("provider_format", "expected"),
+    [
+        ("deepseek", True),
+        ("openai", True),
+        ("openai-responses", False),
+        ("anthropic", False),
+        ("gemini", False),
+    ],
+)
+def test_client_reports_native_tools_only_for_chat_completions(
+    tmp_path: Path,
+    provider_format: str,
+    expected: bool,
+):
+    from dataclasses import replace
+
+    from deepseek_tulagent.provider import DeepSeekClient
+
+    client = DeepSeekClient(replace(settings(tmp_path), provider_format=provider_format))
+    assert client.supports_native_tools is expected
+
+
+def test_agent_executes_multiple_native_tool_calls(tmp_path: Path):
+    from deepseek_tulagent.provider import NativeToolCall
+
+    (tmp_path / "README.md").write_text("hello", encoding="utf-8")
+
+    class NativeClient:
+        supports_native_tools = True
+
+        def __init__(self):
+            self.calls = 0
+            self.last_tool_calls = []
+            self.tool_names = []
+
+        def chat(self, _messages, *, tool_names=None):
+            self.calls += 1
+            self.tool_names = list(tool_names or [])
+            if self.calls == 1:
+                self.last_tool_calls = [
+                    NativeToolCall("list_files", {"path": ".", "max_entries": 5}, "call-list"),
+                    NativeToolCall("read_file", {"path": "README.md"}, "call-read"),
+                ]
+                return ""
+            return "Both tools completed."
+
+    client = NativeClient()
+    result = TuLAgent(settings(tmp_path), client=client).run("inspect README", require_todo=False)
+    loaded = SessionStore(tmp_path).load(result.session_id)
+    tool_results = [message.content for message in loaded.messages if message.content.startswith("TOOL_RESULT")]
+    assert result.answer == "Both tools completed."
+    assert "read_file" in client.tool_names and "list_files" in client.tool_names
+    assert len(tool_results) == 2
+    assert any("hello" in content for content in tool_results)
 
 
 def test_client_keeps_latest_usage_separate_from_cumulative(tmp_path: Path):
@@ -599,6 +732,27 @@ def test_normalize_subagent_mode_and_thinking_handles_swapped_mode():
     assert normalize_subagent_mode_and_thinking("fast", None, parent_mode="root", parent_thinking="careful") == ("root", "fast")
     assert normalize_subagent_mode_and_thinking("nonsense", "bad", parent_mode="root", parent_thinking="careful") == ("root", "careful")
     assert normalize_subagent_mode_and_thinking(None, "deep", parent_mode="root", parent_thinking="careful") == ("root", "deep")
+
+
+@pytest.mark.parametrize("parent_mode", ["plan", "review", "agent", "trusted"])
+def test_subagent_cannot_escalate_to_root(parent_mode: str):
+    mode, thinking = normalize_subagent_mode_and_thinking(
+        "root",
+        "deep",
+        parent_mode=parent_mode,
+        parent_thinking="fast",
+    )
+    assert mode == parent_mode
+    assert thinking == "deep"
+
+
+def test_subagent_can_request_a_more_restricted_mode():
+    assert normalize_subagent_mode_and_thinking(
+        "plan",
+        None,
+        parent_mode="agent",
+        parent_thinking="fast",
+    ) == ("plan", "fast")
 
 
 def test_normalize_subagent_specs_accepts_agents_and_tasks():
@@ -1112,6 +1266,27 @@ def test_desktop_marks_orphaned_legacy_tool_as_not_executed():
         "ok": False,
         "output": "没有执行结果，已按未执行处理。",
     }
+
+
+def test_desktop_pairs_multiple_native_tool_calls_with_each_result():
+    from deepseek_tulagent.desktop.app import serialize_messages
+
+    calls = json.dumps({
+        "tool_calls": [
+            {"type": "function", "function": {"name": "list_files", "arguments": '{"path":"."}'}},
+            {"type": "function", "function": {"name": "read_file", "arguments": '{"path":"README.md"}'}},
+        ]
+    })
+    visible = serialize_messages([
+        Message("assistant", calls),
+        Message("user", 'TOOL_RESULT name=list_files\n{"ok":true,"output":"README.md"}'),
+        Message("user", 'TOOL_RESULT name=read_file\n{"ok":true,"output":"hello"}'),
+    ])
+    tools = [item for item in visible if item["role"] == "tool"]
+    assert [item["name"] for item in tools] == ["list_files", "read_file"]
+    assert "README.md" in tools[0]["output"]
+    assert "hello" in tools[1]["output"]
+    assert not any(item.get("orphaned") for item in tools)
 
 
 def test_session_markdown_exports_visible_transcript_without_protocol(tmp_path: Path):
@@ -2211,6 +2386,92 @@ def test_skill_create_never_overwrites_existing_user_file(tmp_path: Path):
     assert created.path.read_text(encoding="utf-8").endswith("first body\n")
 
 
+def test_skill_tools_search_and_load_body_on_demand(tmp_path: Path):
+    skill_file = tmp_path / ".claude" / "skills" / "repo-debug" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text(
+        "---\nname: repo-debug\ndescription: Diagnose repository failures\n---\n\nRun the focused tests.",
+        encoding="utf-8",
+    )
+    references = skill_file.parent / "references"
+    references.mkdir()
+    (references / "notes.md").write_text("Check the saved logs.", encoding="utf-8")
+    scripts = skill_file.parent / "scripts"
+    scripts.mkdir()
+    (scripts / "verify.py").write_text("print('ok')\n", encoding="utf-8")
+
+    store = SkillStore(tmp_path, home=tmp_path / "home")
+    prompt = store.prompt_context()
+    assert "repo-debug" in prompt
+    assert "Run the focused tests" not in prompt
+
+    tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("plan"))
+    listed = json.loads(tools.run("list_skills", {"query": "repository"}).output)
+    loaded = tools.run("read_skill", {"name": "repo-debug", "arguments": "fix CI"}).output
+    assert listed["skills"][0]["name"] == "repo-debug"
+    assert "<skill-pin" in loaded
+    assert "Run the focused tests" in loaded
+    assert "Check the saved logs" in loaded
+    assert "verify.py" in loaded
+    assert "Arguments: fix CI" in loaded
+
+
+def test_instruction_store_loads_stable_hierarchy_and_local_override(tmp_path: Path):
+    from deepseek_tulagent.instructions import InstructionStore
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    workspace = project / "packages" / "app"
+    (home / ".deepseek-tulagent").mkdir(parents=True)
+    workspace.mkdir(parents=True)
+    (project / ".git").mkdir()
+    (home / ".deepseek-tulagent" / "AGENTS.md").write_text("user rule", encoding="utf-8")
+    (project / "REASONIX.md").write_text("root rule", encoding="utf-8")
+    (workspace / "AGENTS.md").write_text("workspace rule", encoding="utf-8")
+    (workspace / "AGENTS.local.md").write_text("local rule", encoding="utf-8")
+
+    context = InstructionStore(workspace, home=home).load()
+    assert [document.scope for document in context.documents] == ["user", "ancestor", "project", "local"]
+    assert context.prompt.index("user rule") < context.prompt.index("root rule")
+    assert context.prompt.index("root rule") < context.prompt.index("workspace rule") < context.prompt.index("local rule")
+    assert context.truncated is False
+
+
+def test_existing_session_refreshes_runtime_context_without_losing_history(tmp_path: Path):
+    (tmp_path / "AGENTS.md").write_text("Always run focused tests.", encoding="utf-8")
+    SkillStore(tmp_path).create("repo-debug", "Debug repositories", "Read the failure first.")
+    session = Session(tmp_path, session_id="legacy-runtime")
+    session.messages = [
+        Message("system", "old system prompt"),
+        Message("system", "Available skills:\n- old: stale"),
+        Message("user", "keep this request"),
+        Message("assistant", "keep this answer"),
+    ]
+    session.rewrite()
+
+    agent = TuLAgent(settings(tmp_path), client=FakeClient(["done"]))
+    agent._refresh_runtime_context(session)
+
+    assert "Available tools:" in session.messages[0].content
+    assert any('kind="instructions"' in message.content for message in session.messages[:3])
+    assert any('kind="skills"' in message.content for message in session.messages[:3])
+    assert [message.content for message in session.messages if message.role != "system"] == ["keep this request", "keep this answer"]
+
+
+def test_compaction_preserves_runtime_context_and_loaded_skill(tmp_path: Path):
+    runtime = Message("system", '<runtime-context kind="skills" version="1">\n- demo\n</runtime-context>')
+    pin = Message("user", 'TOOL_RESULT name=read_skill\n{"ok":true,"output":"<skill-pin name=\\"demo\\">follow me</skill-pin>"}')
+    messages = [Message("system", "base"), runtime]
+    messages.extend(Message("user" if index % 2 else "assistant", f"old {index}") for index in range(12))
+    messages.append(pin)
+    messages.extend(Message("user" if index % 2 else "assistant", f"recent {index}") for index in range(10))
+
+    compacted = compact_context_messages(messages, "deepseek-chat", force=True)
+    assert compacted[0].content == "base"
+    assert compacted[1].content == runtime.content
+    assert any("<skill-pin" in message.content for message in compacted)
+
+
 def test_capability_report_is_deterministic_and_path_redacted(tmp_path: Path):
     home = tmp_path / "home"
     project_skill = tmp_path / ".deepseek-tulagent" / "skills" / "demo" / "SKILL.md"
@@ -2227,9 +2488,11 @@ def test_capability_report_is_deterministic_and_path_redacted(tmp_path: Path):
 
     assert [tool["name"] for tool in tools] == sorted(tool["name"] for tool in tools)
     assert all(tool["schema"] and tool["schemaTokenEstimate"] > 0 for tool in tools)
-    assert report["summary"]["tools"] == 17
+    assert report["summary"]["tools"] == 19
     assert report["summary"]["shadowedSkills"] == 1
-    assert {issue["code"] for issue in report["issues"]} >= {"skill.shadowed", "instruction.not_loaded"}
+    assert {issue["code"] for issue in report["issues"]} >= {"skill.shadowed"}
+    assert "instruction.not_loaded" not in {issue["code"] for issue in report["issues"]}
+    assert report["instructions"]["entries"][0]["loaded"] is True
     assert str(tmp_path.resolve()) not in serialized
     assert "never-copy-this" not in serialized
     assert "<workspace>/.deepseek-tulagent/skills/demo/SKILL.md" in serialized
@@ -2256,6 +2519,13 @@ def test_root_mode_has_no_confirmation_gate():
     policy = ApprovalPolicy.from_mode("root")
     assert policy.allow_network is True
     assert policy.require_confirmation is False
+
+
+def test_failed_apply_patch_has_no_success_diff_ui(tmp_path: Path):
+    tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
+    result = tools.run("apply_patch", {"patch": "this is not a unified patch"})
+    assert result.ok is False
+    assert result.ui is None
 
 
 def test_settings_read_local_config_file(monkeypatch, tmp_path: Path):
@@ -2889,6 +3159,30 @@ def test_desktop_session_switch_returns_fresh_context(monkeypatch, tmp_path: Pat
     assert old["context"]["usageTotalTokens"] == 0
 
 
+def test_desktop_rejects_stale_session_navigation(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    for session_id in ("older", "newer"):
+        session = Session(tmp_path, session_id=session_id)
+        session.messages = [Message("user", session_id)]
+        session.rewrite()
+
+    api = desktop.DesktopApi()
+    current = api.resume("newer", 2)
+    stale = api.resume("older", 1)
+    assert current["activated"] is True
+    assert stale["stale"] is True and stale["activated"] is False
+    assert api.session is not None and api.session.session_id == "newer"
+
+    fresh = api.new_session(4)
+    stale_after_new = api.resume("older", 3)
+    assert fresh["activated"] is True
+    assert stale_after_new["stale"] is True
+    assert api.session is None
+
+
 def test_desktop_context_usage_survives_restart(monkeypatch, tmp_path: Path):
     import deepseek_tulagent.desktop.app as desktop
     from deepseek_tulagent.messages import Message
@@ -2976,6 +3270,38 @@ def test_desktop_context_calibrates_local_delta_from_upstream_tokenizer(monkeypa
     assert adjusted["tokens"] == base["tokens"] + raw_delta * 2
 
 
+def test_desktop_context_prefers_upstream_total_with_reasoning_tokens(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.desktop.app as desktop
+    from deepseek_tulagent.messages import Message
+    from deepseek_tulagent.session import Session
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    api = desktop.DesktopApi()
+    session = Session(tmp_path, session_id="reasoning-total")
+    request = [Message("system", "system"), Message("user", "hello")]
+    session.messages = list(request)
+    session.rewrite()
+    api.session = session
+    api._record_context_usage(
+        session.session_id,
+        UsageStats(
+            input_tokens=1000,
+            output_tokens=100,
+            total_tokens=6100,
+            source="upstream",
+            reasoning_tokens=5000,
+        ),
+        request,
+        request,
+    )
+
+    status = api.context_status()
+    assert status["tokens"] == 6100
+    assert status["usageTotalTokens"] == 6100
+    assert status["reasoningTokens"] == 5000
+
+
 def test_desktop_migrates_v2_context_snapshot_to_full_prompt_plus_output(monkeypatch, tmp_path: Path):
     import deepseek_tulagent.desktop.app as desktop
     from deepseek_tulagent.messages import Message
@@ -3049,7 +3375,7 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert '<img src="app-icon.png" alt="">' in brand
     assert "<svg" not in brand
     assert 'class="introLogo" src="app-icon.png"' in html
-    assert '<span id="version">v0.1.14</span>' in html
+    assert '<span id="version">v0.1.15</span>' in html
     assert 'id="settingsView"' in html and '<dialog id="settingsDialog"' not in html
     assert 'id="settingsBackTop"' in html and 'id="settingsBackBottom"' in html
     js = (root / "app.js").read_text(encoding="utf-8")
@@ -3066,7 +3392,7 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert 'id="ctxOutput"' in html and 'id="ctxCache"' in html and 'id="ctxSessionCache"' in html
     assert 'class="convItem" data-act="exportMd">导出 Markdown</button>' in html
     assert "window.pywebview.api.export_session(sid)" in js
-    assert 'style.css?v=0.1.14' in html and 'app.js?v=0.1.14' in html
+    assert 'style.css?v=0.1.15' in html and 'app.js?v=0.1.15' in html
     assert 'state.currentAssistant.remove();' in js
     assert "suppressedTurnIds: new Set()" in js
     assert "state.suppressedTurnIds.add(turnId)" in js
@@ -3996,7 +4322,7 @@ def test_auto_compaction_is_persisted(monkeypatch, tmp_path: Path):
 
     assert result.answer == "final answer"
     reloaded = SessionStore(tmp_path).load("auto-compact")
-    assert "persisted summary" in reloaded.messages[1].content
+    assert any("persisted summary" in message.content for message in reloaded.messages if message.role == "system")
     assert len(reloaded.messages) < 23
 
 
@@ -4087,12 +4413,12 @@ def test_cli_and_desktop_versions_are_independent():
     assert project["name"] == "deepseek-tulagent"
     assert project["version"] == __version__ == "0.1.108"
     assert project["scripts"]["deepseekfathom"] == "deepseek_tulagent.cli:main"
-    assert DESKTOP_VERSION == "0.1.14"
+    assert DESKTOP_VERSION == "0.1.15"
     assert REPO == "ffffff233/DeepSeekFathom"
-    assert '#define MyAppVersion "0.1.14"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
+    assert '#define MyAppVersion "0.1.15"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
     version_info = (root / "assets" / "windows-version-info.txt").read_text(encoding="utf-8")
-    assert 'filevers=(0, 1, 14, 0)' in version_info
-    assert "StringStruct('FileVersion', '0.1.14')" in version_info
+    assert 'filevers=(0, 1, 15, 0)' in version_info
+    assert "StringStruct('FileVersion', '0.1.15')" in version_info
     notice = (root / "NOTICE").read_text(encoding="utf-8")
     assert "Copyright (c) 2026 Reasonix Contributors" in notice
     assert "78e9e2656ae5275cbdd29429053fdcc1cc97373c" in notice
@@ -4193,6 +4519,158 @@ def test_session_store_lists_and_loads_messages(tmp_path: Path):
     assert listed[0]["session_id"] == result.session_id
     loaded = store.load(result.session_id)
     assert [message.role for message in loaded.messages] == ["system", "system", "user", "assistant"]
+
+
+def test_session_list_uses_index_without_loading_large_transcript(monkeypatch, tmp_path: Path):
+    session = Session(tmp_path, session_id="metadata-fast-path")
+    session.append(Message("user", "large conversation"))
+    store = SessionStore(tmp_path)
+    store.update_metadata(
+        session.session_id,
+        title="Cached title",
+        message_count=321,
+        created_at=session.created_at,
+    )
+    monkeypatch.setattr(store, "load", lambda _session_id: (_ for _ in ()).throw(AssertionError("transcript loaded")))
+
+    listed = store.list()
+    assert listed[0]["title"] == "Cached title"
+    assert listed[0]["messages"] == 1
+
+
+def test_session_list_persistent_index_omits_images_and_preserves_recovery(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.session as session_module
+
+    image = "data:image/png;base64," + ("A" * 250_000)
+    session = Session(tmp_path, session_id="image-index")
+    session.append(Message("user", "inspect this image", images=[image]))
+    session.append(Message("assistant", "done"))
+
+    index_path = session.path.with_suffix(".index.json")
+    index_text = index_path.read_text(encoding="utf-8")
+    assert len(index_text) < 1_000
+    assert image not in index_text
+
+    with session_module._SESSION_LIST_CACHE_LOCK:
+        session_module._SESSION_LIST_CACHE.clear()
+
+    def fail_scan(*_args, **_kwargs):
+        raise AssertionError("a current index must avoid scanning the JSONL image payload")
+
+    monkeypatch.setattr(session_module, "_scan_session_summary", fail_scan)
+    rows = SessionStore(tmp_path).list()
+
+    assert rows[0]["session_id"] == "image-index"
+    assert rows[0]["messages"] == 2
+    assert rows[0]["title"] == "inspect this image"
+    assert SessionStore(tmp_path).load("image-index").messages[0].images == [image]
+
+
+def test_session_list_upgrades_current_legacy_metadata_without_parsing_images(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.session as session_module
+
+    sessions_dir = tmp_path / ".deepseek-tulagent" / "sessions"
+    sessions_dir.mkdir(parents=True)
+    path = sessions_dir / "legacy-image.jsonl"
+    image = "data:image/png;base64," + ("B" * 250_000)
+    event = {
+        "session_id": "legacy-image",
+        "created_at": "2026-07-01T00:00:00+00:00",
+        "message": {"role": "user", "content": "legacy image", "images": [image]},
+    }
+    path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+    store = SessionStore(tmp_path)
+    store.update_metadata(
+        "legacy-image",
+        title="legacy image",
+        message_count=1,
+        created_at=event["created_at"],
+    )
+
+    def fail_scan(*_args, **_kwargs):
+        raise AssertionError("verified legacy metadata must avoid parsing image records")
+
+    monkeypatch.setattr(session_module, "_scan_session_summary", fail_scan)
+    listed = SessionStore(tmp_path).list()[0]
+
+    assert listed["messages"] == 1
+    assert listed["title"] == "legacy image"
+    assert path.with_suffix(".index.json").exists()
+    assert store.load("legacy-image").messages[0].images == [image]
+
+
+def test_session_list_upgrades_legacy_log_and_reuses_cache_across_stores(monkeypatch, tmp_path: Path):
+    import deepseek_tulagent.session as session_module
+
+    sessions_dir = tmp_path / ".deepseek-tulagent" / "sessions"
+    sessions_dir.mkdir(parents=True)
+    path = sessions_dir / "legacy-index.jsonl"
+    events = [
+        {"session_id": "legacy-index", "created_at": "2026-07-01T00:00:00+00:00", "message": {"role": "user", "content": "legacy title"}},
+        {"session_id": "legacy-index", "created_at": "2026-07-01T00:00:00+00:00", "message": {"role": "assistant", "content": "answer"}},
+    ]
+    path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+    original_scan = session_module._scan_session_summary
+    scan_count = 0
+
+    def counted_scan(*args, **kwargs):
+        nonlocal scan_count
+        scan_count += 1
+        return original_scan(*args, **kwargs)
+
+    monkeypatch.setattr(session_module, "_scan_session_summary", counted_scan)
+    first = SessionStore(tmp_path).list()
+    second = SessionStore(tmp_path).list()
+
+    assert first == second
+    assert first[0]["messages"] == 2
+    assert first[0]["title"] == "legacy title"
+    assert scan_count == 1
+    assert path.with_suffix(".index.json").exists()
+
+
+def test_session_list_invalidates_stale_index_when_jsonl_changes(tmp_path: Path):
+    session = Session(tmp_path, session_id="changing-index")
+    session.append(Message("user", "keep my conversation"))
+    store = SessionStore(tmp_path)
+    store.update_metadata(session.session_id, title="Custom title", message_count=1)
+    assert store.list()[0]["messages"] == 1
+
+    event = {
+        "session_id": session.session_id,
+        "created_at": session.created_at,
+        "message": {"role": "assistant", "content": "new answer"},
+    }
+    with session.path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event) + "\n")
+
+    refreshed = SessionStore(tmp_path).list()[0]
+    assert refreshed["messages"] == 2
+    assert refreshed["title"] == "Custom title"
+    assert [message.content for message in store.load(session.session_id).messages] == ["keep my conversation", "new answer"]
+
+
+def test_session_rewrite_refreshes_index_title_and_delete_removes_index(tmp_path: Path):
+    import deepseek_tulagent.session as session_module
+
+    session = Session(tmp_path, session_id="rewrite-index")
+    session.append(Message("user", "old title"))
+    session.messages[0] = Message("user", "new title")
+    session.rewrite()
+    store = SessionStore(tmp_path)
+
+    assert store.list()[0]["title"] == "new title"
+    index_path = session.path.with_suffix(".index.json")
+    assert index_path.exists()
+    index_path.write_text("{broken", encoding="utf-8")
+    with session_module._SESSION_LIST_CACHE_LOCK:
+        session_module._SESSION_LIST_CACHE.clear()
+    assert store.list()[0]["title"] == "new title"
+    assert json.loads(index_path.read_text(encoding="utf-8"))["messages"] == 1
+
+    store.delete(session.session_id)
+    assert not session.path.exists()
+    assert not index_path.exists()
 
 
 def test_resume_global_session_appends_to_original_file(monkeypatch, tmp_path: Path):
@@ -4609,3 +5087,287 @@ def test_substantive_pre_tool_prose_is_not_dropped():
     prose = strip_tool_call_display(text)
     assert prose == "问题可能是配置文件没有保存。我来读取 README。"
     assert is_tool_intro_only(prose) is False
+
+
+def test_openai_chat_native_tools_non_stream(tmp_path: Path):
+    from dataclasses import replace
+
+    import httpx
+
+    from deepseek_tulagent.provider import DeepSeekClient
+
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_a",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"path":"a.txt"}',
+                                    },
+                                },
+                                {
+                                    "id": "call_b",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"path":"b.txt"}',
+                                    },
+                                },
+                            ],
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 5},
+            },
+        )
+
+    client = DeepSeekClient(
+        replace(
+            settings(tmp_path),
+            provider_format="openai",
+            base_url="https://example.test/v1",
+        )
+    )
+    client._client = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        reply = client.chat([Message("user", "read both")], tool_names=["read_file"])
+    finally:
+        client.close()
+
+    assert reply == ""
+    assert [call.name for call in client.last_tool_calls] == ["read_file", "read_file"]
+    assert [call.arguments for call in client.last_tool_calls] == [
+        {"path": "a.txt"},
+        {"path": "b.txt"},
+    ]
+    assert [call.call_id for call in client.last_tool_calls] == ["call_a", "call_b"]
+    definition = captured["tools"][0]["function"]
+    assert definition["name"] == "read_file"
+    assert definition["parameters"]["required"] == ["path"]
+    assert definition["description"]
+
+
+def test_openai_stream_native_multi_tool_calls_execute_without_json_leak(tmp_path: Path):
+    from dataclasses import replace
+
+    import httpx
+
+    from deepseek_tulagent.provider import DeepSeekClient
+
+    (tmp_path / "a.txt").write_text("alpha", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("beta", encoding="utf-8")
+    payloads = []
+
+    def sse(*events: dict) -> bytes:
+        body = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+        return (body + "data: [DONE]\n\n").encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        payloads.append(payload)
+        if len(payloads) == 1:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=sse(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "call_a",
+                                            "function": {
+                                                "name": "read_",
+                                                "arguments": '{"path":"a',
+                                            },
+                                        },
+                                        {
+                                            "index": 1,
+                                            "id": "call_b",
+                                            "function": {
+                                                "name": "read_file",
+                                                "arguments": '{"path":"b.txt"}',
+                                            },
+                                        },
+                                    ]
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "function": {
+                                                "name": "file",
+                                                "arguments": '.txt"}',
+                                            },
+                                        }
+                                    ]
+                                }
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 30, "completion_tokens": 8},
+                    },
+                ),
+            )
+        tool_results = [
+            message["content"]
+            for message in payload["messages"]
+            if message["role"] == "tool"
+        ]
+        assert len(tool_results) == 2
+        assert "alpha" in tool_results[0]
+        assert "beta" in tool_results[1]
+        native_assistant = next(message for message in payload["messages"] if message.get("tool_calls"))
+        assert len(native_assistant["tool_calls"]) == 2
+        assert [message["tool_call_id"] for message in payload["messages"] if message["role"] == "tool"] == [
+            call["id"] for call in native_assistant["tool_calls"]
+        ]
+        assert [call["id"] for call in native_assistant["tool_calls"]] == ["call_a", "call_b"]
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=sse(
+                {
+                    "choices": [{"delta": {"content": "done"}}],
+                    "usage": {"prompt_tokens": 50, "completion_tokens": 2},
+                }
+            ),
+        )
+
+    client = DeepSeekClient(
+        replace(
+            settings(tmp_path),
+            provider_format="openai",
+            base_url="https://example.test/v1",
+        )
+    )
+    client._client = httpx.Client(transport=httpx.MockTransport(handler))
+    visible = []
+    events = []
+    try:
+        result = TuLAgent(settings=client.settings, mode="root", thinking="instant", client=client).run(
+            "Read a.txt and b.txt.",
+            stream=True,
+            on_delta=visible.append,
+            on_final=lambda _text: None,
+            on_event=events.append,
+            require_todo=False,
+        )
+    finally:
+        client.close()
+
+    assert result.answer == "done"
+    assert "".join(visible) == "done"
+    assert "tool_calls" not in "".join(visible)
+    assert [event.split()[1] for event in events if event.startswith("tool ")] == [
+        "read_file",
+        "read_file",
+    ]
+    assert len(payloads) == 2
+    assert any(item["function"]["name"] == "read_file" for item in payloads[0]["tools"])
+
+
+def test_legacy_text_multiple_tool_calls_are_all_parsed():
+    from deepseek_tulagent.agent import parse_tool_calls
+
+    separate = (
+        '{"tool":"read_file","arguments":{"path":"a.txt"}}\n'
+        '{"tool":"read_file","arguments":{"path":"b.txt"}}'
+    )
+    assert parse_tool_calls(separate) == [
+        ("read_file", {"path": "a.txt"}),
+        ("read_file", {"path": "b.txt"}),
+    ]
+
+    standard = json.dumps(
+        {
+            "tool_calls": [
+                {"function": {"name": "read_file", "arguments": '{"path":"a.txt"}'}},
+                {"function": {"name": "read_file", "arguments": '{"path":"b.txt"}'}},
+            ]
+        }
+    )
+    assert parse_tool_calls(standard) == [
+        ("read_file", {"path": "a.txt"}),
+        ("read_file", {"path": "b.txt"}),
+    ]
+
+
+def test_tool_call_after_example_execution_cue_is_not_suppressed():
+    text = (
+        "I reviewed the example above. Now execute:\n"
+        '{"tool":"read_file","arguments":{"path":"README.md"}}'
+    )
+    assert parse_tool_call(text) == ("read_file", {"path": "README.md"})
+
+
+def test_legacy_dsml_multiple_invokes_are_all_parsed():
+    from deepseek_tulagent.agent import DSML_PREFIX, parse_tool_calls
+
+    close_prefix = "</" + DSML_PREFIX[1:]
+    text = (
+        f'{DSML_PREFIX}tool_calls>'
+        f'{DSML_PREFIX}invoke name="read_file">'
+        f'{DSML_PREFIX}parameter name="path" string="true">a.txt{close_prefix}parameter>'
+        f'{close_prefix}invoke>'
+        f'{DSML_PREFIX}invoke name="read_file">'
+        f'{DSML_PREFIX}parameter name="path" string="true">b.txt{close_prefix}parameter>'
+        f'{close_prefix}invoke>'
+        f'{close_prefix}tool_calls>'
+    )
+    assert parse_tool_calls(text) == [
+        ("read_file", {"path": "a.txt"}),
+        ("read_file", {"path": "b.txt"}),
+    ]
+
+
+def test_legacy_text_multiple_tool_calls_are_all_executed(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("alpha", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("beta", encoding="utf-8")
+
+    class LegacyMultiClient:
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps(
+                    {
+                        "tool_calls": [
+                            {"function": {"name": "read_file", "arguments": '{"path":"a.txt"}'}},
+                            {"function": {"name": "read_file", "arguments": '{"path":"b.txt"}'}},
+                        ]
+                    }
+                )
+            results = [message.content for message in messages if message.content.startswith("TOOL_RESULT")]
+            assert len(results) == 2
+            assert "alpha" in results[0]
+            assert "beta" in results[1]
+            return "done"
+
+    client = LegacyMultiClient()
+    result = TuLAgent(settings(tmp_path), mode="root", client=client).run(
+        "Read both files.",
+        require_todo=False,
+    )
+    assert result.answer == "done"
+    assert client.calls == 2

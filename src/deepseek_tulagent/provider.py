@@ -4,12 +4,126 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Iterator
+from typing import Any, Iterator
 
 import httpx
 
 from .config import Settings
 from .messages import Message
+
+
+@dataclass(frozen=True)
+class NativeToolCall:
+    """A provider-native tool request after streaming fragments are assembled."""
+
+    name: str
+    arguments: dict[str, Any]
+    call_id: str = ""
+
+
+def openai_tool_definitions(tool_names: Iterable[str]) -> list[dict[str, Any]]:
+    """Build OpenAI function definitions from the application's canonical schemas."""
+
+    from .capabilities import TOOL_SCHEMAS, VIRTUAL_TOOL_DESCRIPTIONS
+    from .tools import TOOL_DESCRIPTIONS
+
+    definitions: list[dict[str, Any]] = []
+    for name in dict.fromkeys(tool_names):
+        schema = TOOL_SCHEMAS.get(name)
+        if schema is None:
+            continue
+        description = VIRTUAL_TOOL_DESCRIPTIONS.get(name) or TOOL_DESCRIPTIONS.get(name) or name
+        definitions.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": description,
+                    "parameters": schema,
+                },
+            }
+        )
+    return definitions
+
+
+def parse_openai_tool_calls(message: dict[str, Any]) -> list[NativeToolCall]:
+    """Normalize Chat Completions ``tool_calls`` and legacy ``function_call``."""
+
+    raw_calls = message.get("tool_calls")
+    if not isinstance(raw_calls, list):
+        legacy = message.get("function_call")
+        raw_calls = [{"function": legacy}] if isinstance(legacy, dict) else []
+    calls: list[NativeToolCall] = []
+    for index, item in enumerate(raw_calls):
+        if not isinstance(item, dict):
+            continue
+        function = item.get("function") if isinstance(item.get("function"), dict) else item
+        name = function.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        arguments = decode_tool_arguments(function.get("arguments", {}))
+        calls.append(NativeToolCall(name.strip(), arguments, str(item.get("id") or "")))
+    return calls
+
+
+def decode_tool_arguments(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value or "{}")
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def append_openai_tool_call_deltas(
+    parts: dict[int, dict[str, str]],
+    delta: dict[str, Any],
+) -> None:
+    raw_calls = delta.get("tool_calls")
+    if not isinstance(raw_calls, list):
+        legacy = delta.get("function_call")
+        raw_calls = [{"index": 0, "function": legacy}] if isinstance(legacy, dict) else []
+    for position, item in enumerate(raw_calls):
+        if not isinstance(item, dict):
+            continue
+        raw_index = item.get("index", position)
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            index = position
+        target = parts.setdefault(index, {"id": "", "name": "", "arguments": ""})
+        call_id = item.get("id")
+        if isinstance(call_id, str) and call_id:
+            target["id"] = call_id
+        function = item.get("function") if isinstance(item.get("function"), dict) else item
+        name = function.get("name")
+        arguments = function.get("arguments")
+        if isinstance(name, str):
+            target["name"] += name
+        if isinstance(arguments, str):
+            target["arguments"] += arguments
+        elif isinstance(arguments, dict):
+            target["arguments"] += json.dumps(arguments, ensure_ascii=False)
+
+
+def finalize_openai_tool_call_deltas(parts: dict[int, dict[str, str]]) -> list[NativeToolCall]:
+    calls: list[NativeToolCall] = []
+    for index in sorted(parts):
+        item = parts[index]
+        name = item["name"].strip()
+        if not name:
+            continue
+        calls.append(
+            NativeToolCall(
+                name=name,
+                arguments=decode_tool_arguments(item["arguments"]),
+                call_id=item["id"],
+            )
+        )
+    return calls
 
 
 # Provider format normalization. Users may save any of the aliases on the left;
@@ -133,7 +247,7 @@ def parse_usage_stats(data: dict, source: str) -> UsageStats:
     # DeepSeek and several compatible gateways expose cache hits/misses beside
     # prompt_tokens. Some gateways incorrectly put only the cache miss count in
     # prompt_tokens, so hit + miss is the reliable full request size there.
-    cache_hit = intval("prompt_cache_hit_tokens", "cache_hit_tokens", "cached_input_tokens")
+    cache_hit = intval("prompt_cache_hit_tokens", "cache_hit_tokens", "cached_input_tokens", "cachedContentTokenCount")
     reported_cache_miss = intval("prompt_cache_miss_tokens", "cache_miss_tokens")
     top_cache_fields_seen = any(
         key in usage
@@ -141,6 +255,7 @@ def parse_usage_stats(data: dict, source: str) -> UsageStats:
             "prompt_cache_hit_tokens",
             "cache_hit_tokens",
             "cached_input_tokens",
+            "cachedContentTokenCount",
             "prompt_cache_miss_tokens",
             "cache_miss_tokens",
         )
@@ -260,6 +375,81 @@ def openai_message(message: Message) -> dict[str, Any]:
     return payload
 
 
+def openai_messages(messages: list[Message]) -> list[dict[str, Any]]:
+    """Serialize messages and restore persisted native tool pairs for Chat Completions."""
+
+    payloads: list[dict[str, Any]] = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        native = native_tool_history_record(message)
+        if native:
+            prose, calls = native
+            results = messages[index + 1:index + 1 + len(calls)]
+            if len(results) == len(calls) and all(
+                not result.images and tool_result_name(result.content) == call.name
+                for call, result in zip(calls, results)
+            ):
+                serialized_calls = []
+                call_ids = []
+                used_call_ids: set[str] = set()
+                for call_index, call in enumerate(calls):
+                    call_id = call.call_id.strip()
+                    if not call_id or call_id in used_call_ids:
+                        call_id = f"call_{index}_{call_index}"
+                        while call_id in used_call_ids:
+                            call_id += "_"
+                    used_call_ids.add(call_id)
+                    call_ids.append(call_id)
+                    serialized_calls.append(
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                "arguments": json.dumps(call.arguments, ensure_ascii=False, separators=(",", ":")),
+                            },
+                        }
+                    )
+                payloads.append({"role": "assistant", "content": prose or None, "tool_calls": serialized_calls})
+                for call_id, result in zip(call_ids, results):
+                    _header, _separator, body = result.content.partition("\n")
+                    payloads.append({"role": "tool", "tool_call_id": call_id, "content": body or result.content})
+                index += 1 + len(results)
+                continue
+        payloads.append(openai_message(message))
+        index += 1
+    return payloads
+
+
+def native_tool_history_record(message: Message) -> tuple[str, list[NativeToolCall]] | None:
+    if message.role != "assistant" or not message.content:
+        return None
+    prose, separator, candidate = message.content.rstrip().rpartition("\n")
+    if not separator:
+        candidate = message.content.strip()
+        prose = ""
+    try:
+        data = json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or data.get("_native_tool_protocol") != "openai-chat":
+        return None
+    calls = parse_openai_tool_calls(data)
+    return (prose.rstrip(), calls) if calls else None
+
+
+def tool_result_name(content: str) -> str:
+    first_line = content.partition("\n")[0].strip()
+    if first_line.startswith("TOOL_RESULT name="):
+        return first_line.removeprefix("TOOL_RESULT name=").strip()
+    if first_line.startswith("SUBAGENT_RESULT"):
+        return "delegate_agent"
+    if first_line.startswith("USER_ANSWER"):
+        return "ask_user"
+    return ""
+
+
 def anthropic_content(message: Message):
     """Anthropic content: plain string, or blocks when the message carries images."""
     images = getattr(message, "images", None) or []
@@ -334,15 +524,21 @@ class DeepSeekClient:
     test-suite reference it), but requests are dispatched by ``settings.provider_format``.
     """
 
+    supports_native_tools = False
+
     def __init__(self, settings: Settings, timeout: float | None = None):
         self.settings = settings
         self.timeout = max(1.0, float(timeout or settings.request_timeout))
         self._client: httpx.Client | None = None
         self.format = normalize_format(getattr(settings, "provider_format", "deepseek"))
+        # Native schemas below are implemented only for Chat Completions. Other
+        # provider families keep using the agent's structured-text fallback.
+        self.supports_native_tools = self.format in {"deepseek", "openai"}
         self.usage = UsageStats()
         # Cumulative usage is useful for billing, while the context meter needs the
         # snapshot from only the most recent upstream request.
         self.last_usage = UsageStats()
+        self.last_tool_calls: list[NativeToolCall] = []
 
     def _record_usage(self, data: dict, source: str = "upstream") -> None:
         snapshot = parse_usage_stats(data, source)
@@ -402,27 +598,34 @@ class DeepSeekClient:
         return tokens
 
     # ---- public API ----
-    def chat(self, messages: Iterable[Message]) -> str:
+    def chat(self, messages: Iterable[Message], *, tool_names: Iterable[str] | None = None) -> str:
         messages = list(messages)
         self.last_usage = UsageStats()
+        self.last_tool_calls = []
         if self.format == "anthropic":
             return self._anthropic_chat(messages, stream=False)  # type: ignore[return-value]
         if self.format == "gemini":
             return self._gemini_chat(messages, stream=False)  # type: ignore[return-value]
         if self.format == "openai-responses":
             return self._responses_chat(messages, stream=False)  # type: ignore[return-value]
-        return self._openai_chat(messages, stream=False)  # type: ignore[return-value]
+        return self._openai_chat(messages, stream=False, tool_names=tool_names)  # type: ignore[return-value]
 
-    def stream_chat(self, messages: Iterable[Message]) -> Iterator[str]:
+    def stream_chat(
+        self,
+        messages: Iterable[Message],
+        *,
+        tool_names: Iterable[str] | None = None,
+    ) -> Iterator[str]:
         messages = list(messages)
         self.last_usage = UsageStats()
+        self.last_tool_calls = []
         if self.format == "anthropic":
             return self._anthropic_chat(messages, stream=True)  # type: ignore[return-value]
         if self.format == "gemini":
             return self._gemini_chat(messages, stream=True)  # type: ignore[return-value]
         if self.format == "openai-responses":
             return self._responses_chat(messages, stream=True)  # type: ignore[return-value]
-        return self._openai_chat(messages, stream=True)  # type: ignore[return-value]
+        return self._openai_chat(messages, stream=True, tool_names=tool_names)  # type: ignore[return-value]
 
     def models(self) -> list[str]:
         if self.format == "anthropic":
@@ -443,15 +646,24 @@ class DeepSeekClient:
         }
 
     # ---- OpenAI / DeepSeek ----
-    def _openai_chat(self, messages: list[Message], *, stream: bool):
+    def _openai_chat(
+        self,
+        messages: list[Message],
+        *,
+        stream: bool,
+        tool_names: Iterable[str] | None = None,
+    ):
         self._require_key()
         payload = {
             "model": self.settings.model,
-            "messages": [openai_message(message) for message in messages],
+            "messages": openai_messages(messages),
             "temperature": 0.2,
             "max_tokens": self._output_tokens(),
             "stream": stream,
         }
+        tools = openai_tool_definitions(tool_names or ())
+        if tools:
+            payload["tools"] = tools
         if stream:
             payload["stream_options"] = {"include_usage": True}
         apply_thinking_payload(payload, self.settings)
@@ -469,6 +681,7 @@ class DeepSeekClient:
             self._record_usage(data)
             try:
                 message = data["choices"][0]["message"]
+                self.last_tool_calls = parse_openai_tool_calls(message)
                 # some gateways omit "content" when the text went to reasoning_content
                 return message.get("content") or message.get("reasoning_content") or ""
             except (KeyError, IndexError, TypeError) as exc:
@@ -478,6 +691,7 @@ class DeepSeekClient:
 
     def _openai_stream(self, url: str, headers: dict, payload: dict) -> Iterator[str]:
         usage = UsageStats()
+        tool_call_parts: dict[int, dict[str, str]] = {}
         with self._http().stream("POST", url, headers=headers, json=payload) as response:
             raise_for_status_with_body(response)
             guard_api_content_type(response, streaming=True)
@@ -496,6 +710,8 @@ class DeepSeekClient:
                 content = delta.get("content")
                 if content:
                     yield content
+                append_openai_tool_call_deltas(tool_call_parts, delta)
+        self.last_tool_calls = finalize_openai_tool_call_deltas(tool_call_parts)
         self.last_usage = usage
         self.usage.merge(usage)
 

@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from .instructions import InstructionStore
 from .policy import ApprovalPolicy
 from .skills import SkillStore
 from .tools import TOOL_DESCRIPTIONS, ToolRegistry
@@ -19,8 +20,10 @@ READ_ONLY_TOOLS = {
     "ask_user",
     "git_status",
     "inspect_media",
+    "list_skills",
     "list_files",
     "read_file",
+    "read_skill",
     "search_text",
     "service_status",
     "todo_write",
@@ -105,6 +108,14 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "path": _string("Text file path."),
         "max_bytes": _integer("Maximum bytes to read.", minimum=1),
     }, ("path",)),
+    "list_skills": _object({
+        "query": _string("Optional name or description search text."),
+        "limit": _integer("Maximum returned skills.", minimum=1, maximum=200),
+    }),
+    "read_skill": _object({
+        "name": _string("Bare skill identifier from the skills index."),
+        "arguments": _string("Optional task-specific arguments passed to the skill."),
+    }, ("name",)),
     "run_shell": _object({
         "command": _string("Shell command."),
         "timeout": _integer("Timeout in seconds.", minimum=1),
@@ -223,16 +234,16 @@ def collect_capability_report(workspace: Path, *, mode: str = "root", home: Path
 
     winners = [entry for entry in skill_entries if entry["status"] == "winner"]
     shadowed = [entry for entry in skill_entries if entry["status"] == "shadowed"]
-    skill_prompt = skill_store.prompt_context()
-    if len(winners) > 12:
+    skill_prompt, prompted_skills, prompt_truncated = skill_store.prompt_context_info()
+    if prompt_truncated:
         issues.append(issue(
             "warning",
             "skill.prompt_truncated",
             "skills",
             "skills-index",
             "<provider-prompt>",
-            f"发现 {len(winners)} 个生效技能，但固定索引只发送前 12 个。",
-            "缩短技能列表或后续改用按需技能索引。",
+            f"发现 {len(winners)} 个生效技能，固定索引按字符预算展示 {prompted_skills} 个；其余技能可通过 list_skills 搜索。",
+            "缩短技能描述，或使用 list_skills 按名称和描述检索。",
             "skills",
         ))
 
@@ -283,19 +294,28 @@ def collect_capability_report(workspace: Path, *, mode: str = "root", home: Path
         if name in runtime_names and schema is None:
             issues.append(issue("warning", "tool.schema_missing", "tools", name, "<tool-contract>", "工具缺少可检查的参数契约。", "补充确定性的工具参数 schema。", "tools"))
 
+    instruction_context = InstructionStore(root, home=user_home).load()
     instruction_entries: list[dict[str, Any]] = []
-    for name in ("AGENTS.md", "REASONIX.md", "CLAUDE.md"):
-        path = root / name
-        if path.is_file():
-            instruction_entries.append({"name": name, "path": display_path(path, root, user_home), "loaded": False})
+    for document in instruction_context.documents:
+        entry = {
+            "name": document.path.name,
+            "path": display_path(document.path, root, user_home),
+            "scope": document.scope,
+            "loaded": True,
+            "sourceBytes": document.source_bytes,
+            "promptTokenEstimate": estimate_tokens(document.body),
+            "truncated": document.truncated,
+        }
+        instruction_entries.append(entry)
+        if document.truncated:
             issues.append(issue(
                 "warning",
-                "instruction.not_loaded",
+                "instruction.truncated",
                 "instructions",
-                name,
-                display_path(path, root, user_home),
-                "检测到项目指令文件，但当前运行时尚未自动加载它。",
-                "在接入指令加载前，将关键规则放入用户请求或技能。",
+                document.path.name,
+                entry["path"],
+                "Instruction content exceeded the runtime safety limit and was truncated.",
+                "Split the guidance into shorter project instructions or on-demand skills.",
                 "diagnostics",
             ))
 
@@ -315,7 +335,7 @@ def collect_capability_report(workspace: Path, *, mode: str = "root", home: Path
     warnings = sum(item["severity"] == "warning" for item in issues)
     infos = sum(item["severity"] == "info" for item in issues)
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "root": "<workspace>",
         "mode": mode,
         "static": True,
@@ -334,15 +354,18 @@ def collect_capability_report(workspace: Path, *, mode: str = "root", home: Path
             "fixedSystemPromptTokenEstimate": estimate_tokens(SYSTEM_PROMPT),
             "skillPromptBytes": len(skill_prompt.encode("utf-8")),
             "skillPromptTokenEstimate": estimate_tokens(skill_prompt),
+            "loadedInstructions": len(instruction_entries),
+            "instructionPromptBytes": len(instruction_context.prompt.encode("utf-8")),
+            "instructionPromptTokenEstimate": estimate_tokens(instruction_context.prompt),
         },
-        "instructions": {"entries": instruction_entries},
+        "instructions": {"entries": instruction_entries, "truncated": instruction_context.truncated},
         "skills": {
             "roots": skill_roots,
             "entries": skill_entries,
-            "promptLimit": 12,
-            "prompted": min(12, len(winners)),
+            "promptLimitChars": 4000,
+            "prompted": prompted_skills,
         },
-        "tools": {"protocol": "json-in-text", "entries": tool_entries},
+        "tools": {"protocol": "native-openai-with-text-fallback", "entries": tool_entries},
         "extensions": {
             "mcp": {"supported": False, "entries": []},
             "plugins": {"supported": False, "entries": []},

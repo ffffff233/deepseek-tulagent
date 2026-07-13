@@ -31,6 +31,12 @@ const state = {
   activeGoal: "",
   pendingNativeDrop: null,
   capabilityReport: null,
+  resumeRequestId: 0,
+  resuming: false,
+  suppressReplayScroll: false,
+  streamRenderFrame: 0,
+  pendingStreamBubbles: new Set(),
+  sessionRefreshId: 0,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -95,7 +101,7 @@ function installDemoApi() {
       }),
       models: async () => ({ ok: true, models: ["deepseek-v4-flash", "deepseek-v4-pro", "gpt-4o"] }),
       sessions: async () => ([{ session_id: "demo-session-0001", title: "检查项目并修复问题", updated_at: "today", pinned: true }]),
-      resume: async (sessionId) => ({ ok: true, sessionId, context: { ok: true, tokens: 4200, inputTokens: 3000, outputTokens: 1200, cachedTokens: 1800, cachePercent: 60, limit: 1000000, threshold: 920000, percent: 0.4, source: "upstream", measure: "上游 usage", accurate: true, model: $("model")?.value || "deepseek-v4-flash", autoCompact: true }, messages: [
+      resume: async (sessionId, navigationId) => ({ ok: true, activated: true, navigationId, sessionId, context: { ok: true, tokens: 4200, inputTokens: 3000, outputTokens: 1200, cachedTokens: 1800, cachePercent: 60, limit: 1000000, threshold: 920000, percent: 0.4, source: "upstream", measure: "上游 usage", accurate: true, model: $("model")?.value || "deepseek-v4-flash", autoCompact: true }, messages: [
         { role: "user", content: "检查项目并修复问题" },
         { role: "tool", name: "run_shell", detail: "cmd=pytest -q", output: "8 passed in 0.42s" },
         { role: "assistant", content: "测试通过，仓库状态正常。" },
@@ -105,7 +111,7 @@ function installDemoApi() {
       delete_session: async () => ({ ok: true }),
       set_runtime: async (data) => ({ ...(await window.pywebview.api.boot()), model: data.model, mode: data.mode, thinking: data.thinking }),
       configure: async () => window.pywebview.api.boot(),
-      new_session: async () => ({ ok: true, sessionId: null, messages: [], context: { ok: true, tokens: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, cachePercent: 0, limit: 1000000, threshold: 920000, percent: 0, source: "deepseek", measure: "本地估算", accurate: false, model: $("model")?.value || "deepseek-v4-flash", autoCompact: true } }),
+      new_session: async (navigationId) => ({ ok: true, activated: true, navigationId, sessionId: null, messages: [], context: { ok: true, tokens: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, cachePercent: 0, limit: 1000000, threshold: 920000, percent: 0, source: "deepseek", measure: "本地估算", accurate: false, model: $("model")?.value || "deepseek-v4-flash", autoCompact: true } }),
       compact: async () => ({ ok: true, before: 12000, after: 4200, context: { ok: true, tokens: 4200, inputTokens: 3000, outputTokens: 1200, cachedTokens: 1800, cachePercent: 60, limit: 1000000, threshold: 920000, percent: 0.4, source: "upstream", measure: "上游 usage", accurate: true, model: "deepseek-v4-flash", autoCompact: true }, messages: [{ role: "assistant", content: "上下文已压缩，保留最近消息。" }] }),
       context_status: async () => ({ ok: true, tokens: 4200, inputTokens: 3000, outputTokens: 1200, cachedTokens: 1800, cachePercent: 60, limit: 1000000, threshold: 920000, percent: 0.4, source: "upstream", measure: "上游 usage", accurate: true, model: $("model")?.value || "deepseek-v4-flash", autoCompact: true }),
       save_upload: async (file) => ({ ok: true, name: file.name, path: `/uploads/${file.name}`, size: 128 }),
@@ -122,8 +128,11 @@ function installDemoApi() {
       resolve_approval: async () => ({ ok: true }),
       test_connection: async () => ({ ok: true, reply: "ok", model: "deepseek-v4-flash", thinking: "deep", reasoning: { reasoning_effort: "high" }, resolved: "https://api.deepseek.com/v1" }),
       capability_diagnostics: async () => ({
-        schemaVersion: 1, root: "<workspace>", mode: "root", static: true,
-        summary: { errors: 0, warnings: 1, infos: 2, skillRoots: 6, skills: 2, shadowedSkills: 1, tools: 17, enabledTools: 17, toolSchemaTokenEstimate: 860, fixedSystemPromptTokenEstimate: 1700, skillPromptTokenEstimate: 34 },
+        schemaVersion: 2, root: "<workspace>", mode: "root", static: true,
+        summary: { errors: 0, warnings: 0, infos: 2, skillRoots: 10, skills: 2, shadowedSkills: 1, tools: 19, enabledTools: 19, toolSchemaTokenEstimate: 930, fixedSystemPromptTokenEstimate: 1700, instructionPromptTokenEstimate: 80, skillPromptTokenEstimate: 60 },
+        instructions: { entries: [
+          { name: "AGENTS.md", path: "<workspace>/AGENTS.md", scope: "project", loaded: true, sourceBytes: 120, promptTokenEstimate: 30, truncated: false },
+        ], truncated: false },
         skills: {
           roots: [
             { path: "<workspace>/.deepseek-tulagent/skills", scope: "project", priority: 0, status: "ok" },
@@ -134,13 +143,12 @@ function installDemoApi() {
             { name: "repo-debug", description: "旧版调试流程", scope: "user", status: "shadowed", path: "~/.deepseek-tulagent/skills/repo-debug/SKILL.md", winnerPath: "<workspace>/.deepseek-tulagent/skills/repo-debug/SKILL.md", descriptionDeclared: true },
           ],
         },
-        tools: { protocol: "json-in-text", entries: [
+        tools: { protocol: "native-openai-with-text-fallback", entries: [
           { name: "read_file", description: "read: read UTF-8 text from a workspace file", readOnly: true, enabled: true, gate: "none", schemaTokenEstimate: 38, promptTokenEstimate: 10, schema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
           { name: "write_file", description: "gated write: create or overwrite a workspace file", readOnly: false, enabled: true, gate: "none", schemaTokenEstimate: 52, promptTokenEstimate: 10, schema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } },
         ] },
         issues: [
           { severity: "info", code: "skill.shadowed", name: "repo-debug", message: "同名技能由更高优先级项目路径生效。" },
-          { severity: "warning", code: "instruction.not_loaded", name: "AGENTS.md", message: "检测到项目指令文件，但当前运行时尚未自动加载它。" },
           { severity: "info", code: "extensions.not_integrated", name: "mcp-plugins-hooks", message: "当前版本尚未集成 MCP、插件包和 Hooks。" },
         ],
       }),
@@ -243,8 +251,7 @@ window.DeepSeekDesktop = {
       }
       const bubble = state.currentAssistant.querySelector(".bubble");
       bubble.dataset.raw = (bubble.dataset.raw || "") + payload.text;
-      renderBubble(bubble);
-      scrollMessages();
+      scheduleStreamingBubble(bubble);
     }
     if (event === "assistant:final") {
       // replace the streamed text with the cleaned final answer; empty text means the
@@ -252,6 +259,7 @@ window.DeepSeekDesktop = {
       const text = payload.text || "";
       if (!text.trim()) {
         if (state.currentAssistant) {
+          flushStreamingBubble(null);
           state.currentAssistant.remove();
           state.currentAssistant = null;
         }
@@ -262,7 +270,7 @@ window.DeepSeekDesktop = {
       state.currentAssistant.classList.remove("streaming");
       const bubble = state.currentAssistant.querySelector(".bubble");
       bubble.dataset.raw = text;
-      renderBubble(bubble);
+      flushStreamingBubble(bubble);
       // a tool call may follow in this same turn — let the next delta open a new bubble
       state.currentAssistant = null;
       scrollMessages();
@@ -286,6 +294,11 @@ window.DeepSeekDesktop = {
         showMediaFrames(payload.detail);
       } else if (payload.kind === "tool") {
         hideThinking();
+        if (state.currentAssistant) {
+          const narrationBubble = state.currentAssistant.querySelector(".bubble");
+          state.currentAssistant.classList.remove("streaming");
+          flushStreamingBubble(narrationBubble);
+        }
         // a tool card starts a new visual block — text after it must open a NEW
         // bubble below the card, not append to the bubble above it
         state.currentAssistant = null;
@@ -550,14 +563,17 @@ function setRunning(running) {
   // Keep the composer editable while a turn runs (Codex-style: compose your next
   // message meanwhile). Send is already guarded by `if (state.running) return`, so an
   // enabled box can't double-send — and you never get locked out if an event is missed.
-  $("prompt").disabled = false;
-  $("attach").disabled = false;
+  $("prompt").disabled = state.resuming;
+  $("attach").disabled = state.resuming;
   document.body.classList.toggle("is-running", running);
 }
 
 function syncRunControls() {
   $("send").hidden = state.running;
+  $("send").disabled = state.resuming;
   $("cancel").hidden = !state.running || !state.activeTurnId;
+  $("prompt").disabled = state.resuming;
+  $("attach").disabled = state.resuming;
 }
 
 function goalStorageKey() {
@@ -781,6 +797,7 @@ function ensureIncludes(list, value) {
 }
 
 async function refreshSessions() {
+  const refreshId = ++state.sessionRefreshId;
   let sessions;
   try {
     const fn = await apiMethod("sessions", 3000);
@@ -788,9 +805,16 @@ async function refreshSessions() {
   } catch (_) {
     return;  // api not ready yet — a later poll will populate the list
   }
+  if (refreshId !== state.sessionRefreshId) return;
   if (!Array.isArray(sessions)) return;
   const box = $("sessions");
   const previousScrollTop = box.scrollTop;
+  const previousMaxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
+  const wasAtBottom = previousMaxScroll > 0 && previousMaxScroll - previousScrollTop <= 2;
+  const boxTop = box.getBoundingClientRect().top;
+  const anchor = Array.from(box.querySelectorAll(".sessionItem")).find((item) => item.getBoundingClientRect().bottom > boxTop);
+  const anchorId = anchor ? anchor.dataset.sessionId : "";
+  const anchorOffset = anchor ? anchor.getBoundingClientRect().top - boxTop : 0;
   box.innerHTML = "";
   if (!sessions.length) {
     box.textContent = "暂无会话";
@@ -799,7 +823,10 @@ async function refreshSessions() {
   }
   sessions.forEach((session) => {
     const row = document.createElement("div");
-    row.className = `sessionItem${session.pinned ? " pinned" : ""}`;
+    row.dataset.sessionId = session.session_id;
+    const active = session.session_id === currentSessionId();
+    row.className = `sessionItem${session.pinned ? " pinned" : ""}${active ? " active" : ""}`;
+    if (active) row.setAttribute("aria-current", "true");
     row.innerHTML = `
       <button class="sessionMain">
         <span>${escapeHtml(session.title || session.session_id.slice(0, 8))}</span>
@@ -811,26 +838,46 @@ async function refreshSessions() {
         <button title="删除" class="actDelete">${icon("trash")}</button>
       </div>`;
     row.querySelector(".sessionMain").onclick = async () => {
-      const result = await window.pywebview.api.resume(session.session_id);
-      state.currentAssistant = null;
-      state.currentTool = null;
-      state.activeTurnId = "";
-      state.pendingOutbound = false;
-      state.pendingOutboundId = "";
+      const requestId = ++state.resumeRequestId;
+      state.resuming = true;
       syncRunControls();
-      state.suppressLocalUserEcho = false;
-      state.stickToBottom = true;
-      $("messages").innerHTML = "";
-      result.messages.forEach(replayMessage);
-      markMessageActions();
-      scrollMessages(true);
-      state.currentSessionId = result.sessionId;
-      if (state.boot) state.boot.sessionId = result.sessionId;
-      setText("sessionState", result.sessionId.slice(0, 8));
-      setSaveState("saved", "已恢复", result.sessionId);
-      updateContextBadge(result.context || null);
-      syncActiveGoalFromStore();
-      renderGoalDock();
+      try {
+        const result = await window.pywebview.api.resume(session.session_id, requestId);
+        if (requestId !== state.resumeRequestId) return;
+        if (!result || !result.ok) throw new Error((result && result.error) || "后端没有恢复该会话");
+        if (result.activated === false) throw new Error(result.error || "会话切换未生效");
+        state.currentAssistant = null;
+        state.currentTool = null;
+        state.activeTurnId = "";
+        state.pendingOutbound = false;
+        state.pendingOutboundId = "";
+        state.suppressLocalUserEcho = false;
+        state.stickToBottom = true;
+        state.suppressReplayScroll = true;
+        $("messages").innerHTML = "";
+        (result.messages || []).forEach((entry) => replayMessage(entry, result.sessionId));
+        state.suppressReplayScroll = false;
+        markMessageActions();
+        scrollMessages(true);
+        state.currentSessionId = result.sessionId;
+        if (state.boot) state.boot.sessionId = result.sessionId;
+        setText("sessionState", result.sessionId.slice(0, 8));
+        setSaveState("saved", "已恢复", result.sessionId);
+        updateContextBadge(result.context || null);
+        syncActiveGoalFromStore();
+        renderGoalDock();
+        refreshSessions().catch(() => {});
+      } catch (error) {
+        if (requestId === state.resumeRequestId) {
+          toast(`打开会话失败：${String(error && error.message ? error.message : error)}`);
+        }
+      } finally {
+        if (requestId === state.resumeRequestId) {
+          state.suppressReplayScroll = false;
+          state.resuming = false;
+          syncRunControls();
+        }
+      }
     };
     row.querySelector(".actPin").onclick = async (e) => {
       e.stopPropagation();
@@ -854,8 +901,20 @@ async function refreshSessions() {
     };
     box.append(row);
   });
-  box.scrollTop = previousScrollTop;
-  requestAnimationFrame(syncSessionScrollbar);
+  requestAnimationFrame(() => {
+    if (refreshId !== state.sessionRefreshId) return;
+    const anchored = anchorId
+      ? Array.from(box.querySelectorAll(".sessionItem")).find((item) => item.dataset.sessionId === anchorId)
+      : null;
+    if (wasAtBottom) {
+      box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight);
+    } else if (anchored) {
+      box.scrollTop += anchored.getBoundingClientRect().top - box.getBoundingClientRect().top - anchorOffset;
+    } else {
+      box.scrollTop = Math.min(previousScrollTop, Math.max(0, box.scrollHeight - box.clientHeight));
+    }
+    syncSessionScrollbar();
+  });
 }
 
 function syncSessionScrollbar() {
@@ -867,11 +926,23 @@ function syncSessionScrollbar() {
   rail.hidden = maxScroll <= 1;
   if (rail.hidden) return;
   const railHeight = rail.clientHeight;
-  const thumbHeight = Math.max(30, Math.round(railHeight * box.clientHeight / box.scrollHeight));
+  const thumbHeight = Math.min(railHeight, Math.max(30, Math.round(railHeight * box.clientHeight / box.scrollHeight)));
   const travel = Math.max(0, railHeight - thumbHeight);
-  const top = maxScroll ? Math.round(travel * box.scrollTop / maxScroll) : 0;
+  const top = maxScroll ? Math.max(0, Math.min(travel, Math.round(travel * box.scrollTop / maxScroll))) : 0;
   thumb.style.height = `${thumbHeight}px`;
   thumb.style.transform = `translateY(${top}px)`;
+}
+
+function setSessionScrollFromThumbTop(box, top, travel) {
+  const maxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
+  if (maxScroll <= 0 || travel <= 0) {
+    box.scrollTop = 0;
+    return;
+  }
+  const clamped = Math.max(0, Math.min(travel, top));
+  // Assign exact endpoints so WebView rounding can never leave the list a row short.
+  box.scrollTop = clamped <= 0 ? 0 : clamped >= travel ? maxScroll : clamped / travel * maxScroll;
+  syncSessionScrollbar();
 }
 
 function initSessionScrollbar() {
@@ -890,22 +961,20 @@ function initSessionScrollbar() {
     const thumbHeight = thumb.getBoundingClientRect().height;
     const travel = Math.max(1, rect.height - thumbHeight);
     const target = Math.max(0, Math.min(travel, event.clientY - rect.top - thumbHeight / 2));
-    box.scrollTop = target / travel * Math.max(0, box.scrollHeight - box.clientHeight);
+    setSessionScrollFromThumbTop(box, target, travel);
   });
 
   thumb.addEventListener("pointerdown", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    const startY = event.clientY;
-    const startScroll = box.scrollTop;
-    const railHeight = rail.clientHeight;
-    const thumbHeight = thumb.getBoundingClientRect().height;
-    const travel = Math.max(1, railHeight - thumbHeight);
-    const maxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
+    const railRect = rail.getBoundingClientRect();
+    const thumbRect = thumb.getBoundingClientRect();
+    const grabOffset = event.clientY - thumbRect.top;
+    const travel = Math.max(1, railRect.height - thumbRect.height);
     thumb.classList.add("dragging");
     thumb.setPointerCapture(event.pointerId);
     const move = (moveEvent) => {
-      box.scrollTop = startScroll + (moveEvent.clientY - startY) / travel * maxScroll;
+      setSessionScrollFromThumbTop(box, moveEvent.clientY - railRect.top - grabOffset, travel);
     };
     const finish = () => {
       thumb.classList.remove("dragging");
@@ -921,9 +990,9 @@ function initSessionScrollbar() {
 }
 
 // replay a serialized transcript entry: text bubble or a completed tool card
-function replayMessage(entry) {
+function replayMessage(entry, sessionId = currentSessionId()) {
   if (entry.role === "tool") {
-    if (entry.name === "todo_write") applyTodoPayload(entry.output || "", currentSessionId());
+    if (entry.name === "todo_write") applyTodoPayload(entry.output || "", sessionId);
     const card = addToolEvent(entry.name, entry.detail);
     if (card) {
       completeToolBlock(card, entry.name, entry.output || "");
@@ -982,6 +1051,35 @@ function renderBubble(bubble) {
   }
 }
 
+function scheduleStreamingBubble(bubble) {
+  state.pendingStreamBubbles.add(bubble);
+  if (state.streamRenderFrame) return;
+  state.streamRenderFrame = requestAnimationFrame(() => {
+    state.streamRenderFrame = 0;
+    const targets = Array.from(state.pendingStreamBubbles);
+    state.pendingStreamBubbles.clear();
+    let rendered = false;
+    targets.forEach((target) => {
+      if (!target || !target.isConnected) return;
+      target.textContent = target.dataset.raw || "";
+      rendered = true;
+    });
+    if (rendered) scrollMessages();
+  });
+}
+
+function flushStreamingBubble(bubble) {
+  if (state.streamRenderFrame) cancelAnimationFrame(state.streamRenderFrame);
+  state.streamRenderFrame = 0;
+  const pending = Array.from(state.pendingStreamBubbles);
+  state.pendingStreamBubbles.clear();
+  pending.forEach((target) => {
+    if (!target || !target.isConnected || target === bubble) return;
+    renderBubble(target);
+  });
+  if (bubble && bubble.isConnected) renderBubble(bubble);
+}
+
 /* ---------- tool blocks ---------- */
 function isFileChangeTool(name) {
   return name === "write_file" || name === "apply_patch";
@@ -1001,7 +1099,7 @@ function openSettings() {
   $("settingsView").hidden = false;
   $("settingsBtn").classList.add("active");
   applyTheme(document.documentElement.dataset.theme);
-  if (!state.capabilityReport) loadCapabilityDiagnostics();
+  loadCapabilityDiagnostics();
 }
 
 function closeSettings() {
@@ -1022,11 +1120,15 @@ function diagnosticRows(items, renderer, emptyText) {
 function renderCapabilityDiagnostics(report) {
   state.capabilityReport = report;
   const summary = report.summary || {};
+  const stablePromptTokens = (summary.fixedSystemPromptTokenEstimate || 0)
+    + (summary.instructionPromptTokenEstimate || 0)
+    + (summary.skillPromptTokenEstimate || 0);
   $("diagnosticsSummary").innerHTML = [
     diagnosticMetric("问题", `${summary.errors || 0} 错误 · ${summary.warnings || 0} 警告`),
     diagnosticMetric("技能", `${summary.skills || 0} 生效 · ${summary.shadowedSkills || 0} 被覆盖`),
     diagnosticMetric("工具", `${summary.enabledTools || 0} / ${summary.tools || 0} 可用`),
-    diagnosticMetric("固定提示词", `约 ${summary.fixedSystemPromptTokenEstimate || 0} tokens`),
+    diagnosticMetric("稳定提示词", `约 ${stablePromptTokens} tokens`),
+    diagnosticMetric("工具契约", `约 ${summary.toolSchemaTokenEstimate || 0} tokens`),
   ].join("");
 
   const issues = report.issues || [];
@@ -1035,6 +1137,14 @@ function renderCapabilityDiagnostics(report) {
       <span class="diagnosticSeverity">${escapeHtml(item.severity || "info")}</span>
       <div><strong>${escapeHtml(item.code || item.name || "诊断")}</strong><p>${escapeHtml(item.message || "")}</p></div>
     </div>`, "未发现问题");
+
+  const instructions = report.instructions?.entries || [];
+  $("diagnosticsInstructionCount").textContent = String(instructions.length);
+  $("diagnosticsInstructions").innerHTML = diagnosticRows(instructions, (instruction) => `<div class="diagnosticRow">
+    <span class="diagnosticName">${escapeHtml(instruction.name || "")}</span>
+    <span class="diagnosticDetail">${escapeHtml((instruction.path || "") + ` · 约 ${instruction.promptTokenEstimate || 0} tokens`)}</span>
+    <span class="diagnosticMeta ${instruction.truncated ? "warn" : "ok"}">${instruction.truncated ? "已截断" : "已加载"}</span>
+  </div>`, "未发现项目指令文件");
 
   const skills = report.skills?.entries || [];
   $("diagnosticsSkillCount").textContent = String(skills.length);
@@ -1095,8 +1205,10 @@ function initialFilePath(name, args) {
     const match = text.match(/(?:^|\s)path=(.*?)(?=\s+(?:content|max_bytes|timeout)=|$)/);
     if (match && match[1]) return match[1].trim();
   }
-  const patchPath = text.match(/\+\+\+\s+b\/([^\\]+?)(?:\\n|$)/);
-  return patchPath && patchPath[1] ? patchPath[1].trim() : "正在确定文件…";
+  const patchPath = text.match(/^\+\+\+\s+(?:b\/)?([^\t\r\n]+?)(?:\t.*)?$/m)
+    || text.match(/\+\+\+\s+(?:b\/)?(.+?)(?:\\r)?\\n/);
+  const path = patchPath && patchPath[1] ? patchPath[1].trim() : "";
+  return path && path !== "/dev/null" ? path : "正在确定文件…";
 }
 
 function parseToolPayload(output) {
@@ -1108,7 +1220,7 @@ function parseToolPayload(output) {
   }
 }
 
-function renderFileDiff(diff) {
+function renderFileDiff(diff, ui = {}) {
   const text = String(diff || "");
   if (!text.trim()) return '<div class="filePending">文件内容没有发生变化。</div>';
   let oldLine = null;
@@ -1118,7 +1230,13 @@ function renderFileDiff(diff) {
     let mark = " ";
     let body = line;
     let lineNumber = "";
-    if (line.startsWith("+++ ") || line.startsWith("--- ") || line.startsWith("diff ") || line.startsWith("index ")) {
+    if (/^\.\.\. \d+ diff lines omitted \.\.\.$/.test(line)) {
+      type = "meta";
+      // The bounded payload does not describe how many omitted rows belonged to
+      // each side. Stop numbering until another hunk header gives a real position.
+      oldLine = null;
+      newLine = null;
+    } else if (line.startsWith("+++ ") || line.startsWith("--- ") || line.startsWith("diff ") || line.startsWith("index ")) {
       type = "meta";
     } else if (line.startsWith("@@")) {
       type = "hunk";
@@ -1161,7 +1279,11 @@ function renderFileDiff(diff) {
   const rows = ordered.map(({ type, mark, body, lineNumber }) =>
     `<div class="diffLine ${type}"><span class="diffMark"><span class="diffNumber">${escapeHtml(lineNumber)}</span><span class="diffSign">${escapeHtml(mark)}</span></span><code>${escapeHtml(body || " ")}</code></div>`
   ).join("");
-  return `<div class="diffTable">${rows}</div>`;
+  const additions = Number(ui.additions || 0);
+  const deletions = Number(ui.deletions || 0);
+  const omitted = Number(ui.omitted_lines || 0);
+  const summary = `<div class="diffSummary"><span class="diffAddCount">+${additions}</span><span class="diffDelCount">-${deletions}</span>${ui.truncated ? `<span class="diffTruncated">中间 ${omitted} 行未显示</span>` : ""}</div>`;
+  return `${summary}<div class="diffTable">${rows}</div>`;
 }
 
 function addFileChangeEvent(name, args) {
@@ -1231,11 +1353,12 @@ function completeToolBlock(block, name, output) {
     const path = ui && (ui.path || (Array.isArray(ui.paths) ? ui.paths.join("、") : ""));
     if (path) block.querySelector(".filePath").textContent = path;
     const verb = block.querySelector(".fileVerb");
-    if (verb && ui) verb.textContent = ui.operation === "created" ? "创建文件" : "修改文件";
+    if (verb && failed) verb.textContent = name === "write_file" ? "写入失败" : "修改失败";
+    else if (verb && ui) verb.textContent = ui.operation === "created" ? "创建文件" : "修改文件";
     const diff = ui ? ui.diff : "";
     const fallback = payload && payload.output ? String(payload.output) : String(output || "");
     block.querySelector(".fileDiff").innerHTML = diff
-      ? renderFileDiff(diff)
+      ? renderFileDiff(diff, ui)
       : `<div class="filePending">${escapeHtml(fallback || "没有可显示的差异。")}</div>`;
     return;
   }
@@ -1393,6 +1516,7 @@ function iconFor(kind) {
 }
 
 function scrollMessages(force = false) {
+  if (state.suppressReplayScroll) return;
   const box = $("messages");
   if (force || state.stickToBottom) box.scrollTop = box.scrollHeight;
 }
@@ -1657,7 +1781,7 @@ async function updateRuntime() {
 }
 
 $("send").onclick = async () => {
-  if (state.running) return;
+  if (state.running || state.resuming) return;
   const raw = $("prompt").value.trim();
   if (!raw && !state.attachments.length && !state.images.length) return;
   let outgoing = raw;
@@ -2068,31 +2192,47 @@ $("saveSettings").onclick = async (event) => {
   toast("设置已保存");
 };
 $("newSession").onclick = async () => {
-  const result = await window.pywebview.api.new_session();
-  state.currentAssistant = null;
-  state.currentTool = null;
-  state.currentSessionId = "";
-  state.activeTurnId = "";
-  state.pendingOutbound = false;
-  state.pendingOutboundId = "";
+  const requestId = ++state.resumeRequestId;
+  state.resuming = true;
   syncRunControls();
-  state.suppressLocalUserEcho = false;
-  delete state.goalsBySession[state.goalDraftId];
-  delete state.dismissedGoalSnapshots[state.goalDraftId];
-  state.goalDraftId = `__draft__:${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  saveGoalStore();
-  syncActiveGoalFromStore();
-  renderGoalDock();
-  if (state.boot) state.boot.sessionId = null;
-  state.events = 0;
-  state.stickToBottom = true;
-  setText("eventCount", "0");
-  $("messages").innerHTML = '<div class="empty intro"><img class="introLogo" src="app-icon.png" alt=""><h1>新对话已创建</h1><p>输入任务开始，输入 <kbd>/</kbd> 调出命令。工具调用与输出会内联展开。</p></div>';
-  setText("eventMirror", "工具、思考和子代理事件会显示在这里。");
-  setText("sessionState", "新会话");
-  setSaveState("idle", "新会话", "未保存");
-  updateContextBadge(result.context || null);
-  refreshSessions();
+  try {
+    const result = await window.pywebview.api.new_session(requestId);
+    if (requestId !== state.resumeRequestId) return;
+    if (!result || !result.ok) throw new Error((result && result.error) || "后端没有创建新会话");
+    if (result.activated === false) throw new Error(result.error || "新会话没有激活");
+    state.currentAssistant = null;
+    state.currentTool = null;
+    state.currentSessionId = "";
+    state.activeTurnId = "";
+    state.pendingOutbound = false;
+    state.pendingOutboundId = "";
+    state.suppressLocalUserEcho = false;
+    delete state.goalsBySession[state.goalDraftId];
+    delete state.dismissedGoalSnapshots[state.goalDraftId];
+    state.goalDraftId = `__draft__:${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    saveGoalStore();
+    syncActiveGoalFromStore();
+    renderGoalDock();
+    if (state.boot) state.boot.sessionId = null;
+    state.events = 0;
+    state.stickToBottom = true;
+    setText("eventCount", "0");
+    $("messages").innerHTML = '<div class="empty intro"><img class="introLogo" src="app-icon.png" alt=""><h1>新对话已创建</h1><p>输入任务开始，输入 <kbd>/</kbd> 调出命令。工具调用与输出会内联展开。</p></div>';
+    setText("eventMirror", "工具、思考和子代理事件会显示在这里。");
+    setText("sessionState", "新会话");
+    setSaveState("idle", "新会话", "未保存");
+    updateContextBadge(result.context || null);
+    refreshSessions();
+  } catch (error) {
+    if (requestId === state.resumeRequestId) {
+      toast(`新建会话失败：${String(error && error.message ? error.message : error)}`);
+    }
+  } finally {
+    if (requestId === state.resumeRequestId) {
+      state.resuming = false;
+      syncRunControls();
+    }
+  }
 };
 $("refreshSessions").onclick = refreshSessions;
 $("contextBadge").onclick = (e) => {
@@ -2105,11 +2245,11 @@ document.addEventListener("click", (e) => {
   if (pop && !pop.hidden && !e.target.closest("#ctxPopover") && !e.target.closest("#contextBadge")) pop.hidden = true;
 });
 // keep the sidebar list fresh without a manual click
-window.addEventListener("focus", () => { if (!state.running) refreshSessions(); });
-document.addEventListener("visibilitychange", () => { if (!document.hidden && !state.running) refreshSessions(); });
+window.addEventListener("focus", () => { if (!state.running && !state.resuming) refreshSessions(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !state.running && !state.resuming) refreshSessions(); });
 // several quick polls right after launch (api may attach late), then a steady beat
 [600, 1500, 3000].forEach((t) => setTimeout(() => refreshSessions(), t));
-setInterval(() => { if (!state.running && !document.hidden) refreshSessions(); }, 5000);
+setInterval(() => { if (!state.running && !state.resuming && !document.hidden) refreshSessions(); }, 5000);
 
 /* ---------- conversation menu (top-right ⋮ — copy ID / rename / branch / new / delete) ---------- */
 function currentSessionId() {

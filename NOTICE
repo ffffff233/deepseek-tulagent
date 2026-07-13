@@ -15,6 +15,12 @@ visibility, path redaction, and explicit unsupported-capability reporting at the
 same reference commit. DeepSeekFathom's implementation remains independently
 written and currently reports MCP, plugin packages, and Hooks as not integrated.
 
+The v0.1.15 runtime work also studied Reasonix's on-demand skill bodies,
+hierarchical instruction discovery, stable prompt-prefix preservation, native
+tool contracts, and lightweight session-list indexing at the same reference
+commit. The Python provider adapters, session format, safety limits, and desktop
+rendering remain independently implemented for DeepSeekFathom.
+
 Reasonix is distributed under the MIT License:
 
 Copyright (c) 2026 Reasonix Contributors

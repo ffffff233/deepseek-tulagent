@@ -129,6 +129,8 @@ class DesktopApi:
         # Window public makes it walk window.native and can deadlock WebView2 startup.
         self._window: Any = None
         self._lock = threading.Lock()
+        self._session_navigation_lock = threading.Lock()
+        self._session_navigation_id = 0
         self._running = False
         self._cancel_requested = False
         self._approvals: dict[str, dict[str, Any]] = {}
@@ -386,20 +388,49 @@ class DesktopApi:
             self.session = None
         return {"ok": True, "sessions": self.sessions(), "context": self.context_status()}
 
-    def resume(self, session_id: str) -> dict[str, Any]:
-        self.session = SessionStore(self.settings.workspace).load(session_id)
-        self._restore_context_usage(session_id)
-        self._restore_session_usage(session_id)
-        return {
-            "ok": True,
-            "sessionId": self.session.session_id,
-            "messages": serialize_messages(self.session.messages),
-            "context": self.context_status(),
-        }
+    def resume(self, session_id: str, navigation_id: int | None = None) -> dict[str, Any]:
+        loaded = SessionStore(self.settings.workspace).load(session_id)
+        with self._session_navigation_lock:
+            requested = self._coerce_navigation_id(navigation_id)
+            if requested is not None and requested < self._session_navigation_id:
+                return {"ok": False, "stale": True, "activated": False, "sessionId": loaded.session_id}
+            self._session_navigation_id = requested if requested is not None else self._session_navigation_id + 1
+            self.session = loaded
+            self._restore_context_usage(session_id)
+            self._restore_session_usage(session_id)
+            return {
+                "ok": True,
+                "activated": True,
+                "navigationId": self._session_navigation_id,
+                "sessionId": loaded.session_id,
+                "messages": serialize_messages(loaded.messages),
+                "context": self.context_status(),
+            }
 
-    def new_session(self) -> dict[str, Any]:
-        self.session = None
-        return {"ok": True, "sessionId": None, "messages": [], "context": self.context_status()}
+    def new_session(self, navigation_id: int | None = None) -> dict[str, Any]:
+        with self._session_navigation_lock:
+            requested = self._coerce_navigation_id(navigation_id)
+            if requested is not None and requested < self._session_navigation_id:
+                return {"ok": False, "stale": True, "activated": False, "sessionId": self.session.session_id if self.session else None}
+            self._session_navigation_id = requested if requested is not None else self._session_navigation_id + 1
+            self.session = None
+            return {
+                "ok": True,
+                "activated": True,
+                "navigationId": self._session_navigation_id,
+                "sessionId": None,
+                "messages": [],
+                "context": self.context_status(),
+            }
+
+    @staticmethod
+    def _coerce_navigation_id(value: int | None) -> int | None:
+        if value is None:
+            return None
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return None
 
     def compact(self) -> dict[str, Any]:
         if self._running:
@@ -973,23 +1004,71 @@ class DesktopApi:
                     self._cancel_requested and self._active_turn_id == turn_id
                 )
 
+            delta_parts: list[str] = []
+            delta_chars = 0
+            last_delta_emit = time.monotonic()
+
+            def flush_deltas() -> None:
+                nonlocal delta_chars, last_delta_emit
+                if not delta_parts:
+                    return
+                text = "".join(delta_parts)
+                delta_parts.clear()
+                delta_chars = 0
+                last_delta_emit = time.monotonic()
+                emit_turn("assistant:delta", {"text": text})
+
             try:
                 emit_turn("turn:start", {"prompt": prompt, "thinking": self.thinking.name})
 
                 def delta(text: str) -> None:
+                    nonlocal delta_chars
                     if is_cancelled():
                         raise RuntimeError("turn cancelled")
-                    emit_turn("assistant:delta", {"text": text})
+                    if not text:
+                        return
+                    delta_parts.append(text)
+                    delta_chars += len(text)
+                    if delta_chars >= 4096 or time.monotonic() - last_delta_emit >= 0.033:
+                        flush_deltas()
 
                 def final(text: str) -> None:
+                    nonlocal delta_chars
                     if is_cancelled():
                         raise RuntimeError("turn cancelled")
+                    if text:
+                        flush_deltas()
+                    else:
+                        # An empty final retracts provisional prose before a tool call.
+                        # Do not flash a buffered claim immediately before removing it.
+                        delta_parts.clear()
+                        delta_chars = 0
                     emit_turn("assistant:final", {"text": text})
 
                 def event(text: str) -> None:
                     if is_cancelled():
                         raise RuntimeError("turn cancelled")
+                    flush_deltas()
                     emit_turn("agent:event", parse_agent_event(text))
+
+                context_tokens_hint: int | None = None
+                if prepared_messages is None:
+                    snapshot = self._context_by_session.get(str(turn_session_id))
+                    if snapshot and snapshot.get("model") == self.settings.model:
+                        local_estimate = estimate_message_tokens(turn_session.messages)
+                        baseline = int(snapshot.get("currentEstimate", local_estimate))
+                        calibration = float(snapshot.get("calibration") or 1.0)
+                        if not 0.2 <= calibration <= 5.0:
+                            calibration = 1.0
+                        pending_prompt = estimate_message_tokens(
+                            [Message("user", prompt, images=list(images or []))]
+                        )
+                        context_tokens_hint = max(
+                            0,
+                            int(snapshot.get("tokens") or 0)
+                            + round((local_estimate - baseline) * calibration)
+                            + pending_prompt,
+                        )
 
                 client = DeepSeekClient(self.settings)
                 self._active_client = client
@@ -1001,8 +1080,10 @@ class DesktopApi:
                         thinking=self.thinking.name,
                         client=client,
                         approve=(lambda _n, _a: True) if self.mode in {"root", "yolo"} else self._request_approval,
+                        context_tokens_hint=context_tokens_hint,
                     )
                     result = runner.run(prompt, stream=True, images=images or [], on_delta=delta, on_final=final, on_event=event, should_cancel=is_cancelled, session=turn_session, goal=goal)
+                    flush_deltas()
                     result_session_id = result.session_id
                 finally:
                     self._last_usage = client.usage
@@ -1129,7 +1210,8 @@ class DesktopApi:
         # Match the provider's actual context snapshot: the request prompt plus the
         # completion it just produced. Local message estimates are used only for text
         # appended after that snapshot, never instead of exact completion usage.
-        adjusted = max(0, request_tokens + usage.output_tokens)
+        reconstructed_delta = max(0, request_tokens - usage.input_tokens)
+        adjusted = max(0, request_tokens + usage.output_tokens, usage.total_tokens + reconstructed_delta)
         calibration = 1.0
         if not underreported and request_estimate > 0:
             candidate = request_tokens / request_estimate
@@ -1148,7 +1230,7 @@ class DesktopApi:
         SessionStore(self.settings.workspace).update_metadata(
             session_id,
             context_usage={
-                "schema": 3,
+                "schema": 4,
                 "model": self.settings.model,
                 "tokens": adjusted,
                 "current_estimate": current_estimate,
@@ -1175,7 +1257,7 @@ class DesktopApi:
         # resurrect those snapshots. v2 is migrated by adding its exact completion
         # usage; v3 stores the full prompt+completion snapshot directly.
         schema = int(stored.get("schema") or 0)
-        if schema not in (2, 3):
+        if schema not in (2, 3, 4):
             self._context_by_session.pop(session_id, None)
             return
         try:
@@ -1392,52 +1474,50 @@ def serialize_messages(messages: list[Message]) -> list[dict[str, Any]]:
     (with the surrounding prose split out) and paired with the following TOOL_RESULT /
     SUBAGENT_RESULT so a resumed conversation shows tool cards instead of raw JSON.
     """
-    from ..agent import is_tool_intro_only, parse_tool_call, strip_tool_call_display, summarize_arguments
+    from ..agent import is_tool_intro_only, parse_tool_calls, strip_tool_call_display, summarize_arguments
 
     visible: list[dict[str, Any]] = []
-    pending_tool: dict[str, Any] | None = None
+    pending_tools: list[dict[str, Any]] = []
 
-    def finish_orphaned_tool() -> None:
-        nonlocal pending_tool
-        if pending_tool is None:
-            return
-        pending_tool["output"] = json.dumps(
-            {"ok": False, "output": "没有执行结果，已按未执行处理。"},
-            ensure_ascii=False,
-        )
-        pending_tool["orphaned"] = True
-        pending_tool = None
+    def finish_orphaned_tools() -> None:
+        while pending_tools:
+            pending_tool = pending_tools.pop(0)
+            pending_tool["output"] = json.dumps(
+                {"ok": False, "output": "没有执行结果，已按未执行处理。"},
+                ensure_ascii=False,
+            )
+            pending_tool["orphaned"] = True
 
     for idx, message in enumerate(messages):
         content = message.content
         if content.startswith(("TOOL_RESULT", "SUBAGENT_RESULT", "USER_ANSWER")):
-            if pending_tool is not None:
+            if pending_tools:
                 _, _, body = content.partition("\n")
-                pending_tool["output"] = body
-                pending_tool = None
+                pending_tools.pop(0)["output"] = body
             continue
-        finish_orphaned_tool()
+        finish_orphaned_tools()
         if message.role not in {"user", "assistant"}:
             continue
         if message.role == "assistant":
-            tool_call = parse_tool_call(content)
-            if tool_call:
-                name, arguments = tool_call
+            tool_calls = parse_tool_calls(content)
+            if tool_calls:
                 prose = strip_tool_call_display(content)
                 if prose and not is_tool_intro_only(prose):
                     # pre-tool narration — not a standalone reply, carries no retry/branch
                     visible.append({"role": "assistant", "content": prose, "srcIndex": idx, "intermediate": True})
-                pending_tool = {
-                    "role": "tool",
-                    "name": name,
-                    "detail": summarize_arguments(arguments),
-                    "output": "",
-                    "srcIndex": idx,
-                }
-                visible.append(pending_tool)
+                for name, arguments in tool_calls:
+                    pending_tool = {
+                        "role": "tool",
+                        "name": name,
+                        "detail": summarize_arguments(arguments),
+                        "output": "",
+                        "srcIndex": idx,
+                    }
+                    pending_tools.append(pending_tool)
+                    visible.append(pending_tool)
                 continue
         visible.append({"role": message.role, "content": content, "srcIndex": idx})
-    finish_orphaned_tool()
+    finish_orphaned_tools()
     return visible
 
 
@@ -1461,12 +1541,16 @@ def estimate_cached_context_tokens(messages: list[Message]) -> int:
 def ensure_session_title(workspace: Path, session: Session) -> None:
     store = SessionStore(workspace)
     meta = store.metadata(session.session_id)
-    if meta.get("title"):
-        return
     first_user = next((message.content for message in session.messages if message.role == "user"), "")
     from ..session import session_title_from_text
 
-    store.update_metadata(session.session_id, title=session_title_from_text(first_user))
+    changes: dict[str, Any] = {
+        "created_at": session.created_at,
+        "message_count": len(session.messages),
+    }
+    if not meta.get("title") and first_user:
+        changes["title"] = session_title_from_text(first_user)
+    store.update_metadata(session.session_id, **changes)
 
 
 def parse_agent_event(text: str) -> dict[str, str]:
