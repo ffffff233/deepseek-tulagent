@@ -31,6 +31,15 @@ const state = {
   activeGoal: "",
   pendingNativeDrop: null,
   capabilityReport: null,
+  extensionReport: null,
+  extensionTab: "mcp",
+  extensionBusy: false,
+  mcpEditorBusy: false,
+  mcpEditorOriginalName: "",
+  mcpEditorOriginalConfig: null,
+  mcpEditorTransport: "http",
+  mcpEditorRequestId: 0,
+  branching: false,
   resumeRequestId: 0,
   resuming: false,
   suppressReplayScroll: false,
@@ -63,6 +72,8 @@ const ICONS = {
   copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   refresh: '<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/>',
   pen: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+  eye: '<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="2.5"/>',
+  eyeOff: '<path d="m3 3 18 18"/><path d="M10.6 6.2A10.7 10.7 0 0 1 12 6c6.5 0 10 6 10 6a17 17 0 0 1-2.1 2.8"/><path d="M6.6 6.6C3.6 8.4 2 12 2 12s3.5 6 10 6c1.7 0 3.2-.4 4.4-1"/><path d="M10.2 10.2a2.5 2.5 0 0 0 3.6 3.6"/>',
 };
 function icon(name, size = 14) {
   return `<svg class="ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
@@ -149,9 +160,27 @@ function installDemoApi() {
         ] },
         issues: [
           { severity: "info", code: "skill.shadowed", name: "repo-debug", message: "同名技能由更高优先级项目路径生效。" },
-          { severity: "info", code: "extensions.not_integrated", name: "mcp-plugins-hooks", message: "当前版本尚未集成 MCP、插件包和 Hooks。" },
         ],
       }),
+      extension_status: async () => ({
+        mcp: [
+          { name: "workspace-tools", state: "connected", connected: true, toolCount: 4, protocolVersion: "2025-03-26", message: "连接正常", sourceScope: "global", source: "用户配置" },
+        ],
+        plugins: [
+          { name: "repository-workflow", version: "1.0.0", enabled: true, source: "用户", path: "~/.deepseek-tulagent/plugins/repository-workflow", capabilities: { skills: 2, mcp: 1, hooks: 1 } },
+        ],
+        hooks: [
+          { name: "format-after-write", event: "after_tool", enabled: true, source: "项目插件", timeout: 15, message: "等待触发" },
+        ],
+        issues: [],
+      }),
+      refresh_extensions: async () => window.pywebview.api.extension_status(),
+      extension_action: async (data = {}) => {
+        if (data.kind === "mcp" && data.action === "get") {
+          return { ok: true, config: { type: "http", url: "https://example.com/mcp", headers: {}, enabled: true } };
+        }
+        return { ok: true };
+      },
       branch: async () => ({ ok: true, sessionId: "branch-0001", messages: [
         { role: "user", content: "检查项目并修复问题" }, { role: "assistant", content: "已读取项目结构，下一步运行测试。" },
       ] }),
@@ -220,6 +249,7 @@ window.DeepSeekDesktop = {
       updateContextBadge({ status: "active", label: "运行中" });
       if (tid) state.activeTurnId = tid;
       state.pendingOutbound = false;
+      state.pendingOutboundId = "";
       if (sid) {
         state.currentSessionId = sid;
         if (state.boot) state.boot.sessionId = sid;
@@ -236,7 +266,13 @@ window.DeepSeekDesktop = {
       if (state.suppressLocalUserEcho) { state.suppressLocalUserEcho = false; }
       else {
         const userRow = addMessage("user", payload.prompt);
-        if (state.pendingVersions) state.pendingVersionUser = userRow;
+        if (bindPendingVersionScope(sid || currentSessionId(), tid)) {
+          state.pendingVersionUser = {
+            element: userRow,
+            sessionId: sid || currentSessionId(),
+            turnId: tid || state.activeTurnId || "",
+          };
+        }
       }
       state.currentAssistant = null;
       state.currentTool = null;
@@ -340,13 +376,15 @@ window.DeepSeekDesktop = {
       migrateDraftGoal(doneSid);
       if (!tid || tid === state.activeTurnId) state.activeTurnId = "";
       state.pendingOutbound = false;
+      state.pendingOutboundId = "";
       setText("sessionState", doneSid ? doneSid.slice(0, 8) : "新会话");
       if (!wasSuppressed) setSaveState("saved", "已保存", doneSid || "未保存");
       markMessageActions();
       // if this turn was a retry, attach the ‹ i/n › version pager to the retried
       // USER message (Codex-style: versions live on your message, not the reply)
-      if (!wasSuppressed) attachVersionPager();
-      clearVersionInsertMarker();
+      if (!wasSuppressed) attachVersionPager(doneSid, tid);
+      else resetPendingVersionState(doneSid, tid);
+      clearVersionInsertMarker(doneSid, tid);
       refreshContextBadge().catch(() => {});
     }
     if (event === "turn:error") {
@@ -358,6 +396,7 @@ window.DeepSeekDesktop = {
       state.suppressStream = state.suppressedTurnIds.size > 0;
       if (!tid || tid === state.activeTurnId) state.activeTurnId = "";
       state.pendingOutbound = false;
+      state.pendingOutboundId = "";
       setRunning(false);
       dismissApproval();
       const summary = payload.summary || payload.error || "运行失败";
@@ -368,7 +407,8 @@ window.DeepSeekDesktop = {
         setSaveState("error", "出错", "查看上方错误卡片");
         toast(summary);
       }
-      clearVersionInsertMarker();
+      resetPendingVersionState(sid || currentSessionId(), tid);
+      clearVersionInsertMarker(sid || currentSessionId(), tid);
     }
     if (event === "turn:cancel") {
       dismissApproval();
@@ -382,6 +422,7 @@ window.DeepSeekDesktop = {
       state.suppressStream = state.suppressedTurnIds.size > 0;
       if (!tid || tid === state.activeTurnId) state.activeTurnId = "";
       state.pendingOutbound = false;
+      state.pendingOutboundId = "";
       setRunning(false);
       dismissApproval();
       restoreTranscriptFromEvent(payload);
@@ -389,7 +430,8 @@ window.DeepSeekDesktop = {
         addEvent("done", "已取消", payload.message || "");
         setSaveState("idle", "已取消", state.currentSessionId || "未保存");
       }
-      clearVersionInsertMarker();
+      resetPendingVersionState(sid || currentSessionId(), tid);
+      clearVersionInsertMarker(sid || currentSessionId(), tid);
     }
   }
 };
@@ -399,7 +441,7 @@ function restoreTranscriptFromEvent(payload) {
   const box = $("messages");
   box.innerHTML = "";
   payload.messages.forEach(replayMessage);
-  state.pendingVersions = null;
+  resetPendingVersionState();
   state.currentAssistant = null;
   state.currentTool = null;
   markMessageActions();
@@ -574,6 +616,10 @@ function syncRunControls() {
   $("cancel").hidden = !state.running || !state.activeTurnId;
   $("prompt").disabled = state.resuming;
   $("attach").disabled = state.resuming;
+  document.querySelectorAll('.msgAct.branch, .convItem[data-act="branch"]').forEach((button) => {
+    button.disabled = state.running || state.resuming || state.branching;
+  });
+  syncExtensionControls();
 }
 
 function goalStorageKey() {
@@ -851,6 +897,7 @@ async function refreshSessions() {
         state.activeTurnId = "";
         state.pendingOutbound = false;
         state.pendingOutboundId = "";
+        resetPendingVersionState();
         state.suppressLocalUserEcho = false;
         state.stickToBottom = true;
         state.suppressReplayScroll = true;
@@ -1007,8 +1054,10 @@ function replayMessage(entry, sessionId = currentSessionId()) {
 
 function appendTranscriptNode(node) {
   const box = $("messages");
-  const marker = state.pendingVersionMarker;
-  if (marker && marker.isConnected && marker.parentNode === box) {
+  const markerState = state.pendingVersionMarker;
+  const marker = markerState && markerState.element;
+  if (marker && marker.isConnected && marker.parentNode === box
+      && versionScopeMatches(markerState, currentSessionId(), state.activeTurnId)) {
     box.insertBefore(node, marker);
   } else {
     box.append(node);
@@ -1100,6 +1149,7 @@ function openSettings() {
   $("settingsBtn").classList.add("active");
   applyTheme(document.documentElement.dataset.theme);
   loadCapabilityDiagnostics();
+  loadExtensions();
 }
 
 function closeSettings() {
@@ -1117,6 +1167,488 @@ function diagnosticRows(items, renderer, emptyText) {
   return items.map(renderer).join("");
 }
 
+function extensionList(value, nestedKeys = []) {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== "object") return [];
+  for (const key of nestedKeys) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+  return Object.entries(value)
+    .filter(([, item]) => item && typeof item === "object" && !Array.isArray(item))
+    .map(([name, item]) => ({ name, ...item }));
+}
+
+function extensionSummaryItem(label, value) {
+  return `<div class="extensionSummaryItem"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+}
+
+function extensionState(value, connected, enabled = true) {
+  const raw = String(value || "").toLowerCase();
+  if (!enabled || raw === "disabled") return { label: "已禁用", className: "" };
+  if (connected || ["connected", "ready", "running", "active", "ok"].includes(raw)) return { label: "已连接", className: "ok" };
+  if (["connecting", "starting", "loading"].includes(raw)) return { label: "连接中", className: "warn" };
+  if (["error", "failed", "crashed"].includes(raw)) return { label: "异常", className: "error" };
+  return { label: "未连接", className: "" };
+}
+
+function extensionCapabilityTags(capabilities) {
+  if (!capabilities) return "";
+  const entries = Array.isArray(capabilities)
+    ? capabilities.map((value) => [String(value), ""])
+    : Object.entries(capabilities).filter(([, value]) => value !== false && value != null && value !== 0);
+  if (!entries.length) return "";
+  return `<div class="extensionCapabilities">${entries.map(([name, value]) => {
+    const suffix = value === true || value === "" ? "" : ` ${Array.isArray(value) ? value.length : value}`;
+    return `<span class="extensionCapability">${escapeHtml(name + suffix)}</span>`;
+  }).join("")}</div>`;
+}
+
+function extensionEmpty(text) {
+  return `<div class="diagnosticEmpty">${escapeHtml(text)}</div>`;
+}
+
+function extensionScopeLabel(value) {
+  return ({ user: "用户", project: "项目", official: "官方", global: "全局", plugin: "插件" })[value] || value || "扩展";
+}
+
+function renderExtensionReport(rawReport) {
+  const nestedReport = rawReport && [rawReport.extensions, rawReport.report, rawReport.status]
+    .find((value) => value && typeof value === "object");
+  const report = nestedReport || rawReport || {};
+  state.extensionReport = report;
+  const mcpReport = report.mcp && typeof report.mcp === "object" && !Array.isArray(report.mcp)
+    ? report.mcp
+    : {};
+  const hooksReport = report.hooks && typeof report.hooks === "object" && !Array.isArray(report.hooks)
+    ? report.hooks
+    : {};
+  const mcp = extensionList(report.mcp || report.mcpServers, ["servers", "entries", "services"]);
+  const plugins = extensionList(report.plugins, ["entries", "items"]);
+  const hooks = extensionList(report.hooks, ["entries", "items"]);
+  const connected = mcp.filter((item) => item.connected || ["connected", "ready", "running"].includes(String(item.state || "").toLowerCase())).length;
+  const enabledPlugins = plugins.filter((item) => item.enabled !== false).length;
+  const enabledHooks = hooks.filter((item) => item.enabled !== false).length;
+  $("extensionsSummary").innerHTML = [
+    extensionSummaryItem("MCP 服务", `${connected} / ${mcp.length} 已连接`),
+    extensionSummaryItem("插件", `${enabledPlugins} / ${plugins.length} 已启用`),
+    extensionSummaryItem("Hooks", `${enabledHooks} / ${hooks.length} 已启用`),
+  ].join("");
+
+  const projectMcpTrust = mcpReport.projectDefined && !mcpReport.projectTrusted
+    ? `<div class="extensionTrustRow">
+        <div><strong>项目 MCP 尚未信任</strong><span>确认后才会启动当前项目声明的 MCP 服务。</span></div>
+        <button type="button" class="ghost small" data-extension-kind="mcp" data-extension-action="trust_project">信任项目 MCP</button>
+      </div>`
+    : "";
+  const mcpRows = mcp.length ? mcp.map((server) => {
+    const available = server.enabled !== false && server.trusted !== false && server.active !== false;
+    const status = extensionState(server.state, server.connected, available);
+    const name = String(server.name || server.id || "未命名服务");
+    const serverInfo = server.serverInfo && typeof server.serverInfo === "object"
+      ? [server.serverInfo.name, server.serverInfo.version].filter(Boolean).join(" ")
+      : "";
+    const detail = [
+      server.message,
+      server.transport ? `传输 ${server.transport}` : "",
+      server.protocolVersion ? `协议 ${server.protocolVersion}` : "",
+      serverInfo,
+      Number.isFinite(Number(server.toolCount)) ? `${Number(server.toolCount)} 个工具` : "",
+      Number(server.pendingCalls || 0) > 0 ? `${Number(server.pendingCalls)} 个调用处理中` : "",
+      server.lastError || server.error,
+      server.stderr ? `stderr: ${String(server.stderr).slice(-500)}` : "",
+    ].filter(Boolean).join(" · ");
+    const action = server.connected ? "disconnect" : "connect";
+    const userOwned = ["global", "user"].includes(String(server.sourceScope || "").toLowerCase()) && !server.plugin;
+    return `<div class="extensionRow">
+      <div class="extensionIdentity"><strong>${escapeHtml(name)}</strong><span>${escapeHtml([extensionScopeLabel(server.sourceScope), server.source].filter(Boolean).join(" · ") || "MCP 配置")}</span></div>
+      <div class="extensionDetail">${escapeHtml(detail || (available ? "等待连接" : "配置未启用或项目尚未信任"))}${extensionCapabilityTags(server.capabilities || (Array.isArray(server.tools) ? { 工具: server.tools.length } : null))}</div>
+      <div class="extensionControls"><span class="extensionStatus ${status.className}">${status.label}</span>
+        ${server.connected ? `<button type="button" class="ghost small" data-extension-kind="mcp" data-extension-name="${escapeHtml(name)}" data-extension-action="reconnect">重连</button>` : ""}
+        <button type="button" class="ghost small" data-extension-kind="mcp" data-extension-name="${escapeHtml(name)}" data-extension-action="${action}"${status.label === "连接中" || !available ? " disabled" : ""}>${server.connected ? "断开" : "连接"}</button>
+        ${userOwned ? `<button type="button" class="ghost small extensionIconAction" data-mcp-edit="${escapeHtml(name)}" title="编辑 MCP 服务" aria-label="编辑 ${escapeHtml(name)}">${icon("pen", 13)}</button>
+        <button type="button" class="ghost small extensionIconAction danger" data-mcp-delete="${escapeHtml(name)}" title="删除 MCP 服务" aria-label="删除 ${escapeHtml(name)}">${icon("trash", 13)}</button>` : ""}
+      </div>
+    </div>`;
+  }).join("") : extensionEmpty("未发现 MCP 服务。可在用户或项目配置中添加服务后刷新。");
+  $("mcpExtensionRows").innerHTML = projectMcpTrust + mcpRows;
+
+  $("pluginExtensionRows").innerHTML = plugins.length ? plugins.map((plugin) => {
+    const name = String(plugin.name || plugin.id || "未命名插件");
+    const enabled = plugin.enabled !== false;
+    const pluginCapabilities = plugin.capabilities || {
+      技能: plugin.skills,
+      指令: plugin.instructions,
+      MCP: plugin.mcpServers,
+      Hooks: plugin.hooks,
+    };
+    const warning = Array.isArray(plugin.warnings) ? plugin.warnings.join("；") : plugin.warnings;
+    const detail = [plugin.description, plugin.version ? `版本 ${plugin.version}` : "", plugin.path || plugin.root, plugin.error, warning].filter(Boolean).join(" · ");
+    return `<div class="extensionRow">
+      <div class="extensionIdentity"><strong>${escapeHtml(name)}</strong><span>${escapeHtml([extensionScopeLabel(plugin.scope), plugin.source].filter(Boolean).join(" · ") || "插件")}</span></div>
+      <div class="extensionDetail">${escapeHtml(detail || "提供扩展能力")}${extensionCapabilityTags(pluginCapabilities)}</div>
+      <div class="extensionControls"><span class="extensionStatus ${plugin.error ? "error" : (enabled ? "ok" : "")}">${plugin.error ? "异常" : (enabled ? "已启用" : "已禁用")}</span>
+        <label class="extensionToggle" title="${enabled ? "禁用插件" : "启用插件"}"><input type="checkbox" data-extension-toggle data-extension-kind="plugins" data-extension-name="${escapeHtml(name)}"${enabled ? " checked" : ""}><i></i></label>
+      </div>
+    </div>`;
+  }).join("") : extensionEmpty("未发现插件。用户插件目录会在应用更新时保留。");
+
+  const projectHooksTrust = hooksReport.projectDefined && !hooksReport.projectTrusted
+    ? `<div class="extensionTrustRow">
+        <div><strong>项目 Hooks 尚未信任</strong><span>信任后会运行当前项目中所有已启用的 Hooks。</span></div>
+        <button type="button" class="ghost small" data-extension-kind="hooks" data-extension-action="trust_project">信任项目 Hooks</button>
+      </div>`
+    : "";
+  const hookRows = hooks.length ? hooks.map((hook) => {
+    const name = String(hook.name || hook.event || hook.id || "未命名 Hook");
+    const actionName = String(hook.id || "");
+    const enabled = hook.enabled !== false;
+    const pluginManaged = hook.scope === "plugin";
+    const projectUntrusted = hook.scope === "project" && hooksReport.projectTrusted === false;
+    const detail = [
+      hook.event ? `事件 ${hook.event}` : "",
+      hook.match ? `匹配 ${hook.match}` : "",
+      hook.timeout ? `超时 ${hook.timeout} 秒` : (hook.timeoutMs ? `超时 ${hook.timeoutMs} ms` : ""),
+      hook.command ? `命令 ${hook.command}` : "",
+      hook.message || hook.description,
+      hook.lastError || hook.error,
+    ].filter(Boolean).join(" · ");
+    return `<div class="extensionRow">
+      <div class="extensionIdentity"><strong>${escapeHtml(name)}</strong><span>${escapeHtml([extensionScopeLabel(hook.scope), hook.plugin, hook.source].filter(Boolean).join(" · ") || "Hook 配置")}</span></div>
+      <div class="extensionDetail">${escapeHtml(detail || "等待生命周期事件")}</div>
+      <div class="extensionControls"><span class="extensionStatus ${hook.lastError || hook.error ? "error" : (enabled ? "ok" : (projectUntrusted ? "warn" : ""))}">${hook.lastError || hook.error ? "异常" : (pluginManaged ? "随插件启停" : (projectUntrusted ? "项目未信任" : (enabled ? "已启用" : "已禁用")))}</span>
+        ${pluginManaged ? "" : (actionName
+          ? `<label class="extensionToggle" title="${projectUntrusted ? "请先信任项目 Hooks" : (enabled ? "禁用 Hook" : "启用 Hook")}"><input type="checkbox" data-extension-toggle data-extension-kind="hooks" data-extension-name="${escapeHtml(actionName)}"${enabled ? " checked" : ""}${projectUntrusted ? " disabled" : ""}><i></i></label>`
+          : `<span class="extensionStatus warn">缺少 Hook ID</span>`)}
+      </div>
+    </div>`;
+  }).join("") : extensionEmpty("未发现 Hooks。插件或配置声明 Hook 后会显示在这里。");
+  $("hookExtensionRows").innerHTML = projectHooksTrust + hookRows;
+
+  const issues = extensionList(report.issues);
+  $("extensionIssues").innerHTML = issues.map((issue) => `<div class="extensionIssue" data-severity="${escapeHtml(issue.severity || "warning")}">
+    <span>${escapeHtml(issue.severity || "warning")}</span><p>${escapeHtml(issue.message || issue.error || issue.code || "扩展诊断异常")}</p>
+  </div>`).join("");
+  syncExtensionControls();
+}
+
+function setMcpEditorError(message = "") {
+  const error = $("mcpEditorError");
+  error.textContent = message;
+  error.hidden = !message;
+}
+
+function setMcpEditorTransport(value) {
+  const transport = value === "stdio" ? "stdio" : "http";
+  state.mcpEditorTransport = transport;
+  document.querySelectorAll("[data-mcp-transport]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.mcpTransport === transport));
+  });
+  document.querySelectorAll("[data-mcp-fields]").forEach((fields) => {
+    fields.hidden = fields.dataset.mcpFields !== transport;
+  });
+  $("mcpHeadersSection").hidden = transport !== "http";
+  setMcpEditorError();
+}
+
+function setMcpEditorBusy(busy) {
+  state.mcpEditorBusy = Boolean(busy);
+  const editor = $("mcpEditor");
+  editor.classList.toggle("busy", state.mcpEditorBusy);
+  editor.querySelectorAll("input, textarea, button").forEach((control) => {
+    control.disabled = state.mcpEditorBusy;
+  });
+}
+
+function addMcpHeaderRow(name = "", value = "") {
+  const row = document.createElement("div");
+  row.className = "mcpHeaderRow";
+  row.innerHTML = `
+    <input class="mcpHeaderName" autocomplete="off" spellcheck="false" aria-label="请求头名称" placeholder="名称">
+    <div class="mcpSecretField">
+      <input class="mcpHeaderValue" type="password" autocomplete="new-password" spellcheck="false" aria-label="请求头值" placeholder="值">
+      <button type="button" class="mcpSecretToggle" data-mcp-header-reveal title="显示请求头值" aria-label="显示请求头值" aria-pressed="false">${icon("eye", 14)}</button>
+    </div>
+    <button type="button" class="mcpHeaderDelete" data-mcp-header-delete title="删除请求头" aria-label="删除请求头">${icon("trash", 13)}</button>`;
+  row.querySelector(".mcpHeaderName").value = String(name || "");
+  row.querySelector(".mcpHeaderValue").value = String(value == null ? "" : value);
+  $("mcpHeaderRows").append(row);
+  return row;
+}
+
+function resetMcpEditor(originalName = "") {
+  state.mcpEditorOriginalName = String(originalName || "");
+  state.mcpEditorOriginalConfig = null;
+  $("mcpEditorForm").reset();
+  $("mcpName").value = state.mcpEditorOriginalName;
+  $("mcpUrl").value = "";
+  $("mcpCommand").value = "";
+  $("mcpArgs").value = "";
+  $("mcpHeaderRows").replaceChildren();
+  $("mcpEnabled").checked = true;
+  $("mcpEditorTitle").textContent = state.mcpEditorOriginalName ? "编辑 MCP 服务" : "新增 MCP 服务";
+  setMcpEditorTransport("http");
+  setMcpEditorError();
+}
+
+function populateMcpEditor(config, fallbackName) {
+  const value = config && typeof config === "object" ? config : {};
+  state.mcpEditorOriginalConfig = JSON.parse(JSON.stringify(value));
+  $("mcpName").value = String(value.name || fallbackName || "");
+  const declaredTransport = String(value.type || value.transport || "").toLowerCase();
+  const transport = declaredTransport === "stdio" || (!declaredTransport && !value.url) ? "stdio" : "http";
+  setMcpEditorTransport(transport);
+  $("mcpUrl").value = typeof value.url === "string" ? value.url : "";
+  $("mcpCommand").value = typeof value.command === "string" ? value.command : "";
+  $("mcpArgs").value = Array.isArray(value.args) ? value.args.map(String).join("\n") : "";
+  $("mcpEnabled").checked = value.enabled !== false;
+  const headers = value.headers && typeof value.headers === "object" && !Array.isArray(value.headers) ? value.headers : {};
+  Object.entries(headers).forEach(([headerName, headerValue]) => addMcpHeaderRow(headerName, headerValue));
+}
+
+async function requestMcpConfig(action, data = {}) {
+  const method = await optionalExtensionMethod(["extension_action", "manage_extension"], 700);
+  if (!method) throw new Error("mcp editor unavailable");
+  const result = await method.fn({ kind: "mcp", action, ...data });
+  if (!result || result.ok === false) throw new Error("mcp editor request failed");
+  return result;
+}
+
+async function openMcpEditor(name = "") {
+  if (extensionActionsLocked() || state.extensionBusy || state.mcpEditorBusy) {
+    toast("回复或扩展更新期间不能编辑 MCP 服务");
+    return;
+  }
+  const originalName = String(name || "");
+  const requestId = ++state.mcpEditorRequestId;
+  resetMcpEditor(originalName);
+  const editor = $("mcpEditor");
+  if (!editor.open) editor.showModal();
+  if (!originalName) {
+    $("mcpName").focus();
+    return;
+  }
+  setMcpEditorBusy(true);
+  state.extensionBusy = true;
+  syncExtensionControls();
+  try {
+    const result = await requestMcpConfig("get", { name: originalName });
+    if (requestId !== state.mcpEditorRequestId || !editor.open) return;
+    populateMcpEditor(result.config || result.server || {}, originalName);
+  } catch (_) {
+    if (requestId === state.mcpEditorRequestId && editor.open) editor.close();
+    toast("读取 MCP 服务配置失败");
+  } finally {
+    state.extensionBusy = false;
+    if (requestId === state.mcpEditorRequestId && editor.open) setMcpEditorBusy(false);
+    syncExtensionControls();
+  }
+}
+
+function collectMcpEditorConfig() {
+  const name = $("mcpName").value.trim();
+  if (!name) throw new Error("请输入服务名称");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+    throw new Error("服务名称只能使用字母、数字、点、下划线和短横线");
+  }
+  const enabled = $("mcpEnabled").checked;
+  const original = state.mcpEditorOriginalConfig && typeof state.mcpEditorOriginalConfig === "object"
+    ? state.mcpEditorOriginalConfig
+    : {};
+  const preserved = {};
+  for (const key of ["startup_timeout_ms", "call_timeout_ms", "tool_timeout_ms", "trusted_read_only_tools"]) {
+    if (original[key] !== undefined && original[key] !== null) {
+      preserved[key] = JSON.parse(JSON.stringify(original[key]));
+    }
+  }
+  if (state.mcpEditorTransport === "stdio") {
+    const command = $("mcpCommand").value.trim();
+    if (!command) throw new Error("请输入本地命令");
+    const args = $("mcpArgs").value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    const originalTransport = String(original.type || original.transport || "").toLowerCase().replace("_", "-");
+    if (originalTransport === "stdio") {
+      for (const key of ["env", "cwd", "headers"]) {
+        if (original[key] !== undefined && original[key] !== null && original[key] !== "") {
+          preserved[key] = JSON.parse(JSON.stringify(original[key]));
+        }
+      }
+    }
+    return { name, config: { ...preserved, type: "stdio", command, args, enabled } };
+  }
+  const rawUrl = $("mcpUrl").value.trim();
+  let parsedUrl;
+  try { parsedUrl = new URL(rawUrl); } catch (_) { throw new Error("请输入有效的远程 URL"); }
+  if (!/^(https?):$/.test(parsedUrl.protocol)) throw new Error("远程 URL 仅支持 http 或 https");
+  const headers = {};
+  const seenHeaders = new Set();
+  for (const row of $("mcpHeaderRows").querySelectorAll(".mcpHeaderRow")) {
+    const headerName = row.querySelector(".mcpHeaderName").value.trim();
+    if (!headerName) throw new Error("请求头名称不能为空");
+    const normalized = headerName.toLowerCase();
+    if (seenHeaders.has(normalized)) throw new Error("请求头名称不能重复");
+    seenHeaders.add(normalized);
+    headers[headerName] = row.querySelector(".mcpHeaderValue").value;
+  }
+  return { name, config: { ...preserved, type: "http", url: rawUrl, headers, enabled } };
+}
+
+async function saveMcpEditor() {
+  if (state.mcpEditorBusy) return;
+  let prepared;
+  try {
+    prepared = collectMcpEditorConfig();
+  } catch (error) {
+    setMcpEditorError(String(error.message || "请检查输入"));
+    return;
+  }
+  setMcpEditorError();
+  setMcpEditorBusy(true);
+  state.extensionBusy = true;
+  syncExtensionControls();
+  try {
+    const result = await requestMcpConfig("save", {
+      name: prepared.name,
+      originalName: state.mcpEditorOriginalName,
+      config: prepared.config,
+    });
+    $("mcpEditor").close();
+    state.extensionBusy = false;
+    await loadExtensions();
+    toast(result.warning ? `MCP 服务已保存；${truncateInline(result.warning, 120)}` : "MCP 服务已保存");
+  } catch (_) {
+    setMcpEditorError("保存失败，请检查名称和连接配置");
+  } finally {
+    state.extensionBusy = false;
+    if ($("mcpEditor").open) setMcpEditorBusy(false);
+    syncExtensionControls();
+  }
+}
+
+async function deleteMcpServer(name) {
+  if (extensionActionsLocked() || state.extensionBusy) return;
+  const confirmed = await uiConfirm(`删除 MCP 服务“${name}”？`);
+  if (!confirmed) return;
+  state.extensionBusy = true;
+  syncExtensionControls();
+  try {
+    const result = await requestMcpConfig("delete", { name });
+    state.extensionBusy = false;
+    await loadExtensions();
+    toast(result.warning ? `MCP 服务已删除；${truncateInline(result.warning, 120)}` : "MCP 服务已删除");
+  } catch (_) {
+    toast("删除 MCP 服务失败");
+  } finally {
+    state.extensionBusy = false;
+    syncExtensionControls();
+  }
+}
+
+async function optionalExtensionMethod(names, timeoutMs = 700) {
+  const started = Date.now();
+  while (Date.now() - started <= timeoutMs) {
+    const api = window.pywebview && window.pywebview.api;
+    for (const name of names) {
+      if (api && typeof api[name] === "function") return { name, fn: api[name] };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  }
+  return null;
+}
+
+function extensionActionsLocked() {
+  return state.running || state.resuming || state.branching;
+}
+
+function syncExtensionControls() {
+  const locked = extensionActionsLocked();
+  const refresh = $("refreshExtensions");
+  if (refresh) refresh.disabled = state.extensionBusy || locked;
+  const addMcp = $("addMcpServer");
+  if (addMcp) addMcp.disabled = state.extensionBusy || locked;
+  const panel = $("extensionsPanel");
+  if (!panel) return;
+  panel.classList.toggle("busy", state.extensionBusy);
+  panel.classList.toggle("runtimeLocked", locked);
+  panel.title = locked ? "回复或会话切换期间不能修改扩展" : "";
+  panel.querySelectorAll("[data-extension-action], [data-extension-toggle], [data-mcp-edit], [data-mcp-delete]").forEach((control) => {
+    if (locked) {
+      if (!control.disabled) control.dataset.runtimeDisabled = "true";
+      control.disabled = true;
+    } else if (control.dataset.runtimeDisabled === "true") {
+      control.disabled = false;
+      delete control.dataset.runtimeDisabled;
+    }
+  });
+}
+
+async function loadExtensions(refresh = false) {
+  if (refresh && extensionActionsLocked()) {
+    toast("回复或会话切换期间不能重新加载扩展");
+    syncExtensionControls();
+    return;
+  }
+  if (state.extensionBusy) return;
+  state.extensionBusy = true;
+  syncExtensionControls();
+  $("extensionsSummary").textContent = refresh ? "正在重新发现扩展…" : "正在读取扩展状态…";
+  try {
+    const method = await optionalExtensionMethod(refresh
+      ? ["refresh_extensions", "reload_extensions", "extension_status"]
+      : ["extension_status", "extensions_status", "extension_diagnostics", "extensions_diagnostics"]);
+    if (!method) throw new Error("扩展服务正在初始化，请稍后刷新");
+    let result = await method.fn();
+    if (result && result.ok === false) throw new Error(result.error || "扩展状态读取失败");
+    const refreshedWithoutReport = refresh && ["refresh_extensions", "reload_extensions"].includes(method.name)
+      && !(result && (result.extensions || result.report || result.mcp || result.plugins || result.hooks));
+    if (refreshedWithoutReport) {
+      const statusMethod = await optionalExtensionMethod(["extension_status", "extensions_status", "extension_diagnostics"], 500);
+      if (statusMethod) result = await statusMethod.fn();
+    }
+    renderExtensionReport(result);
+  } catch (error) {
+    $("extensionsSummary").textContent = String(error && error.message ? error.message : error);
+    $("mcpExtensionRows").innerHTML = extensionEmpty("扩展服务尚未就绪");
+    $("pluginExtensionRows").innerHTML = extensionEmpty("扩展服务尚未就绪");
+    $("hookExtensionRows").innerHTML = extensionEmpty("扩展服务尚未就绪");
+  } finally {
+    state.extensionBusy = false;
+    syncExtensionControls();
+  }
+}
+
+async function runExtensionAction(kind, name, action, enabled) {
+  if (extensionActionsLocked()) {
+    toast("回复或会话切换期间不能修改扩展");
+    syncExtensionControls();
+    return;
+  }
+  if (state.extensionBusy) return;
+  state.extensionBusy = true;
+  syncExtensionControls();
+  try {
+    const aggregate = await optionalExtensionMethod(["extension_action", "manage_extension"], 500);
+    let result;
+    if (aggregate) {
+      result = await aggregate.fn({ kind, name, action, enabled });
+    } else {
+      const fallbackNames = kind === "mcp"
+        ? [`mcp_${action}`]
+        : [kind === "plugins" ? "set_plugin_enabled" : "set_hook_enabled"];
+      const fallback = await optionalExtensionMethod(fallbackNames, 700);
+      if (!fallback) throw new Error("扩展操作接口正在初始化");
+      result = kind === "mcp" ? await fallback.fn(name) : await fallback.fn(name, enabled);
+    }
+    if (result && result.ok === false) throw new Error(result.error || "操作失败");
+    state.extensionBusy = false;
+    await loadExtensions();
+  } catch (error) {
+    state.extensionBusy = false;
+    toast(`扩展操作失败：${String(error && error.message ? error.message : error)}`);
+    await loadExtensions();
+  } finally {
+    syncExtensionControls();
+  }
+}
+
 function renderCapabilityDiagnostics(report) {
   state.capabilityReport = report;
   const summary = report.summary || {};
@@ -1131,7 +1663,7 @@ function renderCapabilityDiagnostics(report) {
     diagnosticMetric("工具契约", `约 ${summary.toolSchemaTokenEstimate || 0} tokens`),
   ].join("");
 
-  const issues = report.issues || [];
+  const issues = (report.issues || []).filter((item) => item.code !== "extensions.not_integrated");
   $("diagnosticsIssues").innerHTML = diagnosticRows(issues, (item) => `
     <div class="diagnosticIssue" data-severity="${escapeHtml(item.severity || "info")}">
       <span class="diagnosticSeverity">${escapeHtml(item.severity || "info")}</span>
@@ -1815,10 +2347,19 @@ $("send").onclick = async () => {
     }
     await updateRuntime();
     const sendFn = await apiMethod("send");
-    const result = await sendFn({ prompt: outgoing, attachments, images: images.map((i) => i.url), goal: state.activeGoal || undefined });
+    const result = await sendFn({
+      prompt: outgoing,
+      attachments,
+      images: images.map((i) => i.url),
+      goal: state.activeGoal || undefined,
+      clientRequestId: outboundId,
+    });
     if (!result.ok) throw new Error(result.error || "unknown error");
     const stillVisibleOutbound = state.pendingOutboundId === outboundId;
-    if (stillVisibleOutbound) state.pendingOutbound = false;
+    if (stillVisibleOutbound) {
+      state.pendingOutbound = false;
+      state.pendingOutboundId = "";
+    }
     if (result.sessionId) {
       if (stillVisibleOutbound) {
         state.currentSessionId = result.sessionId;
@@ -2077,6 +2618,8 @@ $("cancel").onclick = async () => {
   addEvent("done", "已中断", "已停止当前回复");
   state.currentAssistant = null;
   state.currentTool = null;
+  state.pendingOutbound = false;
+  state.pendingOutboundId = "";
   // keep copy/retry/branch available on whatever was produced before the interrupt
   markMessageActions();
   state.cancelPromise = window.pywebview.api.cancel({ turnId });
@@ -2100,6 +2643,82 @@ $("format").addEventListener("change", async () => {
 $("settingsBtn").onclick = openSettings;
 $("settingsBackTop").onclick = closeSettings;
 $("settingsBackBottom").onclick = closeSettings;
+$("refreshExtensions").onclick = () => loadExtensions(true);
+$("addMcpServer").onclick = () => openMcpEditor();
+document.querySelectorAll("[data-mcp-transport]").forEach((button) => {
+  button.onclick = () => setMcpEditorTransport(button.dataset.mcpTransport);
+});
+$("addMcpHeader").onclick = () => {
+  const row = addMcpHeaderRow();
+  row.querySelector(".mcpHeaderName").focus();
+  setMcpEditorError();
+};
+$("mcpHeaderRows").addEventListener("click", (event) => {
+  const remove = event.target.closest("[data-mcp-header-delete]");
+  if (remove) {
+    remove.closest(".mcpHeaderRow").remove();
+    setMcpEditorError();
+    return;
+  }
+  const reveal = event.target.closest("[data-mcp-header-reveal]");
+  if (!reveal) return;
+  const input = reveal.closest(".mcpSecretField").querySelector(".mcpHeaderValue");
+  const showing = input.type === "password";
+  input.type = showing ? "text" : "password";
+  reveal.innerHTML = icon(showing ? "eyeOff" : "eye", 14);
+  reveal.title = showing ? "隐藏请求头值" : "显示请求头值";
+  reveal.setAttribute("aria-label", reveal.title);
+  reveal.setAttribute("aria-pressed", String(showing));
+});
+$("mcpEditorForm").addEventListener("input", () => setMcpEditorError());
+$("mcpEditorForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  saveMcpEditor();
+});
+const closeMcpEditor = () => { if (!state.mcpEditorBusy && $("mcpEditor").open) $("mcpEditor").close(); };
+$("closeMcpEditor").onclick = closeMcpEditor;
+$("cancelMcpEditor").onclick = closeMcpEditor;
+$("mcpEditor").addEventListener("cancel", (event) => {
+  if (state.mcpEditorBusy) event.preventDefault();
+});
+$("mcpEditor").addEventListener("close", () => {
+  state.mcpEditorRequestId += 1;
+  setMcpEditorBusy(false);
+  resetMcpEditor();
+});
+document.querySelectorAll("[data-extension-tab]").forEach((button) => {
+  button.onclick = () => {
+    state.extensionTab = button.dataset.extensionTab;
+    document.querySelectorAll("[data-extension-tab]").forEach((item) => {
+      item.setAttribute("aria-selected", String(item === button));
+    });
+    document.querySelectorAll("[data-extension-pane]").forEach((pane) => {
+      pane.hidden = pane.dataset.extensionPane !== state.extensionTab;
+    });
+  };
+});
+$("extensionsPanel").addEventListener("click", (event) => {
+  const editMcp = event.target.closest("[data-mcp-edit]");
+  if (editMcp && !editMcp.disabled) {
+    openMcpEditor(editMcp.dataset.mcpEdit || "");
+    return;
+  }
+  const deleteMcp = event.target.closest("[data-mcp-delete]");
+  if (deleteMcp && !deleteMcp.disabled) {
+    deleteMcpServer(deleteMcp.dataset.mcpDelete || "");
+    return;
+  }
+  const button = event.target.closest("[data-extension-action]");
+  if (!button || button.disabled) return;
+  const { extensionKind: kind, extensionName: name = "", extensionAction: action } = button.dataset;
+  if (action === "reload") loadExtensions(true);
+  else runExtensionAction(kind, name, action);
+});
+$("extensionsPanel").addEventListener("change", (event) => {
+  const input = event.target.closest("[data-extension-toggle]");
+  if (!input) return;
+  runExtensionAction(input.dataset.extensionKind, input.dataset.extensionName || "", input.checked ? "enable" : "disable", input.checked);
+});
 $("refreshDiagnostics").onclick = loadCapabilityDiagnostics;
 $("copyDiagnostics").onclick = () => {
   if (!state.capabilityReport) return;
@@ -2206,6 +2825,7 @@ $("newSession").onclick = async () => {
     state.activeTurnId = "";
     state.pendingOutbound = false;
     state.pendingOutboundId = "";
+    resetPendingVersionState();
     state.suppressLocalUserEcho = false;
     delete state.goalsBySession[state.goalDraftId];
     delete state.dismissedGoalSnapshots[state.goalDraftId];
@@ -2570,13 +3190,16 @@ function dismissApproval() {
 // Remove an element and following siblings until the next user turn. Version/edit
 // operations must never delete adjacent conversations.
 function removeTurnNodes(el) {
+  const removed = [];
   let node = el;
   while (node) {
     const next = node.nextSibling;
+    removed.push(node);
     node.remove();
     if (next && next.classList && next.classList.contains("message") && next.classList.contains("user")) break;
     node = next;
   }
+  return removed;
 }
 
 function nextUserAfterTurn(el) {
@@ -2588,6 +3211,33 @@ function nextUserAfterTurn(el) {
   return null;
 }
 
+function versionScopeMatches(holder, sessionId, turnId) {
+  if (!holder) return false;
+  const expectedSession = String(holder.sessionId || "");
+  const expectedTurn = String(holder.turnId || "");
+  const actualSession = String(sessionId || "");
+  const actualTurn = String(turnId || "");
+  if (expectedSession && expectedSession !== actualSession) return false;
+  if (expectedTurn && expectedTurn !== actualTurn) return false;
+  return true;
+}
+
+function bindPendingVersionScope(sessionId, turnId) {
+  const pending = state.pendingVersions;
+  if (!pending) return false;
+  const sid = String(sessionId || currentSessionId() || "");
+  const tid = String(turnId || state.activeTurnId || "");
+  if (!versionScopeMatches(pending, sid, tid)) return false;
+  if (!pending.sessionId) pending.sessionId = sid;
+  if (!pending.turnId) pending.turnId = tid;
+  [state.pendingVersionMarker, state.pendingVersionUser].forEach((holder) => {
+    if (!holder || !versionScopeMatches(holder, sid, tid)) return;
+    if (!holder.sessionId) holder.sessionId = sid;
+    if (!holder.turnId) holder.turnId = tid;
+  });
+  return true;
+}
+
 function setVersionInsertMarker(nextUserEl) {
   clearVersionInsertMarker();
   const marker = document.createElement("span");
@@ -2596,14 +3246,32 @@ function setVersionInsertMarker(nextUserEl) {
   const box = $("messages");
   if (nextUserEl && nextUserEl.parentNode === box) box.insertBefore(marker, nextUserEl);
   else box.append(marker);
-  state.pendingVersionMarker = marker;
+  state.pendingVersionMarker = {
+    element: marker,
+    sessionId: String((state.pendingVersions && state.pendingVersions.sessionId) || currentSessionId() || ""),
+    turnId: String((state.pendingVersions && state.pendingVersions.turnId) || ""),
+  };
   state.pendingVersionUser = null;
 }
 
-function clearVersionInsertMarker() {
-  if (state.pendingVersionMarker && state.pendingVersionMarker.isConnected) state.pendingVersionMarker.remove();
+function clearVersionInsertMarker(sessionId, turnId) {
+  const holder = state.pendingVersionMarker;
+  const scoped = sessionId !== undefined || turnId !== undefined;
+  if (scoped && holder && !versionScopeMatches(holder, sessionId || currentSessionId(), turnId || "")) return false;
+  const marker = holder && holder.element;
+  if (marker && marker.isConnected) marker.remove();
   state.pendingVersionMarker = null;
   state.pendingVersionUser = null;
+  return true;
+}
+
+function resetPendingVersionState(sessionId, turnId) {
+  const scoped = sessionId !== undefined || turnId !== undefined;
+  if (scoped && state.pendingVersions
+      && !versionScopeMatches(state.pendingVersions, sessionId || currentSessionId(), turnId || "")) return false;
+  clearVersionInsertMarker(sessionId, turnId);
+  state.pendingVersions = null;
+  return true;
 }
 
 // For retrying/editing an assistant/user message: strip only that turn. Do not remove
@@ -2616,10 +3284,24 @@ function removeTurnFrom(msg) {
     if (p) anchor = p;
   }
   const nextUser = nextUserAfterTurn(anchor);
-  removeTurnNodes(anchor);
+  const nodes = removeTurnNodes(anchor);
   state.currentAssistant = null;
   state.currentTool = null;
-  return nextUser;
+  return { nextUser, nodes };
+}
+
+function restoreRemovedTurn(removedTurn) {
+  if (!removedTurn || !Array.isArray(removedTurn.nodes) || !removedTurn.nodes.length) return;
+  const box = $("messages");
+  const marker = state.pendingVersionMarker && state.pendingVersionMarker.element;
+  const before = marker && marker.isConnected
+    ? marker
+    : (removedTurn.nextUser && removedTurn.nextUser.isConnected ? removedTurn.nextUser : null);
+  removedTurn.nodes.forEach((node) => box.insertBefore(node, before));
+  state.currentAssistant = null;
+  state.currentTool = null;
+  markMessageActions();
+  scrollMessages();
 }
 
 async function doRetry(src) {
@@ -2639,11 +3321,13 @@ async function doRetry(src) {
     tailHTML: userEl ? tailHTMLFrom(userEl) : "",
   };
   state.pendingVersions = {
+    sessionId: String(currentSessionId() || ""),
+    turnId: "",
     versions: priorVersions.length ? priorVersions : [replacedVersion],
     newPrompt: replacedVersion.prompt,  // retry keeps the same prompt
   };
-  const nextUser = removeTurnFrom(target);
-  setVersionInsertMarker(nextUser);
+  const removedTurn = removeTurnFrom(target);
+  setVersionInsertMarker(removedTurn.nextUser);
   state.stickToBottom = true;
   setRunning(true);
   try {
@@ -2651,9 +3335,11 @@ async function doRetry(src) {
     const retry = await apiMethod("retry");
     const result = await retry(src != null ? { srcIndex: src } : {});
     if (!result.ok) throw new Error(result.error || "unknown error");
+    bindPendingVersionScope(result.sessionId || currentSessionId(), result.turnId || "");
   } catch (error) {
+    restoreRemovedTurn(removedTurn);
     setRunning(false);
-    state.pendingVersions = null;
+    resetPendingVersionState();
     addEvent("error", "重试失败", String(error.message || error));
   }
 }
@@ -2662,15 +3348,18 @@ async function doRetry(src) {
    message; each version is a full snapshot of the turn's prompt AND its entire tail
    (answer, tool cards, later turns), so flipping restores everything — never leaves a
    dangling half-conversation. */
-function attachVersionPager() {
+function attachVersionPager(sessionId, turnId) {
   const snap = state.pendingVersions;
+  if (!versionScopeMatches(snap, sessionId || currentSessionId(), turnId || "")) return;
   state.pendingVersions = null;
   if (!snap) return;
   const box = $("messages");
   // Prefer the user row created at the edit/retry insertion point. Falling back to
   // the last user is only for older/demo event paths.
-  const userEl = (state.pendingVersionUser && state.pendingVersionUser.isConnected)
-    ? state.pendingVersionUser
+  const pendingUser = state.pendingVersionUser;
+  const userEl = (pendingUser && pendingUser.element && pendingUser.element.isConnected
+      && versionScopeMatches(pendingUser, sessionId || currentSessionId(), turnId || ""))
+    ? pendingUser.element
     : [...box.querySelectorAll(".message.user")].pop();
   if (!userEl) return;
   const newVersion = {
@@ -2707,23 +3396,35 @@ function attachVersionPager() {
 }
 
 async function doBranch(src) {
-  if (state.running) return;
+  if (state.running || state.resuming || state.branching) return;
+  state.branching = true;
+  syncRunControls();
   try {
     const result = await window.pywebview.api.branch(src != null ? { srcIndex: src } : {});
     if (!result.ok) throw new Error(result.error || "unknown error");
+    const branchSessionId = String(result.sessionId || "");
+    if (!branchSessionId) throw new Error("后端没有返回分支会话 ID");
     state.currentAssistant = null;
     state.currentTool = null;
+    state.currentSessionId = branchSessionId;
+    if (state.boot) state.boot.sessionId = branchSessionId;
+    resetPendingVersionState();
     state.stickToBottom = true;
     $("messages").innerHTML = "";
     (result.messages || []).forEach(replayMessage);
     markMessageActions();
     scrollMessages(true);
-    setText("sessionState", String(result.sessionId || "").slice(0, 8));
-    setSaveState("saved", "已开分支", result.sessionId || "");
+    setText("sessionState", branchSessionId.slice(0, 8));
+    setSaveState("saved", "已开分支", branchSessionId);
+    syncActiveGoalFromStore();
+    renderGoalDock();
     await refreshSessions();
     toast("已从该回复开出新分支");
   } catch (error) {
     addEvent("error", "开分支失败", String(error.message || error));
+  } finally {
+    state.branching = false;
+    syncRunControls();
   }
 }
 
@@ -2757,11 +3458,13 @@ function doEdit(text, src, msg) {
     const priorVersions = (msg.__versions) ? msg.__versions.slice() : [];
     const replacedVersion = { prompt: bubble.dataset.raw || "", tailHTML: tailHTMLFrom(msg) };
     state.pendingVersions = {
+      sessionId: String(currentSessionId() || ""),
+      turnId: "",
       versions: priorVersions.length ? priorVersions : [replacedVersion],
       newPrompt: next,
     };
-    const nextUser = removeTurnFrom(msg);
-    setVersionInsertMarker(nextUser);
+    const removedTurn = removeTurnFrom(msg);
+    setVersionInsertMarker(removedTurn.nextUser);
     state.stickToBottom = true;
     setRunning(true);
     try {
@@ -2770,9 +3473,10 @@ function doEdit(text, src, msg) {
       const result = await editResend(
         src != null ? { prompt: next, srcIndex: src } : { prompt: next });
       if (!result.ok) throw new Error(result.error || "unknown error");
+      bindPendingVersionScope(result.sessionId || currentSessionId(), result.turnId || "");
     } catch (error) {
-      state.pendingVersions = null;
-      clearVersionInsertMarker();
+      restoreRemovedTurn(removedTurn);
+      resetPendingVersionState();
       setRunning(false);
       addEvent("error", "编辑重发失败", String(error.message || error));
     }

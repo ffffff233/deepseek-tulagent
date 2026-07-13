@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+from typing import Iterable
 
 
 SKILL_CONTEXT_PREFIX = '<runtime-context kind="skills" version="1">'
@@ -52,9 +53,16 @@ class SkillInspection:
 
 
 class SkillStore:
-    def __init__(self, workspace: Path, home: Path | None = None):
+    def __init__(
+        self,
+        workspace: Path,
+        home: Path | None = None,
+        *,
+        extra_roots: Iterable[Path] = (),
+    ):
         self.workspace = workspace.resolve()
         self.home = (home or Path.home()).resolve()
+        self.extra_roots = tuple(Path(path).expanduser().resolve() for path in extra_roots)
 
     @property
     def search_roots(self) -> list[SkillRoot]:
@@ -70,6 +78,7 @@ class SkillStore:
             (self.home / ".claude" / "skills", "user"),
             (Path(__file__).resolve().parent / "builtin_skills", "official"),
         ]
+        candidates.extend((path, "plugin") for path in self.extra_roots)
         roots: list[SkillRoot] = []
         seen: set[Path] = set()
         for path, scope in candidates:
@@ -108,7 +117,7 @@ class SkillStore:
             for skill_md in skill_files:
                 skill = parse_skill(
                     skill_md,
-                    source="official" if root.scope == "official" else "user",
+                    source=root.scope if root.scope in {"official", "plugin"} else "user",
                     scope=root.scope,
                 )
                 if skill_md.name.casefold() != "skill.md" and not skill.description_declared:

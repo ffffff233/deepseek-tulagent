@@ -1,5 +1,32 @@
 # 桌面端更新记录 / Desktop Changelog
 
+## v0.1.16
+
+中文：
+
+- **MCP 已接入真实对话运行时**：同时支持本地 stdio 与 MCP `2025-06-18` Streamable HTTP，覆盖 JSON / SSE 响应、会话与协议版本请求头、会话失效单次自动重建、分页工具发现、动态参数 schema、并发调用、单工具超时、取消、重连、断开和多服务故障隔离；MCP 工具与内置工具共用原生工具调用协议和权限门控。
+- **新增插件包运行时**：兼容 DeepSeekFathom、Codex、Claude 与 ReasoniX manifest，已启用插件可以提供技能、指令、MCP 服务和 Hooks；所有相对路径都经过目录逃逸与符号链接检查，安装和更新采用 staging + 原子替换，用户会话、API 配置、用户技能和其他插件不会被覆盖。
+- **Hooks 生命周期可执行**：支持 SessionStart / SessionEnd、UserPromptSubmit、PreToolUse、PostToolUse、PermissionRequest、Stop、SubagentStop、PreCompact 与 PostLLMCall；项目 Hooks 默认不运行，必须显式信任；阻断事件、匹配器、超时、输出上限和失败开放边界均有测试覆盖。
+- **设置页新增中文扩展管理**：MCP 页可直接新增、编辑、重命名和删除用户服务；远程模式填写名称与 URL，请求头按需逐行添加且值默认隐藏，本地模式填写命令与逐行参数，不再要求手改源码或 JSON。项目 MCP 与项目 Hooks 都必须独立显式授权；同时支持连接/重连/断开、插件启停、项目插件安装和按稳定 ID 启停单条 Hook。
+- **修复无输入却重复回答**：同一批工具部分成功、部分失败时不再错误触发第二轮内部恢复；临时失败回答会在显示和保存前撤回。不同请求编号也必须原子争用同一个回合状态，WebView 重放、双击或并发桥接只能启动一个回合。
+- **修复旧会话 `6e739390-d1cb-4587-bc1a-cb78a93b9658` 的重复重放**：原始 JSONL 保持不动，但界面重放和后续模型上下文会过滤旧版本留下的相邻恢复回答，不再重复显示“复制 / 重试 / 开始分支”。
+- **修复工具调用时闪出 Windows 终端**：命令、Git、更新器、FFmpeg、后台服务、MCP 和 Hooks 统一使用无窗口启动；裸 `npx` 会先解析为实际 `.cmd` / `.bat` 入口，再通过隐藏 COMSPEC 运行，并清除会抵消 `CREATE_NO_WINDOW` 的冲突标志。升级时清理旧版 `DeepSeekTuLAgent` 桌面和开始菜单入口，避免误启动旧 EXE。
+- **收紧 Hook 输出边界**：`PostLLMCall` 仍会执行并报告状态，但普通 stdout 不再替换模型回答；回复生成期间也不能断开 MCP 或改写插件、Hook 状态。
+- **修复重试版本状态串到其他对话**：版本快照、插入标记和用户消息绑定 `sessionId + turnId`；失败、取消、完成、切换会话和新建会话都会清理对应状态，附件发送的幂等编号也在所有终止路径释放。
+- **继续保留 ReasoniX MIT 版权证明**：MCP 生命周期、插件清单归一化、Hook 信任/超时模型的参考来源与提交号写入 `NOTICE`，安装包继续携带完整 MIT 文本；实现针对 DeepSeekFathom 接口独立重写。
+- CLI 发行版本继续保持 `0.1.108`，本次只提升桌面端到 `0.1.16`。
+
+English:
+
+- Integrated local stdio and MCP 2025-06-18 Streamable HTTP runtimes with JSON/SSE responses, bounded session recovery, dynamic native tool contracts, pagination, concurrent calls, timeouts, reconnect/disconnect, isolation, redacted diagnostics, and process-tree cleanup.
+- Added safe plugin discovery, manifest compatibility, atomic install/update, and runtime contributions for skills, instructions, MCP servers, and Hooks without touching user sessions or settings.
+- Added trusted lifecycle Hooks with blocking boundaries, matchers, timeouts, bounded output, hidden Windows execution, and temporary SessionStart context.
+- Added Chinese MCP/plugin/Hook management views, including in-app user MCP create/edit/rename/delete, remote URL and repeatable secret-header fields, local command arguments, separate explicit project trust, stable per-Hook controls, and runtime mutation guards.
+- Prevented unsolicited duplicate answers with atomic turn claims, made sends idempotent, filtered legacy adjacent recovery replies during replay/context construction, and scoped retry-version state to session and turn IDs.
+- Eliminated visible Windows child consoles across tools, services, media probes, updates, MCP, and Hooks, including bare `npx` batch resolution, conflicting creation-flag removal, and stale legacy-shortcut cleanup.
+- Kept `PostLLMCall` observable without allowing ordinary Hook stdout to replace the assistant answer.
+- Preserved the full ReasoniX MIT attribution and provenance in `NOTICE` and the Windows installer.
+
 ## v0.1.15
 
 中文：

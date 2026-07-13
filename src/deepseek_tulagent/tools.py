@@ -22,6 +22,7 @@ from uuid import uuid4
 import zipfile
 
 from .policy import ApprovalPolicy
+from .processes import popen_hidden, run_hidden
 from .skills import SkillStore, render_skill
 
 
@@ -164,6 +165,7 @@ class ToolRegistry:
         allow_write: bool | None = None,
         allow_shell: bool | None = None,
         policy: ApprovalPolicy | None = None,
+        skill_store: SkillStore | None = None,
     ):
         self.workspace = workspace.resolve()
         self.policy = policy or ApprovalPolicy(
@@ -180,6 +182,7 @@ class ToolRegistry:
         # tools can reach anywhere — matching the shell, which was never path-confined, and
         # Codex's full-access mode. Restricted tiers keep files inside the workspace.
         self.unconfined = self.policy.name in {"root", "yolo"}
+        self.skill_store = skill_store or SkillStore(self.workspace)
         self._tools: dict[str, ToolHandler] = {
             "list_files": self.list_files,
             "search_text": self.search_text,
@@ -243,7 +246,7 @@ class ToolRegistry:
         extra = arguments.get("arguments", "")
         if not isinstance(extra, str):
             raise ToolError("read_skill arguments must be a string")
-        store = SkillStore(self.workspace)
+        store = self.skill_store
         skill = store.get(name)
         if skill is None:
             available = ", ".join(item.name for item in store.list()) or "none"
@@ -253,7 +256,7 @@ class ToolRegistry:
     def list_skills(self, arguments: dict[str, Any]) -> ToolResult:
         query = str(arguments.get("query", ""))
         limit = int(arguments.get("limit", 100))
-        skills = SkillStore(self.workspace).search(query, limit)
+        skills = self.skill_store.search(query, limit)
         payload = [
             {"name": skill.name, "description": skill.description, "scope": skill.scope}
             for skill in skills
@@ -312,7 +315,7 @@ class ToolRegistry:
                 str(path),
             ]
             try:
-                completed = subprocess.run(command, cwd=self.workspace, text=True, capture_output=True, timeout=timeout)
+                completed = run_hidden(command, cwd=self.workspace, text=True, capture_output=True, timeout=timeout)
             except subprocess.TimeoutExpired:
                 return ToolResult(False, f"search timed out after {timeout}s")
             lines = completed.stdout.splitlines()[:max_matches]
@@ -350,7 +353,7 @@ class ToolRegistry:
         return ToolResult(True, "\n".join(matches))
 
     def git_status(self, arguments: dict[str, Any]) -> ToolResult:
-        completed = subprocess.run(
+        completed = run_hidden(
             ["git", "status", "--short"],
             cwd=self.workspace,
             text=True,
@@ -400,7 +403,7 @@ class ToolRegistry:
         if is_background_command(command):
             return self.start_service({"name": arguments.get("name", "shell-bg"), "command": strip_background(command)})
         invocation, use_shell = shell_invocation(command)
-        completed = subprocess.run(
+        completed = run_hidden(
             invocation,
             cwd=self.workspace,
             shell=use_shell,
@@ -418,7 +421,7 @@ class ToolRegistry:
         if not self.allow_write:
             raise ToolError("apply_patch is disabled in this mode")
         patch = require_str(arguments, "patch")
-        completed = subprocess.run(
+        completed = run_hidden(
             ["git", "apply", "--whitespace=nowarn", "-"],
             cwd=self.workspace,
             input=patch,
@@ -606,8 +609,15 @@ class ToolRegistry:
         pid_path = services_dir / f"{safe_name(name)}.pid"
         if pid_path.exists() and process_alive(pid_path):
             return ToolResult(True, f"Service {name} already running with pid {pid_path.read_text().strip()}")
-        log = log_path.open("ab")
-        process = subprocess.Popen(command, cwd=self.workspace, shell=True, stdout=log, stderr=subprocess.STDOUT)
+        invocation, use_shell = shell_invocation(command)
+        with log_path.open("ab") as log:
+            process = popen_hidden(
+                invocation,
+                cwd=self.workspace,
+                shell=use_shell,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+            )
         pid_path.write_text(str(process.pid), encoding="utf-8")
         return ToolResult(True, f"Started {name} pid={process.pid} log={self._display_path(log_path)}")
 
@@ -620,9 +630,9 @@ class ToolRegistry:
             return ToolResult(True, f"Service {name} is not recorded")
         pid = int(pid_path.read_text(encoding="utf-8").strip())
         if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True)
+            run_hidden(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True)
         else:
-            subprocess.run(["kill", str(pid)], capture_output=True, text=True)
+            run_hidden(["kill", str(pid)], capture_output=True, text=True)
         pid_path.unlink(missing_ok=True)
         return ToolResult(True, f"Stopped {name} pid={pid}")
 
@@ -724,13 +734,13 @@ def process_alive(pid_path: Path) -> bool:
     try:
         pid = int(pid_path.read_text(encoding="utf-8").strip())
         if os.name == "nt":
-            completed = subprocess.run(
+            completed = run_hidden(
                 ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
                 capture_output=True,
                 text=True,
             )
             return completed.returncode == 0 and f'"{pid}"' in completed.stdout
-        return subprocess.run(["kill", "-0", str(pid)], capture_output=True).returncode == 0
+        return run_hidden(["kill", "-0", str(pid)], capture_output=True).returncode == 0
     except (OSError, ValueError):
         return False
 
@@ -831,7 +841,7 @@ def github_archive_candidates(owner: str, repo: str, ref: str) -> list[str]:
 
 def run_clone_attempt(command: list[str], cwd: Path, timeout: int) -> tuple[bool, str]:
     try:
-        completed = subprocess.run(command, cwd=cwd, text=True, capture_output=True, timeout=timeout)
+        completed = run_hidden(command, cwd=cwd, text=True, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return False, f"timeout after {timeout}s"
     output = (completed.stderr or completed.stdout or "").strip().splitlines()
@@ -1217,7 +1227,7 @@ def video_duration_seconds(path: Path, timeout: int = 8) -> float | None:
     if not ffprobe:
         return None
     try:
-        completed = subprocess.run(
+        completed = run_hidden(
             [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)],
             text=True,
             capture_output=True,
@@ -1250,7 +1260,7 @@ def extract_video_frame_data_urls(path: Path, *, max_frames: int = 6, timeout: i
     for index, timestamp in enumerate(timestamps, 1):
         out = frame_dir / f"frame_{index:02d}.jpg"
         try:
-            completed = subprocess.run(
+            completed = run_hidden(
                 [
                     ffmpeg,
                     "-y",

@@ -14,17 +14,18 @@ DeepSeekFathom 是一个专门适配 DeepSeek OpenAI 兼容接口的终端编程
 - DeepSeek V4 模型别名：`pro`、`v4-pro`、`flash`、`v4-flash`
 - 工具：读写文件、本地搜索、联网搜索、任务目标清单、Git 状态、Shell、补丁、下载、仓库拉取、后台服务
 - 子代理：`delegate_agent` 支持单个子代理，也支持 `agents=[...]` 一次委派多个隔离子任务
-- 桌面端：聊天、文件发送、技能列表、任务目标 dock、工具调用折叠展示、内部思考折叠展示、模型/思考/权限切换、第三方 OpenAI 兼容 API 配置、只读能力诊断
+- 桌面端：聊天、文件发送、技能列表、任务目标 dock、工具调用折叠展示、模型/思考/权限切换、第三方 OpenAI 兼容 API 配置、MCP / 插件 / Hooks 管理和只读能力诊断
 - 权限模式：`plan`、`review`、`agent`、`trusted`、`yolo`、`root`
 - 思考模式：`off`、`instant`、`fast`、`standard`、`balanced`、`careful`、`deep`、`deeper`、`max`、`ultra`
 - 本地技能目录：自动发现 `SKILL.md`
+- 扩展目录：用户插件保存在 `~/.deepseek-tulagent/plugins`，用户技能、插件、配置和会话不会被桌面端更新覆盖
 - 会话保存和恢复：JSONL 格式
 
 ## 快速开始
 
 Windows 普通用户直接下载并运行：
 
-**[DeepSeekFathom-0.1.15-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.15/DeepSeekFathom-0.1.15-Setup.exe)**
+**[DeepSeekFathom-0.1.16-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.16/DeepSeekFathom-0.1.16-Setup.exe)**
 
 Linux / macOS：
 
@@ -139,6 +140,7 @@ deepseekfathom desktop
 - `list_skills` / `read_skill` 按需搜索、加载本项目、Agents 与 Claude 目录中的技能
 - 顶部模型、思考模式、权限模式、兼容接口选择
 - 右上角第三方 API / OpenAI-compatible Base URL 配置
+- 设置页直接新增、编辑、删除 MCP 服务，支持远程 URL、多个请求头和本地命令
 - 底部 `+` 上传文件
 - 工具调用、子代理、上下文压缩和内部思考事件折叠展示，必须点开才看详情
 
@@ -154,11 +156,17 @@ cd DeepSeekFathom
 
 ```text
 dist\DeepSeekFathom\DeepSeekFathom.exe
-dist\installer\DeepSeekFathom-0.1.15-Setup.exe
+dist\installer\DeepSeekFathom-0.1.16-Setup.exe
 ```
 
 安装程序会安装到当前用户目录，并自动创建名为 **DeepSeekFathom** 的桌面和开始菜单入口。桌面端使用独立的 `desktop-vX.Y.Z` 标签；GitHub Actions 会在推送该标签时构建 Windows artifact，并把 Setup EXE 上传到对应 Release。
 当前仓库所在的 Linux 环境不能直接产出真正 Windows exe；需要在 Windows 或 GitHub Actions 的 `windows-latest` 上构建。
+
+### 桌面端 MCP
+
+进入“设置 -> 扩展 -> MCP”，点击“新增”即可创建服务，不需要编辑源码或 JSON。远程服务填写名称和 `http(s)` URL；只有点击“添加请求头”后才会出现请求头名称和值，并可继续添加多行。本地服务切换到“本地命令”，启动参数每行填写一个。
+
+用户 MCP 配置保存在 `~/.deepseek-tulagent/config.json`，覆盖安装会保留。项目和插件提供的 MCP 会在同一页显示，但由各自来源管理，不能从用户列表误删。
 
 ## 配置
 

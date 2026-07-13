@@ -8,6 +8,8 @@ import subprocess
 import sys
 import urllib.request
 
+from .processes import run_hidden
+
 
 REPO = "ffffff233/DeepSeekFathom"
 REPO_URL = f"https://github.com/{REPO}"
@@ -65,7 +67,7 @@ def update_to(version: str, timeout: int = 180) -> tuple[bool, str]:
     target = "v" + normalize_version(version)
     root = source_root()
     if (root / ".git").exists():
-        status = subprocess.run(["git", "status", "--porcelain"], cwd=root, text=True, capture_output=True, timeout=30)
+        status = run_hidden(["git", "status", "--porcelain"], cwd=root, text=True, capture_output=True, timeout=30)
         if status.returncode != 0:
             return False, status.stderr.strip() or "could not inspect git status"
         if status.stdout.strip():
@@ -81,7 +83,7 @@ def update_to(version: str, timeout: int = 180) -> tuple[bool, str]:
         ]
         output: list[str] = []
         for command in commands:
-            completed = subprocess.run(command, cwd=root, text=True, capture_output=True, timeout=timeout)
+            completed = run_hidden(command, cwd=root, text=True, capture_output=True, timeout=timeout)
             output.append(completed.stdout + completed.stderr)
             if completed.returncode != 0:
                 pip_ok, pip_output = pip_install_archive(target, timeout=timeout)
@@ -114,6 +116,6 @@ def pip_install_archive(target: str, timeout: int = 180) -> tuple[bool, str]:
     ]
     env = os.environ.copy()
     env.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
-    completed = subprocess.run(command, text=True, capture_output=True, timeout=timeout, env=env)
+    completed = run_hidden(command, text=True, capture_output=True, timeout=timeout, env=env)
     output = completed.stdout + completed.stderr
     return completed.returncode == 0, (output.strip() or f"updated to {target}. Restart deepseekfathom.")

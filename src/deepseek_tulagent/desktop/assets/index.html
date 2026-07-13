@@ -7,7 +7,7 @@
   <link rel="icon" type="image/png" href="app-icon.png">
   <script>document.documentElement.dataset.theme = localStorage.getItem("deepseekfathom.theme") === "light" ? "light" : "dark";</script>
   <link rel="stylesheet" href="katex-fathom.css">
-  <link rel="stylesheet" href="style.css?v=0.1.15">
+  <link rel="stylesheet" href="style.css?v=0.1.16.1">
 </head>
 <body>
   <main class="app">
@@ -18,7 +18,7 @@
         </div>
         <div class="brandText">
           <strong>DeepSeekFathom</strong>
-          <span id="version">v0.1.15</span>
+          <span id="version">v0.1.16</span>
         </div>
         <button id="toggleSidebar" class="collapseBtn" title="收起 / 展开侧栏" aria-label="折叠侧栏"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M11 17l-5-5 5-5"/><path d="M18 17l-5-5 5-5"/></svg></button>
       </div>
@@ -185,6 +185,54 @@
               </div>
             </div>
           </section>
+          <section id="extensionsSection" class="settingsSection extensionsSection">
+            <div class="settingsHeading extensionsHeading">
+              <div>
+                <h2>扩展</h2>
+                <p>管理 MCP 服务、插件和 Hooks。用户添加的扩展与官方扩展分开保存，更新应用不会覆盖用户内容。</p>
+              </div>
+              <button id="refreshExtensions" type="button" class="ghost" title="重新发现并刷新扩展状态">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>
+                <span>刷新扩展</span>
+              </button>
+            </div>
+            <div id="extensionsSummary" class="extensionsSummary" aria-live="polite">正在读取扩展状态…</div>
+            <div class="extensionTabs" role="tablist" aria-label="扩展类型">
+              <button type="button" role="tab" data-extension-tab="mcp" aria-selected="true">MCP</button>
+              <button type="button" role="tab" data-extension-tab="plugins" aria-selected="false">插件</button>
+              <button type="button" role="tab" data-extension-tab="hooks" aria-selected="false">Hooks</button>
+            </div>
+            <div id="extensionsPanel" class="extensionsPanel">
+              <section class="extensionPane" data-extension-pane="mcp">
+                <div class="extensionPaneHead">
+                  <div><strong>MCP 服务</strong><span>连接外部工具服务，工具能力会按服务状态动态注册。</span></div>
+                  <div class="extensionPaneActions">
+                    <button id="addMcpServer" type="button" class="ghost small" title="新增 MCP 服务">
+                      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                      <span>新增</span>
+                    </button>
+                    <button type="button" class="ghost small" data-extension-action="connect_all" data-extension-kind="mcp">全部连接</button>
+                  </div>
+                </div>
+                <div id="mcpExtensionRows" class="extensionRows"></div>
+              </section>
+              <section class="extensionPane" data-extension-pane="plugins" hidden>
+                <div class="extensionPaneHead">
+                  <div><strong>插件</strong><span>插件可以提供技能、指令、MCP 服务和 Hooks。</span></div>
+                  <button type="button" class="ghost small" data-extension-action="reload" data-extension-kind="plugins">重新加载</button>
+                </div>
+                <div id="pluginExtensionRows" class="extensionRows"></div>
+              </section>
+              <section class="extensionPane" data-extension-pane="hooks" hidden>
+                <div class="extensionPaneHead">
+                  <div><strong>Hooks</strong><span>在代理生命周期事件发生时执行已配置的自动化动作。</span></div>
+                  <button type="button" class="ghost small" data-extension-action="reload" data-extension-kind="hooks">重新加载</button>
+                </div>
+                <div id="hookExtensionRows" class="extensionRows"></div>
+              </section>
+            </div>
+            <div id="extensionIssues" class="extensionIssues"></div>
+          </section>
           <section class="settingsSection diagnosticsSection">
             <div class="settingsHeading diagnosticsHeading">
               <div>
@@ -231,6 +279,60 @@
       </div>
     </section>
   </main>
-  <script src="app.js?v=0.1.15"></script>
+  <dialog id="mcpEditor" class="mcpEditorModal" aria-labelledby="mcpEditorTitle">
+    <form id="mcpEditorForm" novalidate>
+      <header class="mcpEditorHead">
+        <div>
+          <h2 id="mcpEditorTitle">新增 MCP 服务</h2>
+          <p>用户服务保存在个人配置中，应用更新不会覆盖。</p>
+        </div>
+        <button id="closeMcpEditor" class="railBtn" type="button" title="关闭" aria-label="关闭 MCP 编辑器">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </header>
+      <div class="mcpEditorBody">
+        <label class="mcpField">名称
+          <input id="mcpName" maxlength="64" autocomplete="off" spellcheck="false" placeholder="例如 my-tools">
+        </label>
+        <fieldset class="mcpTransportField">
+          <legend>连接方式</legend>
+          <div class="mcpTransportSwitch" role="group" aria-label="MCP 连接方式">
+            <button type="button" data-mcp-transport="http" aria-pressed="true">远程 URL</button>
+            <button type="button" data-mcp-transport="stdio" aria-pressed="false">本地命令</button>
+          </div>
+        </fieldset>
+        <div data-mcp-fields="http">
+          <label class="mcpField">URL
+            <input id="mcpUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://example.com/mcp">
+          </label>
+        </div>
+        <div class="mcpLocalFields" data-mcp-fields="stdio" hidden>
+          <label class="mcpField">命令
+            <input id="mcpCommand" autocomplete="off" spellcheck="false" placeholder="例如 npx">
+          </label>
+          <label class="mcpField">启动参数（每行一个）
+            <textarea id="mcpArgs" rows="3" spellcheck="false" placeholder="-y&#10;@example/mcp-server"></textarea>
+          </label>
+        </div>
+        <section id="mcpHeadersSection" class="mcpHeadersSection">
+          <div class="mcpHeadersHead">
+            <div><strong>请求头</strong><span>仅用于远程 URL，敏感值默认隐藏。</span></div>
+            <button id="addMcpHeader" type="button" class="ghost small">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+              <span>添加请求头</span>
+            </button>
+          </div>
+          <div id="mcpHeaderRows" class="mcpHeaderRows"></div>
+        </section>
+        <label class="mcpEnabledRow"><input id="mcpEnabled" type="checkbox" checked><span>启用此服务</span></label>
+        <p id="mcpEditorError" class="mcpEditorError" role="alert" hidden></p>
+      </div>
+      <footer class="mcpEditorActions">
+        <button id="cancelMcpEditor" type="button" class="ghost">取消</button>
+        <button id="saveMcpEditor" type="submit" class="primary">保存</button>
+      </footer>
+    </form>
+  </dialog>
+  <script src="app.js?v=0.1.16.1"></script>
 </body>
 </html>

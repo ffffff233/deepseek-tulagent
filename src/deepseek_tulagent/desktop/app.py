@@ -23,11 +23,23 @@ from . import DESKTOP_VERSION
 from ..agent import TuLAgent, compact_context_messages, context_window_info, estimate_message_tokens, summarize_arguments
 from ..capabilities import collect_capability_report
 from ..config import Settings, get_settings, merge_file_config
+from ..extensions import (
+    ExtensionRuntime,
+    delete_user_mcp_server,
+    get_user_mcp_server,
+    save_user_mcp_server,
+)
+from ..hooks import SESSION_END, set_hook_enabled, trust_project
+from ..mcp import MCPError, MCPHost
 from ..messages import Message
 from ..policy import ThinkingMode
+from ..processes import run_hidden
 from ..provider import DeepSeekClient, UsageStats, apply_thinking_payload
 from ..session import Session, SessionStore
 from ..skills import SkillStore
+from ..tool_contracts import ToolContract, normalize_tool_schema
+from ..tools import ToolResult
+from ..plugins import install_local_plugin, set_plugin_enabled
 
 
 ASSET_DIR = Path(__file__).resolve().parent / "assets"
@@ -129,6 +141,7 @@ class DesktopApi:
         # Window public makes it walk window.native and can deadlock WebView2 startup.
         self._window: Any = None
         self._lock = threading.Lock()
+        self._turn_state_lock = threading.RLock()
         self._session_navigation_lock = threading.Lock()
         self._session_navigation_id = 0
         self._running = False
@@ -138,6 +151,8 @@ class DesktopApi:
         self._active_turn_id: str | None = None
         self._pending_turn: dict[str, Any] | None = None
         self._pending_turn_lock = threading.Lock()
+        self._client_request_lock = threading.Lock()
+        self._client_request_results: dict[str, dict[str, Any]] = {}
         self._abandoned_turn_ids: set[str] = set()
         self._active_client: DeepSeekClient | None = None
         self._models_cache: dict[str, tuple[float, list[str]]] = {}
@@ -145,11 +160,20 @@ class DesktopApi:
         self._usage_total = UsageStats()
         self._usage_by_session: dict[str, UsageStats] = {}
         self._context_by_session: dict[str, dict[str, Any]] = {}
+        self._extension_lock = threading.RLock()
+        self._extension_mutating = False
+        self._extensions = ExtensionRuntime(self.settings.workspace)
+        self._mcp_host = MCPHost(self._extensions.active_mcp_configs())
+        self._mcp_autostarted = False
+        self._mcp_connect_thread: threading.Thread | None = None
+        self._hook_session_start_pending: set[str] = set()
+        self._hook_session_end_pending: set[str] = set()
 
     def bind_window(self, window: Any) -> None:
         self._window = window
 
     def boot(self) -> dict[str, Any]:
+        self._start_mcp_background()
         return {
             "version": DESKTOP_VERSION,
             "workspace": str(self.settings.workspace),
@@ -184,6 +208,287 @@ class DesktopApi:
 
     def capability_diagnostics(self) -> dict[str, Any]:
         return collect_capability_report(self.settings.workspace, mode=self.mode)
+
+    def _start_mcp_background(self) -> None:
+        with self._extension_lock:
+            if self._mcp_autostarted:
+                return
+            self._mcp_autostarted = True
+            host = self._mcp_host
+            if not host.status():
+                return
+
+            def connect() -> None:
+                try:
+                    host.connect_all()
+                except MCPError:
+                    # Per-server failures remain visible through extension_status().
+                    pass
+
+            thread = threading.Thread(target=connect, name="deepseekfathom-mcp-connect", daemon=True)
+            self._mcp_connect_thread = thread
+            thread.start()
+
+    def extension_status(self) -> dict[str, Any]:
+        with self._extension_lock:
+            report = self._extensions.diagnostics()
+            live = {item["name"]: item for item in self._mcp_host.status()}
+        mcp = report.get("mcp") if isinstance(report.get("mcp"), dict) else {}
+        entries = mcp.get("entries") if isinstance(mcp.get("entries"), list) else []
+        merged_entries: list[dict[str, Any]] = []
+        for entry in entries:
+            item = dict(entry) if isinstance(entry, dict) else {}
+            runtime = live.get(str(item.get("name") or ""))
+            if runtime:
+                item.update(runtime)
+            elif not item.get("active"):
+                item.update({"state": "disabled", "connected": False, "message": "已禁用或尚未信任"})
+            else:
+                item.update({"state": "configured", "connected": False, "message": "等待连接"})
+            merged_entries.append(item)
+        report["mcp"] = {**mcp, "live": True, "entries": merged_entries}
+        return report
+
+    def refresh_extensions(self) -> dict[str, Any]:
+        with self._turn_state_lock:
+            if self._running:
+                return {"ok": False, "error": "回复生成期间不能重新加载扩展"}
+            if self._extension_mutating:
+                return {"ok": False, "error": "扩展正在更新，请稍后重试"}
+            self._extension_mutating = True
+        try:
+            return self._refresh_extensions_when_idle()
+        finally:
+            with self._turn_state_lock:
+                self._extension_mutating = False
+
+    def _refresh_extensions_when_idle(self) -> dict[str, Any]:
+        try:
+            with self._extension_lock:
+                self._extensions.refresh()
+                replacement = MCPHost(self._extensions.active_mcp_configs())
+                previous = self._mcp_host
+                self._mcp_host = replacement
+                self._mcp_autostarted = False
+            previous.close()
+            self._start_mcp_background()
+            return self.extension_status()
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def _finish_user_mcp_mutation(self, name: str, operation: str) -> dict[str, Any]:
+        extensions = self._refresh_extensions_when_idle()
+        if extensions.get("ok") is not False:
+            return {"ok": True, "name": name, "extensions": extensions}
+        try:
+            current = self.extension_status()
+        except Exception:
+            current = {}
+        return {
+            "ok": True,
+            "name": name,
+            "warning": f"配置已{operation}，扩展重新加载失败；重启应用后生效",
+            "extensions": current,
+        }
+
+    def extension_action(self, data: dict[str, Any]) -> dict[str, Any]:
+        with self._turn_state_lock:
+            if self._running:
+                return {"ok": False, "error": "回复生成期间不能修改扩展"}
+            if self._extension_mutating:
+                return {"ok": False, "error": "扩展正在更新，请稍后重试"}
+            self._extension_mutating = True
+        try:
+            return self._extension_action_when_idle(data)
+        finally:
+            with self._turn_state_lock:
+                self._extension_mutating = False
+
+    def _extension_action_when_idle(self, data: dict[str, Any]) -> dict[str, Any]:
+        kind = str(data.get("kind") or "").strip().lower()
+        name = str(data.get("name") or "").strip()
+        action = str(data.get("action") or "").strip().lower()
+        enabled = bool(data.get("enabled", action in {"enable", "connect"}))
+        try:
+            if kind == "mcp":
+                if action == "get":
+                    return {
+                        "ok": True,
+                        "server": get_user_mcp_server(name, self._extensions.home),
+                    }
+                if action == "save":
+                    server = data.get("server")
+                    if isinstance(server, dict):
+                        server = dict(server)
+                        if "name" not in server and name:
+                            server["name"] = name
+                    else:
+                        config = data.get("config")
+                        if isinstance(config, dict):
+                            server = dict(config)
+                            if "name" in server and name and server["name"] != name:
+                                return {"ok": False, "error": "MCP 名称与配置内容冲突"}
+                            server["name"] = name
+                    if not isinstance(server, dict):
+                        return {"ok": False, "error": "MCP 保存内容必须是对象"}
+                    original_name = data.get("originalName")
+                    saved = save_user_mcp_server(
+                        server,
+                        self._extensions.home,
+                        original_name=original_name,
+                    )
+                    return self._finish_user_mcp_mutation(saved["name"], "保存")
+                if action == "delete":
+                    deleted = delete_user_mcp_server(name, self._extensions.home)
+                    return self._finish_user_mcp_mutation(deleted, "删除")
+                if action == "trust_project":
+                    trust_project(self.settings.workspace, self._extensions.home, "mcp")
+                    return self._refresh_extensions_when_idle()
+                if action == "connect_all":
+                    with self._extension_lock:
+                        self._mcp_host.connect_all()
+                elif action == "connect":
+                    with self._extension_lock:
+                        self._mcp_host.connect(name)
+                elif action == "disconnect":
+                    with self._extension_lock:
+                        self._mcp_host.disconnect(name)
+                elif action == "reconnect":
+                    with self._extension_lock:
+                        self._mcp_host.reconnect(name)
+                else:
+                    return {"ok": False, "error": f"不支持的 MCP 操作：{action}"}
+                return {"ok": True, "extensions": self.extension_status()}
+
+            if kind in {"plugin", "plugins"}:
+                if action == "reload":
+                    return self._refresh_extensions_when_idle()
+                package = next(
+                    (item for item in self._extensions.report.plugins if item.installed.name == name),
+                    None,
+                )
+                if package is None:
+                    return {"ok": False, "error": f"找不到插件：{name}"}
+                if package.scope == "project" and enabled:
+                    install_local_plugin(Path(package.installed.root), self._extensions.home, enabled=True)
+                elif package.scope == "project":
+                    return {"ok": True, "extensions": self.extension_status()}
+                else:
+                    set_plugin_enabled(name, enabled, self._extensions.home)
+                return self._refresh_extensions_when_idle()
+
+            if kind in {"hook", "hooks"}:
+                if action == "trust_project":
+                    trust_project(self.settings.workspace, self._extensions.home, "hooks")
+                    return self._refresh_extensions_when_idle()
+                if action == "reload":
+                    return self._refresh_extensions_when_idle()
+                hook = self._find_hook_action(name)
+                if hook is None:
+                    return {"ok": False, "error": f"找不到 Hook：{name}"}
+                if hook.scope == "plugin":
+                    return {"ok": False, "error": "插件 Hook 随插件启停，不能在这里单独修改"}
+                if hook.scope in {"project", "global"} and hook.source is not None:
+                    if hook.scope == "project" and enabled and not self._extensions.report.hooks.project_trusted:
+                        return {"ok": False, "error": "请先明确授权当前项目的 Hooks，再启用单条 Hook"}
+                    set_hook_enabled(
+                        hook.source,
+                        hook.event,
+                        hook.match,
+                        enabled,
+                        self.settings.workspace,
+                        self._extensions.home,
+                        hook_id=hook.hook_id,
+                    )
+                else:
+                    return {"ok": False, "error": "该 Hook 由扩展包管理，不能单独修改"}
+                return self._refresh_extensions_when_idle()
+            return {"ok": False, "error": f"不支持的扩展类型：{kind}"}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def _find_hook_action(self, action_name: str):
+        public_hooks = self._extensions.diagnostics().get("hooks", {}).get("entries", [])
+        configs = self._extensions.report.hooks.hooks
+        for public, hook in zip(public_hooks, configs):
+            candidate = "|".join(str(value) for value in (
+                public.get("event") or "",
+                public.get("source") or "",
+                public.get("match") or "",
+            ) if value)
+            if action_name in {
+                str(public.get("id") or ""),
+                candidate,
+                str(public.get("name") or ""),
+                hook.event,
+            }:
+                return hook
+        return None
+
+    def _mcp_tool_contracts(self) -> list[ToolContract]:
+        with self._extension_lock:
+            host = self._mcp_host
+            definitions = host.tool_definitions()
+            specs = {spec.name: spec for spec in self._extensions.mcp_specs}
+        contracts: list[ToolContract] = []
+        schema_budget = 512_000
+        for definition in definitions:
+            name = str(definition.get("name") or "")
+            origin = definition.get("origin") if isinstance(definition.get("origin"), dict) else {}
+            server = str(origin.get("server") or "")
+            raw_name = str(origin.get("tool") or "")
+            spec = specs.get(server)
+            trusted = bool(spec and (
+                raw_name in spec.trusted_read_only_tools
+                or name in spec.trusted_read_only_tools
+            ))
+            schema = normalize_tool_schema(definition.get("schema"))
+            schema_bytes = len(json.dumps(schema, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+            if schema_bytes > schema_budget or len(contracts) >= 128:
+                continue
+            schema_budget -= schema_bytes
+            contracts.append(ToolContract(
+                name=name,
+                description=str(definition.get("description") or name)[:1000],
+                schema=schema,
+                handler=lambda arguments, _host=host, _name=name: mcp_result_to_tool_result(
+                    _host.call_tool(_name, arguments)
+                ),
+                origin=f"mcp:{server}",
+                read_only=bool(definition.get("read_only")),
+                trusted_read_only=trusted,
+            ))
+        return contracts
+
+    def _shutdown_extensions(self) -> None:
+        try:
+            self._extensions.hook_runner.run(SESSION_END, {
+                "sessionId": self.session.session_id if self.session else None,
+            })
+        except Exception:
+            pass
+        try:
+            with self._extension_lock:
+                self._mcp_host.close()
+        except Exception:
+            pass
+
+    def _run_session_end_hook(self, session_id: str | None) -> None:
+        if not session_id:
+            return
+        try:
+            self._extensions.new_hook_runner().run(SESSION_END, {"sessionId": session_id})
+        except Exception:
+            pass
+
+    def _transition_session_hooks(self, previous_id: str | None, next_id: str | None) -> None:
+        if previous_id and previous_id != next_id:
+            if self._running and self._active_turn_session_id == previous_id:
+                self._hook_session_end_pending.add(previous_id)
+            else:
+                self._run_session_end_hook(previous_id)
+        if next_id and previous_id != next_id:
+            self._hook_session_start_pending.add(next_id)
 
     def configure(self, data: dict[str, Any]) -> dict[str, Any]:
         config: dict[str, Any] = {}
@@ -385,6 +690,7 @@ class DesktopApi:
         self._context_by_session.pop(session_id, None)
         self._usage_by_session.pop(session_id, None)
         if self.session is not None and self.session.session_id == session_id:
+            self._transition_session_hooks(session_id, None)
             self.session = None
         return {"ok": True, "sessions": self.sessions(), "context": self.context_status()}
 
@@ -395,6 +701,8 @@ class DesktopApi:
             if requested is not None and requested < self._session_navigation_id:
                 return {"ok": False, "stale": True, "activated": False, "sessionId": loaded.session_id}
             self._session_navigation_id = requested if requested is not None else self._session_navigation_id + 1
+            previous_id = self.session.session_id if self.session else None
+            self._transition_session_hooks(previous_id, loaded.session_id)
             self.session = loaded
             self._restore_context_usage(session_id)
             self._restore_session_usage(session_id)
@@ -413,6 +721,8 @@ class DesktopApi:
             if requested is not None and requested < self._session_navigation_id:
                 return {"ok": False, "stale": True, "activated": False, "sessionId": self.session.session_id if self.session else None}
             self._session_navigation_id = requested if requested is not None else self._session_navigation_id + 1
+            previous_id = self.session.session_id if self.session else None
+            self._transition_session_hooks(previous_id, None)
             self.session = None
             return {
                 "ok": True,
@@ -668,6 +978,20 @@ class DesktopApi:
         }
 
     def send(self, payload: dict[str, Any]) -> dict[str, Any]:
+        client_request_id = str(payload.get("clientRequestId") or "").strip()[:160]
+        if client_request_id:
+            with self._client_request_lock:
+                previous = self._client_request_results.get(client_request_id)
+                if previous is not None:
+                    return {**previous, "duplicate": True}
+                result = self._send_once(payload)
+                self._client_request_results[client_request_id] = dict(result)
+                while len(self._client_request_results) > 256:
+                    self._client_request_results.pop(next(iter(self._client_request_results)))
+                return result
+        return self._send_once(payload)
+
+    def _send_once(self, payload: dict[str, Any]) -> dict[str, Any]:
         prompt = str(payload.get("prompt") or "").strip()
         goal = str(payload.get("goal") or "").strip() or None
         attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
@@ -680,8 +1004,11 @@ class DesktopApi:
             prompt = "请看这张图片。"
         if not prompt and not images:
             return {"ok": False, "error": "empty prompt"}
-        if self._running:
-            if self._cancel_requested:
+        with self._turn_state_lock:
+            running = self._running
+            cancelling = self._cancel_requested
+        if running:
+            if cancelling:
                 return self._queue_turn_after_cancel(prompt, images=images, goal=goal)
             return {"ok": False, "error": "turn already running"}
         return self._start_turn(prompt, images=images, goal=goal)
@@ -694,49 +1021,68 @@ class DesktopApi:
         restore_suffix: list[Message] | None = None,
         prepared_messages: list[Message] | None = None,
     ) -> dict[str, Any]:
-        self._cancel_requested = False
-        self._running = True
-        if self.session is None:
-            self.session = Session(self.settings.workspace)
-        session_id = self.session.session_id
-        turn_id = uuid4().hex
-        thread = threading.Thread(
-            target=self._run_agent_turn,
-            args=(prompt, images or [], session_id, turn_id, goal, restore_suffix, prepared_messages),
-            daemon=True,
-        )
-        thread.start()
+        with self._turn_state_lock:
+            if self._running:
+                return {"ok": False, "error": "turn already running"}
+            if self._extension_mutating:
+                return {"ok": False, "error": "extensions are updating"}
+            self._cancel_requested = False
+            self._running = True
+            if self.session is None:
+                self.session = Session(self.settings.workspace)
+            session_id = self.session.session_id
+            turn_id = uuid4().hex
+            thread = threading.Thread(
+                target=self._run_agent_turn,
+                args=(prompt, images or [], session_id, turn_id, goal, restore_suffix, prepared_messages),
+                daemon=True,
+            )
+            try:
+                thread.start()
+            except Exception:
+                self._running = False
+                raise
         return {"ok": True, "sessionId": session_id, "turnId": turn_id}
 
     def _queue_turn_after_cancel(self, prompt: str, images: list[str] | None = None, goal: str | None = None) -> dict[str, Any]:
-        if self.session is None:
-            self.session = Session(self.settings.workspace)
-        session_id = self.session.session_id
-        turn_id = uuid4().hex
-        with self._pending_turn_lock:
-            if self._pending_turn is not None:
-                return {"ok": False, "error": "已有一条回复正在等待当前取消完成"}
-            self._pending_turn = {
-                "prompt": prompt,
-                "images": images or [],
-                "session_id": session_id,
-                "turn_id": turn_id,
-                "goal": goal,
-            }
+        with self._turn_state_lock:
+            # The cancelled worker may finish between send() observing its state and
+            # this method acquiring the lock. Start normally instead of stranding a
+            # queued request that no worker remains to pick up.
+            if not self._running:
+                return self._start_turn(prompt, images=images, goal=goal)
+            if not self._cancel_requested:
+                return {"ok": False, "error": "turn already running"}
+            if self.session is None:
+                self.session = Session(self.settings.workspace)
+            session_id = self.session.session_id
+            turn_id = uuid4().hex
+            with self._pending_turn_lock:
+                if self._pending_turn is not None:
+                    return {"ok": False, "error": "已有一条回复正在等待当前取消完成"}
+                self._pending_turn = {
+                    "prompt": prompt,
+                    "images": images or [],
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "goal": goal,
+                }
         return {"ok": True, "queued": True, "sessionId": session_id, "turnId": turn_id}
 
     def _start_pending_turn_if_any(self) -> None:
-        with self._pending_turn_lock:
-            pending = self._pending_turn
-            self._pending_turn = None
-        if not pending:
-            return
+        with self._turn_state_lock:
+            with self._pending_turn_lock:
+                pending = self._pending_turn
+                self._pending_turn = None
+            if not pending:
+                self._running = False
+                return
+            self._cancel_requested = False
+            self._running = True
         session_id = str(pending["session_id"])
         # Do not adopt the queued conversation here. The user may have switched again
         # while the cancelled worker was winding down; _run_agent_turn loads the queued
         # session by id and keeps its events scoped without changing the visible session.
-        self._cancel_requested = False
-        self._running = True
         thread = threading.Thread(
             target=self._run_agent_turn,
             args=(
@@ -748,7 +1094,12 @@ class DesktopApi:
             ),
             daemon=True,
         )
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            with self._turn_state_lock:
+                self._running = False
+            raise
 
     @staticmethod
     def _is_real_user_message(message: Message) -> bool:
@@ -862,6 +1213,7 @@ class DesktopApi:
         store = SessionStore(self.settings.workspace)
         old_title = str(store.metadata(self.session.session_id).get("title") or "").strip()
         store.update_metadata(forked.session_id, title=(old_title + " · 分支") if old_title else "分支会话")
+        self._transition_session_hooks(self.session.session_id, forked.session_id)
         self.session = forked
         return {
             "ok": True,
@@ -963,8 +1315,9 @@ class DesktopApi:
         with self._lock:
             turn_session_id = turn_session_id or (self.session.session_id if self.session else None)
             turn_id = turn_id or uuid4().hex
-            self._active_turn_session_id = turn_session_id
-            self._active_turn_id = turn_id
+            with self._turn_state_lock:
+                self._active_turn_session_id = turn_session_id
+                self._active_turn_id = turn_id
             if prepared_messages is not None:
                 try:
                     created_at = SessionStore(self.settings.workspace).load(str(turn_session_id)).created_at
@@ -1074,6 +1427,13 @@ class DesktopApi:
                 self._active_client = client
                 result_session_id = turn_session_id
                 try:
+                    with self._extension_lock:
+                        skill_roots = self._extensions.skill_roots
+                        instruction_files = self._extensions.instruction_files
+                        hook_runner = self._extensions.new_hook_runner()
+                        force_session_start_hook = str(turn_session_id) in self._hook_session_start_pending
+                        self._hook_session_start_pending.discard(str(turn_session_id))
+                    mcp_contracts = self._mcp_tool_contracts()
                     runner = TuLAgent(
                         self.settings,
                         mode=self.mode,
@@ -1081,6 +1441,11 @@ class DesktopApi:
                         client=client,
                         approve=(lambda _n, _a: True) if self.mode in {"root", "yolo"} else self._request_approval,
                         context_tokens_hint=context_tokens_hint,
+                        extra_tool_contracts=mcp_contracts,
+                        extra_skill_roots=skill_roots,
+                        extra_instruction_files=instruction_files,
+                        hook_runner=hook_runner,
+                        force_session_start_hook=force_session_start_hook,
                     )
                     result = runner.run(prompt, stream=True, images=images or [], on_delta=delta, on_final=final, on_event=event, should_cancel=is_cancelled, session=turn_session, goal=goal)
                     flush_deltas()
@@ -1138,11 +1503,20 @@ class DesktopApi:
                     emit_turn("turn:error", payload)
             finally:
                 self._abandoned_turn_ids.discard(turn_id)
-                if self._active_turn_id == turn_id:
-                    self._running = False
-                    self._cancel_requested = False
-                    self._active_turn_session_id = None
-                    self._active_turn_id = None
+                active_finished = False
+                with self._turn_state_lock:
+                    if self._active_turn_id == turn_id:
+                        active_finished = True
+                        self._cancel_requested = False
+                        self._active_turn_session_id = None
+                        self._active_turn_id = None
+                if active_finished:
+                    if str(turn_session_id) in self._hook_session_end_pending:
+                        self._hook_session_end_pending.discard(str(turn_session_id))
+                        self._run_session_end_hook(str(turn_session_id))
+                    # Keep _running true until this atomic handoff either claims the
+                    # queued request or marks the backend idle. No second caller can
+                    # slip into the gap and create another worker.
                     self._start_pending_turn_if_any()
 
     def _record_session_usage(self, session_id: str | None, usage: UsageStats) -> None:
@@ -1360,6 +1734,54 @@ def parse_float_setting(value: Any, *, minimum: float, maximum: float) -> float 
     return number
 
 
+def mcp_result_to_tool_result(result: dict[str, Any]) -> ToolResult:
+    """Convert bounded MCP content blocks into the agent's text/image result shape."""
+
+    content = result.get("content", []) if isinstance(result, dict) else []
+    if isinstance(content, str):
+        content = [{"type": "text", "text": content}]
+    if not isinstance(content, list):
+        content = []
+    text_parts: list[str] = []
+    images: list[str] = []
+    image_bytes = 0
+    allowed_images = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+    for block in content[:100]:
+        if not isinstance(block, dict):
+            continue
+        kind = str(block.get("type") or "")
+        if kind == "text" and isinstance(block.get("text"), str):
+            text_parts.append(block["text"])
+            continue
+        if kind == "image" and len(images) < 4:
+            mime = str(block.get("mimeType") or block.get("mime_type") or "").lower()
+            data = block.get("data")
+            if mime not in allowed_images or not isinstance(data, str):
+                continue
+            try:
+                decoded_size = len(base64.b64decode(data, validate=True))
+            except (binascii.Error, ValueError):
+                continue
+            if decoded_size > 8 * 1024 * 1024 or image_bytes + decoded_size > 20 * 1024 * 1024:
+                continue
+            image_bytes += decoded_size
+            images.append(f"data:{mime};base64,{data}")
+            continue
+        if kind == "resource" and isinstance(block.get("resource"), dict):
+            resource = block["resource"]
+            if isinstance(resource.get("text"), str):
+                text_parts.append(resource["text"])
+                continue
+        try:
+            text_parts.append(json.dumps(block, ensure_ascii=False))
+        except (TypeError, ValueError):
+            continue
+    output = "\n".join(part for part in text_parts if part).strip()
+    if not output:
+        output = "MCP 工具已完成。" if not result.get("isError") else "MCP 工具返回失败。"
+    return ToolResult(not bool(result.get("isError")), output[:100_000], images=images)
+
+
 def format_attachment_prompt(attachments: list[dict[str, Any]]) -> str:
     if not attachments:
         return ""
@@ -1518,6 +1940,33 @@ def serialize_messages(messages: list[Message]) -> list[dict[str, Any]]:
                 continue
         visible.append({"role": message.role, "content": content, "srcIndex": idx})
     finish_orphaned_tools()
+
+    # Historical versions could persist an internal recovery answer immediately after
+    # an already-complete reply. Preserve the JSONL on disk, but suppress that adjacent
+    # duplicate during replay so reopening the conversation does not answer twice.
+    deduplicated: list[dict[str, Any]] = []
+    for entry in visible:
+        if (
+            entry.get("role") == "assistant"
+            and deduplicated
+            and deduplicated[-1].get("role") == "assistant"
+        ):
+            continue
+        deduplicated.append(entry)
+    visible = deduplicated
+
+    # One real user turn owns one actionable assistant reply. Tool-separated narration
+    # remains visible but only the final reply receives retry/branch controls.
+    turn_assistants: list[dict[str, Any]] = []
+    for entry in visible:
+        if entry.get("role") == "user":
+            for prior in turn_assistants[:-1]:
+                prior["intermediate"] = True
+            turn_assistants = []
+        elif entry.get("role") == "assistant":
+            turn_assistants.append(entry)
+    for prior in turn_assistants[:-1]:
+        prior["intermediate"] = True
     return visible
 
 
@@ -1554,6 +2003,23 @@ def ensure_session_title(workspace: Path, session: Session) -> None:
 
 
 def parse_agent_event(text: str) -> dict[str, str]:
+    if text.startswith("hook "):
+        encoded = text.removeprefix("hook ").strip()
+        try:
+            payload = json.loads(base64.b64decode(encoded).decode("utf-8", "replace"))
+        except (ValueError, json.JSONDecodeError):
+            payload = {}
+        event = str(payload.get("event") or "Hook")
+        decision = str(payload.get("decision") or "pass")
+        scope = str(payload.get("scope") or "")
+        detail = str(payload.get("message") or "")
+        duration = payload.get("durationMs")
+        suffix = f"{scope} · {decision}" if scope else decision
+        if isinstance(duration, int):
+            suffix += f" · {duration} ms"
+        if detail:
+            suffix += f"\n{detail}"
+        return {"kind": "hook", "name": event, "detail": suffix}
     if text.startswith("tool "):
         rest = text.removeprefix("tool ").strip()
         name, _, args = rest.partition(" ")
@@ -1750,7 +2216,7 @@ def video_duration_seconds(path: Path, timeout: int = 8) -> float | None:
     if not ffprobe:
         return None
     try:
-        completed = subprocess.run(
+        completed = run_hidden(
             [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)],
             text=True,
             capture_output=True,
@@ -1783,7 +2249,7 @@ def extract_video_frames(path: Path, *, max_frames: int = 6, timeout: int = 20) 
     for index, timestamp in enumerate(timestamps, 1):
         out = frame_dir / f"frame_{index:02d}.jpg"
         try:
-            completed = subprocess.run(
+            completed = run_hidden(
                 [
                     ffmpeg,
                     "-y",
@@ -1884,6 +2350,7 @@ def main() -> None:
     acquired, instance = acquire_desktop_instance()
     if not acquired:
         return
+    api: DesktopApi | None = None
     try:
         try:
             import webview
@@ -1922,6 +2389,8 @@ def main() -> None:
             + (f"\n最后一个错误：{last_error}" if last_error else "")
         )
     finally:
+        if api is not None:
+            api._shutdown_extensions()
         release_desktop_instance(instance)
 
 

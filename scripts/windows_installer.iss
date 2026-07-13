@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.15"
+  #define MyAppVersion "0.1.16"
 #endif
 
 [Setup]
@@ -31,6 +31,10 @@ Name: "chinesesimplified"; MessagesFile: "Languages\ChineseSimplified.isl"
 Source: "..\dist\DeepSeekFathom\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\assets\app-icon.ico"; DestDir: "{app}"; DestName: "DeepSeekFathom-{#MyAppVersion}.ico"; Flags: ignoreversion
 Source: "..\NOTICE"; DestDir: "{app}"; DestName: "NOTICE.txt"; Flags: ignoreversion
+
+[InstallDelete]
+Type: files; Name: "{autodesktop}\DeepSeekTuLAgent.lnk"
+Type: files; Name: "{autoprograms}\DeepSeekTuLAgent.lnk"
 
 [Icons]
 Name: "{autodesktop}\DeepSeekFathom"; Filename: "{app}\DeepSeekFathom.exe"; WorkingDir: "{app}"; IconFilename: "{app}\DeepSeekFathom-{#MyAppVersion}.ico"

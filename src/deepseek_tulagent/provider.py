@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 import httpx
 
@@ -21,7 +21,10 @@ class NativeToolCall:
     call_id: str = ""
 
 
-def openai_tool_definitions(tool_names: Iterable[str]) -> list[dict[str, Any]]:
+def openai_tool_definitions(
+    tool_names: Iterable[str],
+    runtime_contracts: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Build OpenAI function definitions from the application's canonical schemas."""
 
     from .capabilities import TOOL_SCHEMAS, VIRTUAL_TOOL_DESCRIPTIONS
@@ -29,10 +32,18 @@ def openai_tool_definitions(tool_names: Iterable[str]) -> list[dict[str, Any]]:
 
     definitions: list[dict[str, Any]] = []
     for name in dict.fromkeys(tool_names):
-        schema = TOOL_SCHEMAS.get(name)
+        runtime = (runtime_contracts or {}).get(name)
+        if runtime is not None and hasattr(runtime, "provider_definition"):
+            definitions.append(runtime.provider_definition())
+            continue
+        if isinstance(runtime, Mapping):
+            schema = runtime.get("schema", runtime.get("inputSchema", runtime.get("parameters")))
+            description = str(runtime.get("description") or name)
+        else:
+            schema = TOOL_SCHEMAS.get(name)
+            description = VIRTUAL_TOOL_DESCRIPTIONS.get(name) or TOOL_DESCRIPTIONS.get(name) or name
         if schema is None:
             continue
-        description = VIRTUAL_TOOL_DESCRIPTIONS.get(name) or TOOL_DESCRIPTIONS.get(name) or name
         definitions.append(
             {
                 "type": "function",
@@ -539,6 +550,9 @@ class DeepSeekClient:
         # snapshot from only the most recent upstream request.
         self.last_usage = UsageStats()
         self.last_tool_calls: list[NativeToolCall] = []
+        # TuLAgent fills this per runtime. It lets MCP and plugin tools use the same
+        # provider-native contract path without mutating the process-wide built-ins.
+        self.runtime_tool_contracts: dict[str, Any] = {}
 
     def _record_usage(self, data: dict, source: str = "upstream") -> None:
         snapshot = parse_usage_stats(data, source)
@@ -661,7 +675,7 @@ class DeepSeekClient:
             "max_tokens": self._output_tokens(),
             "stream": stream,
         }
-        tools = openai_tool_definitions(tool_names or ())
+        tools = openai_tool_definitions(tool_names or (), self.runtime_tool_contracts)
         if tools:
             payload["tools"] = tools
         if stream:

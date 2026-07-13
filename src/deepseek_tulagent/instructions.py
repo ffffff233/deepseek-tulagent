@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 
 INSTRUCTION_CONTEXT_PREFIX = '<runtime-context kind="instructions" version="1">'
@@ -30,9 +31,16 @@ class InstructionContext:
 
 
 class InstructionStore:
-    def __init__(self, workspace: Path, home: Path | None = None):
+    def __init__(
+        self,
+        workspace: Path,
+        home: Path | None = None,
+        *,
+        extra_files: Iterable[Path] = (),
+    ):
         self.workspace = workspace.resolve()
         self.home = (home or Path.home()).resolve()
+        self.extra_files = tuple(Path(path).expanduser().resolve() for path in extra_files)
 
     def load(self) -> InstructionContext:
         documents: list[InstructionDocument] = []
@@ -64,7 +72,9 @@ class InstructionStore:
         )
 
     def candidates(self) -> list[tuple[Path, str]]:
-        candidates: list[tuple[Path, str]] = []
+        # Plugin instructions are defaults. User/project/local files appear later and
+        # therefore retain the documented precedence over plugin-provided guidance.
+        candidates: list[tuple[Path, str]] = [(path, "plugin") for path in self.extra_files]
         user_root = self.home / ".deepseek-tulagent"
         candidates.extend((user_root / name, "user") for name in INSTRUCTION_NAMES)
 

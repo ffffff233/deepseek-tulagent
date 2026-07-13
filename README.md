@@ -23,10 +23,11 @@ The product, repository, and CLI all use **DeepSeekFathom**. Only the pip distri
 - Global `deepseekfathom` command for interactive use
 - Tool registry: files, local search, web search, git status, shell, patch, downloads, resilient repository cloning, background services
 - Subagents: `delegate_agent` supports both one isolated subtask and an `agents=[...]` batch for multiple subagents in one tool call
-- Desktop app: chat, file attachments, skill list, collapsible tool calls, collapsible internal thinking, quick model/thinking/permission switching, and third-party OpenAI-compatible API configuration
+- Desktop app: chat, file attachments, skill list, collapsible tool calls, quick model/thinking/permission switching, third-party OpenAI-compatible API configuration, and live MCP/plugin/Hook management
 - Six permission modes: `plan`, `review`, `agent`, `trusted`, `yolo`, `root`
 - Five thinking modes: `off`, `fast`, `balanced`, `deep`, `max`
 - Local skill directories with `SKILL.md` discovery and skill creation
+- User-owned plugins under `~/.deepseek-tulagent/plugins`; desktop updates preserve user skills, plugins, settings, and sessions
 - JSONL session transcript under `.deepseek-tulagent/sessions`
 - One-shot and interactive CLI suitable for automation and later full TUI wrapping
 - Doctor command for local config checks
@@ -35,7 +36,7 @@ The product, repository, and CLI all use **DeepSeekFathom**. Only the pip distri
 
 Windows users can download and run the installer directly:
 
-**[DeepSeekFathom-0.1.15-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.15/DeepSeekFathom-0.1.15-Setup.exe)**
+**[DeepSeekFathom-0.1.16-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.16/DeepSeekFathom-0.1.16-Setup.exe)**
 
 Linux / macOS:
 
@@ -150,6 +151,7 @@ The desktop app includes:
 - on-demand `list_skills` / `read_skill` loading across DeepSeekFathom, Agents, and Claude skill conventions
 - model, thinking mode, permission mode, and provider-format selectors
 - DeepSeek, OpenAI (Chat and Responses), Google Gemini, and Anthropic Claude API support, with Base URL / API key settings
+- in-app MCP create/edit/delete for remote Streamable HTTP URLs, repeatable request headers, and local commands
 - `+` file uploads
 - collapsible tool calls, subagents, context compaction, and internal thinking events
 
@@ -172,7 +174,13 @@ cd DeepSeekFathom
 .\scripts\build_windows_exe.ps1
 ```
 
-Outputs: `dist\DeepSeekFathom\DeepSeekFathom.exe` and, when Inno Setup 6 is installed, `dist\installer\DeepSeekFathom-0.1.15-Setup.exe`. The installer installs per user and creates branded **DeepSeekFathom** desktop and Start menu entries. Desktop releases use independent `desktop-vX.Y.Z` tags; GitHub Actions builds the installer from those tags and attaches it to the matching Release.
+Outputs: `dist\DeepSeekFathom\DeepSeekFathom.exe` and, when Inno Setup 6 is installed, `dist\installer\DeepSeekFathom-0.1.16-Setup.exe`. The installer installs per user and creates branded **DeepSeekFathom** desktop and Start menu entries. Desktop releases use independent `desktop-vX.Y.Z` tags; GitHub Actions builds the installer from those tags and attaches it to the matching Release.
+
+### Desktop MCP
+
+Open `Settings -> Extensions -> MCP` and select `Add`; no source or JSON editing is required. Remote services accept a name, an `http(s)` URL, and any number of request-header rows added on demand. Local services accept a command and one argument per line.
+
+User MCP configuration lives in `~/.deepseek-tulagent/config.json` and survives installer upgrades. Project and plugin MCP services remain visible in the same view but are managed by their source.
 
 ## Conversations
 

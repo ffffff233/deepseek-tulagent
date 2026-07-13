@@ -179,11 +179,17 @@ def display_path(path: Path, workspace: Path, home: Path) -> str:
 
 def collect_capability_report(workspace: Path, *, mode: str = "root", home: Path | None = None) -> dict[str, Any]:
     from .agent import KNOWN_TOOL_NAMES, SYSTEM_PROMPT
+    from .extensions import inspect_extensions
 
     root = workspace.resolve()
     user_home = (home or Path.home()).resolve()
     issues: list[dict[str, Any]] = []
-    skill_store = SkillStore(root, home=user_home)
+    extension_report = inspect_extensions(
+        root,
+        None if home is None else user_home / ".deepseek-tulagent",
+    )
+    extension_data = extension_report.to_dict()
+    skill_store = SkillStore(root, home=user_home, extra_roots=extension_report.skill_roots)
     inspection = skill_store.inspect()
 
     skill_roots = [
@@ -294,7 +300,11 @@ def collect_capability_report(workspace: Path, *, mode: str = "root", home: Path
         if name in runtime_names and schema is None:
             issues.append(issue("warning", "tool.schema_missing", "tools", name, "<tool-contract>", "工具缺少可检查的参数契约。", "补充确定性的工具参数 schema。", "tools"))
 
-    instruction_context = InstructionStore(root, home=user_home).load()
+    instruction_context = InstructionStore(
+        root,
+        home=user_home,
+        extra_files=extension_report.instruction_files,
+    ).load()
     instruction_entries: list[dict[str, Any]] = []
     for document in instruction_context.documents:
         entry = {
@@ -319,16 +329,19 @@ def collect_capability_report(workspace: Path, *, mode: str = "root", home: Path
                 "diagnostics",
             ))
 
-    issues.append(issue(
-        "info",
-        "extensions.not_integrated",
-        "extensions",
-        "mcp-plugins-hooks",
-        "<runtime>",
-        "当前版本尚未集成 MCP、插件包和 Hooks，诊断页不会伪报为健康。",
-        "后续版本接入后再增加静态配置与运行态检查。",
-        "diagnostics",
-    ))
+    for extension_issue in extension_data.get("issues", []):
+        if not isinstance(extension_issue, dict):
+            continue
+        issues.append(issue(
+            str(extension_issue.get("severity") or "warning"),
+            str(extension_issue.get("code") or "extension.issue"),
+            str(extension_issue.get("subsystem") or "extensions"),
+            str(extension_issue.get("name") or "extension"),
+            str(extension_issue.get("source") or "<runtime>"),
+            str(extension_issue.get("message") or "扩展配置存在问题。"),
+            "在扩展设置中检查来源、信任和启用状态。",
+            "extensions",
+        ))
     issues.sort(key=lambda item: ({"error": 0, "warning": 1, "info": 2}[item["severity"]], item["code"], item["name"], item["source"]))
 
     errors = sum(item["severity"] == "error" for item in issues)
@@ -357,6 +370,9 @@ def collect_capability_report(workspace: Path, *, mode: str = "root", home: Path
             "loadedInstructions": len(instruction_entries),
             "instructionPromptBytes": len(instruction_context.prompt.encode("utf-8")),
             "instructionPromptTokenEstimate": estimate_tokens(instruction_context.prompt),
+            "plugins": extension_data.get("summary", {}).get("plugins", 0),
+            "mcpServers": extension_data.get("summary", {}).get("mcpServers", 0),
+            "hooks": extension_data.get("summary", {}).get("hooks", 0),
         },
         "instructions": {"entries": instruction_entries, "truncated": instruction_context.truncated},
         "skills": {
@@ -367,9 +383,9 @@ def collect_capability_report(workspace: Path, *, mode: str = "root", home: Path
         },
         "tools": {"protocol": "native-openai-with-text-fallback", "entries": tool_entries},
         "extensions": {
-            "mcp": {"supported": False, "entries": []},
-            "plugins": {"supported": False, "entries": []},
-            "hooks": {"supported": False, "entries": []},
+            "mcp": extension_data.get("mcp", {"supported": True, "entries": []}),
+            "plugins": extension_data.get("plugins", {"supported": True, "entries": []}),
+            "hooks": extension_data.get("hooks", {"supported": True, "entries": []}),
         },
         "issues": issues,
     }

@@ -13,13 +13,22 @@ The read-only capability diagnostics model also studied Reasonix's skill
 winner/shadowed reporting, deterministic tool contract snapshots, prompt-cost
 visibility, path redaction, and explicit unsupported-capability reporting at the
 same reference commit. DeepSeekFathom's implementation remains independently
-written and currently reports MCP, plugin packages, and Hooks as not integrated.
+written; the v0.1.16 diagnostics now report the integrated MCP, plugin, and Hook
+runtime without starting third-party processes during static inspection.
 
 The v0.1.15 runtime work also studied Reasonix's on-demand skill bodies,
 hierarchical instruction discovery, stable prompt-prefix preservation, native
 tool contracts, and lightweight session-list indexing at the same reference
 commit. The Python provider adapters, session format, safety limits, and desktop
 rendering remain independently implemented for DeepSeekFathom.
+
+The extension runtime also studied Reasonix's MCP stdio lifecycle, plugin
+manifest normalization and atomic package state, Hook event/timeout semantics,
+project trust boundary, and static capability diagnostics at commit
+78e9e2656ae5275cbdd29429053fdcc1cc97373c. DeepSeekFathom's Python extension
+modules are independently written for this project's configuration, process,
+and tool interfaces. Static inspection does not start third-party processes,
+and the Windows distribution continues to carry this complete MIT notice.
 
 Reasonix is distributed under the MIT License:
 

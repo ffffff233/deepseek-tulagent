@@ -1204,6 +1204,70 @@ def test_agent_retries_after_tool_failure_when_model_stops(tmp_path: Path):
     assert result.rounds == 4
     session_text = "\n".join(message.content for message in SessionStore(tmp_path).load(result.session_id).messages)
     assert RECOVER_AFTER_TOOL_FAILURE_PROMPT not in session_text
+    assert "读取失败，文件不存在。" not in session_text
+
+
+def test_desktop_buffers_failed_tool_recovery_draft(tmp_path: Path):
+    class RetryClient:
+        def __init__(self):
+            self.calls = 0
+
+        def stream_chat(self, messages):
+            self.calls += 1
+            replies = [
+                '{"tool":"read_file","arguments":{"path":"missing.txt"}}',
+                "读取失败，文件不存在。",
+                '{"tool":"list_files","arguments":{"path":"."}}',
+                "已改为列目录确认文件不存在。",
+            ]
+            if self.calls == 3:
+                assert "tool failed" in messages[-1].content.lower()
+            yield replies[self.calls - 1]
+
+    visible: list[str] = []
+    finals: list[str] = []
+    result = TuLAgent(settings(tmp_path), mode="root", client=RetryClient()).run(
+        "读取 missing.txt，如果失败就检查目录",
+        stream=True,
+        on_delta=visible.append,
+        on_final=finals.append,
+        require_todo=False,
+    )
+
+    assert result.answer == "已改为列目录确认文件不存在。"
+    assert "读取失败" not in "".join(visible)
+    assert "读取失败" not in "".join(finals)
+    assert finals[-1] == result.answer
+
+
+def test_agent_does_not_retry_when_only_one_tool_in_batch_failed(tmp_path: Path):
+    class PartialSuccessClient:
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps({
+                    "tool_calls": [
+                        {"name": "read_file", "arguments": {"path": "missing.txt"}},
+                        {"name": "list_files", "arguments": {"path": "."}},
+                    ]
+                })
+            if self.calls == 2:
+                return "目录检查完成；目标文件不存在，其他目录信息已取得。"
+            raise AssertionError("a partial-success batch must not start an unsolicited recovery round")
+
+    client = PartialSuccessClient()
+    result = TuLAgent(settings(tmp_path), mode="root", client=client).run(
+        "检查目标文件和当前目录",
+        require_todo=False,
+    )
+
+    assert client.calls == 2
+    assert result.answer == "目录检查完成；目标文件不存在，其他目录信息已取得。"
+    loaded = SessionStore(tmp_path).load(result.session_id)
+    assert loaded.messages[-1].content == result.answer
 
 
 def test_internal_automation_prompts_are_filtered_from_context():
@@ -1746,6 +1810,30 @@ def test_run_shell_background_command_starts_service(tmp_path: Path):
     assert "Started test-http" in result.output
     assert (tmp_path / ".deepseek-tulagent" / "services" / "test-http.pid").exists()
     tools.run("stop_service", {"name": "test-http"})
+
+
+def test_start_service_uses_hidden_process_launcher(monkeypatch, tmp_path: Path):
+    captured = {}
+
+    class FakeProcess:
+        pid = 4242
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured.update(kwargs)
+        return FakeProcess()
+
+    monkeypatch.setattr("deepseek_tulagent.tools.shell_invocation", lambda command: (["shell", command], False))
+    monkeypatch.setattr("deepseek_tulagent.tools.popen_hidden", fake_popen)
+    tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
+
+    result = tools.run("start_service", {"name": "server", "command": "serve --port 8000"})
+
+    assert result.ok is True
+    assert captured["command"] == ["shell", "serve --port 8000"]
+    assert captured["shell"] is False
+    assert captured["stderr"] is subprocess.STDOUT
+    assert (tmp_path / ".deepseek-tulagent" / "services" / "server.pid").read_text() == "4242"
 
 
 def test_run_shell_handles_none_stdout_and_stderr(monkeypatch, tmp_path: Path):
@@ -3375,7 +3463,7 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert '<img src="app-icon.png" alt="">' in brand
     assert "<svg" not in brand
     assert 'class="introLogo" src="app-icon.png"' in html
-    assert '<span id="version">v0.1.15</span>' in html
+    assert '<span id="version">v0.1.16</span>' in html
     assert 'id="settingsView"' in html and '<dialog id="settingsDialog"' not in html
     assert 'id="settingsBackTop"' in html and 'id="settingsBackBottom"' in html
     js = (root / "app.js").read_text(encoding="utf-8")
@@ -3392,7 +3480,7 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert 'id="ctxOutput"' in html and 'id="ctxCache"' in html and 'id="ctxSessionCache"' in html
     assert 'class="convItem" data-act="exportMd">导出 Markdown</button>' in html
     assert "window.pywebview.api.export_session(sid)" in js
-    assert 'style.css?v=0.1.15' in html and 'app.js?v=0.1.15' in html
+    assert 'style.css?v=0.1.16.1' in html and 'app.js?v=0.1.16.1' in html
     assert 'state.currentAssistant.remove();' in js
     assert "suppressedTurnIds: new Set()" in js
     assert "state.suppressedTurnIds.add(turnId)" in js
@@ -4413,12 +4501,13 @@ def test_cli_and_desktop_versions_are_independent():
     assert project["name"] == "deepseek-tulagent"
     assert project["version"] == __version__ == "0.1.108"
     assert project["scripts"]["deepseekfathom"] == "deepseek_tulagent.cli:main"
-    assert DESKTOP_VERSION == "0.1.15"
+    assert DESKTOP_VERSION == "0.1.16"
     assert REPO == "ffffff233/DeepSeekFathom"
-    assert '#define MyAppVersion "0.1.15"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
+    assert '#define MyAppVersion "0.1.16"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
     version_info = (root / "assets" / "windows-version-info.txt").read_text(encoding="utf-8")
-    assert 'filevers=(0, 1, 15, 0)' in version_info
-    assert "StringStruct('FileVersion', '0.1.15')" in version_info
+    assert 'filevers=(0, 1, 16, 0)' in version_info
+    assert 'prodvers=(0, 1, 16, 0)' in version_info
+    assert "StringStruct('FileVersion', '0.1.16')" in version_info
     notice = (root / "NOTICE").read_text(encoding="utf-8")
     assert "Copyright (c) 2026 Reasonix Contributors" in notice
     assert "78e9e2656ae5275cbdd29429053fdcc1cc97373c" in notice
@@ -5013,6 +5102,21 @@ def test_serialize_marks_pre_tool_prose_intermediate():
     roles = [(o["role"], o.get("intermediate")) for o in out]
     assert ("assistant", True) not in roles      # generic pre-tool intro is dropped entirely
     assert out[-1]["role"] == "assistant" and not out[-1].get("intermediate")  # final reply keeps actions
+
+
+def test_serialize_suppresses_legacy_adjacent_recovery_reply():
+    from deepseek_tulagent.desktop.app import serialize_messages
+    from deepseek_tulagent.messages import Message
+
+    out = serialize_messages([
+        Message("user", "检查本机"),
+        Message("assistant", "本机检查结果。"),
+        Message("assistant", "内部恢复误生成的第二条回答。"),
+    ])
+
+    assistants = [entry for entry in out if entry["role"] == "assistant"]
+    assert [entry["content"] for entry in assistants] == ["本机检查结果。"]
+    assert not assistants[0].get("intermediate")
 
 
 def test_stream_holds_fenced_tool_call_from_fence_start():

@@ -12,12 +12,21 @@ import unicodedata
 
 from .capabilities import TOOL_SCHEMAS, tool_enabled
 from .config import Settings
+from .hooks import (
+    HookReport,
+    HookRunner,
+    PERMISSION_REQUEST,
+    POST_LLM_CALL,
+    PRE_COMPACT,
+    SUBAGENT_STOP,
+)
 from .instructions import INSTRUCTION_CONTEXT_PREFIX, InstructionStore
 from .messages import Message
 from .policy import ApprovalPolicy, ThinkingMode
 from .provider import DeepSeekClient, NativeToolCall, parse_openai_tool_calls
 from .session import Session
 from .skills import SKILL_CONTEXT_PREFIX, SkillStore
+from .tool_contracts import ToolContract, builtin_tool_contracts, coerce_tool_contract
 from .tools import ToolError, ToolRegistry
 
 
@@ -125,6 +134,15 @@ KNOWN_TOOL_NAMES = {
     "stop_service",
     "service_status",
 }
+_DYNAMIC_TOOL_NAME_RE = re.compile(r"^mcp__[A-Za-z0-9_.-]+__[A-Za-z0-9_.-]+$")
+
+
+def is_known_tool_name(name: object) -> bool:
+    return isinstance(name, str) and (
+        name in KNOWN_TOOL_NAMES or bool(_DYNAMIC_TOOL_NAME_RE.fullmatch(name))
+    )
+
+
 LOCAL_ACTION_TOOLS = {
     "write_file",
     "apply_patch",
@@ -160,17 +178,42 @@ class TuLAgent:
         approve: Callable[[str, dict[str, Any]], bool] | None = None,
         ask_user: Callable[[dict[str, Any]], dict[str, Any] | str | None] | None = None,
         context_tokens_hint: int | None = None,
+        extra_tool_contracts: Any = None,
+        extra_skill_roots: Any = None,
+        extra_instruction_files: Any = None,
+        hook_runner: HookRunner | None = None,
+        force_session_start_hook: bool = False,
     ):
         self.settings = settings
         self.mode = mode
         self.policy = ApprovalPolicy.from_mode(mode)
         self.thinking = ThinkingMode.resolve(thinking)
         self.client = client or DeepSeekClient(settings)
-        self.tools = ToolRegistry(settings.workspace, policy=self.policy)
+        self.extra_skill_roots = tuple(extra_skill_roots or ())
+        self.extra_instruction_files = tuple(extra_instruction_files or ())
+        self.skill_store = SkillStore(settings.workspace, extra_roots=self.extra_skill_roots)
+        self.instruction_store = InstructionStore(
+            settings.workspace,
+            extra_files=self.extra_instruction_files,
+        )
+        self.tools = ToolRegistry(settings.workspace, policy=self.policy, skill_store=self.skill_store)
+        self.tool_contracts = builtin_tool_contracts(self.tools)
+        supplied = (
+            extra_tool_contracts.values()
+            if isinstance(extra_tool_contracts, dict)
+            else (extra_tool_contracts or ())
+        )
+        for value in supplied:
+            contract = coerce_tool_contract(value)
+            self.tool_contracts[contract.name] = contract
+        if hasattr(self.client, "runtime_tool_contracts"):
+            self.client.runtime_tool_contracts = dict(self.tool_contracts)
         self.approve = approve
         self.ask_user = ask_user
         self.last_model_messages: list[Message] = []
         self.context_tokens_hint = max(0, int(context_tokens_hint or 0)) or None
+        self.hook_runner = hook_runner
+        self.force_session_start_hook = bool(force_session_start_hook)
 
     def run(
         self,
@@ -189,7 +232,30 @@ class TuLAgent:
         require_todo: bool = True,
     ) -> AgentResult:
         session = session or Session(self.settings.workspace)
-        if not session.messages:
+        new_session = not session.messages
+        hook_context = ""
+        if self.hook_runner is not None and (new_session or self.force_session_start_hook):
+            start_report = self.hook_runner.session_start()
+            self._emit_hook_report(start_report, on_event)
+            contexts = start_report.session_contexts()
+            if contexts:
+                hook_context = (
+                    '<runtime-context kind="hooks" version="1">\n'
+                    "# Session-start extension context\n\n"
+                    + "\n\n".join(contexts)
+                    + "\n</runtime-context>"
+                )
+        turn_number = 1 + sum(
+            message.role == "user"
+            and not message.content.startswith(("TOOL_RESULT", "SUBAGENT_RESULT", "USER_ANSWER"))
+            for message in session.messages
+        )
+        if self.hook_runner is not None:
+            prompt_report = self.hook_runner.user_prompt_submit(prompt, turn_number)
+            self._emit_hook_report(prompt_report, on_event)
+            if prompt_report.blocked:
+                raise ToolError(f"UserPromptSubmit hook blocked this turn: {prompt_report.block_message}")
+        if new_session:
             for message in self._initial_messages():
                 session.append(message)
         else:
@@ -229,6 +295,11 @@ class TuLAgent:
                 context_limit=self.settings.context_window_tokens,
                 threshold_percent=self.settings.compact_threshold_percent,
                 observed_tokens=observed_context_tokens,
+                pre_compact=(
+                    lambda payload: self._pre_compact_guidance(payload, on_event)
+                    if self.hook_runner is not None
+                    else ""
+                ),
             )
             if rounds == 1:
                 self.context_tokens_hint = None
@@ -240,6 +311,10 @@ class TuLAgent:
                 model_source_messages = model_source_messages + [Message("user", pending_internal_prompt)]
                 pending_internal_prompt = None
             model_messages = model_source_messages
+            if rounds == 1 and hook_context:
+                # SessionStart output is temporary system context for this request. It
+                # is deliberately never appended to the persisted conversation.
+                model_messages = model_messages + [Message("system", hook_context)]
             if rounds == 1 and complex_task:
                 model_messages = model_messages + [Message("user", private_execution_hint())]
             model_messages = self._with_internal_thinking(model_messages, on_event=on_event)
@@ -261,6 +336,10 @@ class TuLAgent:
                 # until a real tool call/result proves the action. This prevents a false
                 # "created" message from flashing in the UI before recovery can run.
                 defer_for_tool_evidence = tool_evidence_required and not local_action_succeeded
+                # After an entirely failed tool batch, the next prose may be an internal
+                # recovery draft. Buffer it until we know whether it is terminal so the
+                # desktop never flashes an answer that is immediately retracted.
+                defer_for_failed_tool_recovery = last_turn_had_tool_error
                 for delta in self._main_model_stream(model_messages):
                     if should_cancel and should_cancel():
                         raise RuntimeError("turn cancelled")
@@ -284,7 +363,7 @@ class TuLAgent:
                                 held_notified = True
                         if held_from is not None:
                             safe = min(safe, held_from)
-                        if defer_for_tool_evidence:
+                        if defer_for_tool_evidence or defer_for_failed_tool_recovery:
                             continue
                         if safe > emitted:
                             on_delta(joined[emitted:safe])
@@ -294,6 +373,13 @@ class TuLAgent:
                 assistant_text = self._main_model_chat(model_messages)
             if should_cancel and should_cancel():
                 raise RuntimeError("turn cancelled")
+            if self.hook_runner is not None:
+                llm_report = self.hook_runner.run(POST_LLM_CALL, {
+                    "turn": turn_number,
+                    "round": rounds,
+                    "assistantText": assistant_text[:40_000],
+                })
+                self._emit_hook_report(llm_report, on_event)
             native_tool_calls = consume_native_tool_calls(self.client)
             tool_calls = [] if is_question_mark_only(prompt) else (
                 [(call.name, call.arguments) for call in native_tool_calls]
@@ -350,15 +436,23 @@ class TuLAgent:
                     promise_continuation_used = True
                     last_turn_had_tool_result = False
                     continue
+                if last_turn_had_tool_error and not declares_blocked_or_complete(assistant_text):
+                    # Recovery prompts are internal. Do not persist or briefly display a
+                    # provisional failure answer before asking the model to try another
+                    # path; doing so creates two assistant replies for one user turn.
+                    if stream and on_final:
+                        on_final("")
+                    pending_internal_prompt = RECOVER_AFTER_TOOL_FAILURE_PROMPT
+                    last_turn_had_tool_error = False
+                    continue
+                if self.hook_runner is not None:
+                    stop_report = self.hook_runner.stop(assistant_text, turn_number)
+                    self._emit_hook_report(stop_report, on_event)
                 if stream and on_final:
                     on_final(assistant_text)
                 elif stream and held_parts and on_delta:
                     on_delta(assistant_text)
                 session.append(Message("assistant", assistant_text))
-                if last_turn_had_tool_error and not declares_blocked_or_complete(assistant_text):
-                    pending_internal_prompt = RECOVER_AFTER_TOOL_FAILURE_PROMPT
-                    last_turn_had_tool_error = False
-                    continue
                 if goal and not goal_answer_is_terminal(assistant_text):
                     session.append(Message("user", goal_continuation_prompt(goal)))
                     continue
@@ -377,31 +471,49 @@ class TuLAgent:
             last_turn_had_tool_result = False
             last_turn_had_tool_error = False
             round_had_tool_error = False
+            round_had_tool_success = False
             for name, arguments in tool_calls:
                 if name == "todo_write":
                     todo_was_written = True
                 if on_event:
                     on_event(f"tool {name} {summarize_arguments(arguments)}")
                 event_content: str | None = None
+                tool_attempted = False
                 try:
                     tool_images: list[str] = []
+                    if self._needs_confirmation(name):
+                        if self.hook_runner is not None:
+                            permission_report = self.hook_runner.run(PERMISSION_REQUEST, {
+                                "toolName": name,
+                                "toolArgs": arguments,
+                            })
+                            self._emit_hook_report(permission_report, on_event)
+                        if not self._approved(name, arguments):
+                            raise ToolError(f"confirmation required for tool: {name}")
+                    if self.hook_runner is not None:
+                        pre_report = self.hook_runner.pre_tool_use(name, arguments)
+                        self._emit_hook_report(pre_report, on_event)
+                        if pre_report.blocked:
+                            raise ToolError(f"PreToolUse hook blocked {name}: {pre_report.block_message}")
+                    tool_attempted = True
                     if name == "ask_user":
                         content = self._ask_user(arguments)
                     elif name == "delegate_agent":
                         content = self._run_subagent(arguments, on_event=on_event, should_cancel=should_cancel)
-                    elif self._needs_confirmation(name) and not self._approved(name, arguments):
-                        raise ToolError(f"confirmation required for tool: {name}")
                     else:
-                        result = self.tools.run(name, arguments)
+                        result = self._run_tool(name, arguments)
                         content = result.to_message()
                         event_content = result.output if name == "todo_write" else content
                         if name == "todo_write":
                             last_todo_has_open_items = todo_result_has_open_items(result.output)
                         tool_images = list(getattr(result, "images", None) or [])
-                except (ToolError, ValueError, OSError, subprocess.SubprocessError, TypeError) as exc:  # type: ignore[name-defined]
+                except (ToolError, ValueError, OSError, subprocess.SubprocessError, TypeError, RuntimeError) as exc:  # type: ignore[name-defined]
                     content = json.dumps({"ok": False, "output": str(exc)}, ensure_ascii=False)
                     event_content = content
                     tool_images = []
+                if tool_attempted and self.hook_runner is not None:
+                    post_report = self.hook_runner.post_tool_use(name, arguments, content)
+                    self._emit_hook_report(post_report, on_event)
                 if on_event:
                     _trimmed = trim_tool_content(event_content if event_content is not None else content)
                     _b64 = base64.b64encode(_trimmed.encode("utf-8")).decode("ascii")
@@ -414,17 +526,23 @@ class TuLAgent:
                 session.append(Message("user", tool_result_message(name, trim_tool_content(content)), images=tool_images))
                 failed = is_failed_tool_result(content)
                 round_had_tool_error = round_had_tool_error or failed
+                round_had_tool_success = round_had_tool_success or not failed
                 if name in LOCAL_ACTION_TOOLS and not failed:
                     local_action_succeeded = True
                 last_tool_name = name
                 if should_cancel and should_cancel():
                     raise RuntimeError("turn cancelled")
             last_turn_had_tool_result = True
-            last_turn_had_tool_error = round_had_tool_error
+            # Optional probes can fail beside successful fallbacks in the same batch.
+            # Force another recovery round only when every tool in the batch failed.
+            last_turn_had_tool_error = round_had_tool_error and not round_had_tool_success
             if stop_after_tool:
                 return AgentResult(session.session_id, "", rounds)
         else:
             final_answer = self._finalize_after_tool_limit(session, stream=stream, on_delta=on_delta, on_final=on_final, on_event=on_event)
+            if self.hook_runner is not None:
+                stop_report = self.hook_runner.stop(final_answer, turn_number)
+                self._emit_hook_report(stop_report, on_event)
             if final_answer:
                 session.append(Message("assistant", final_answer))
             else:
@@ -432,13 +550,70 @@ class TuLAgent:
 
         return AgentResult(session.session_id, final_answer, rounds)
 
+    @staticmethod
+    def _emit_hook_report(
+        report: HookReport,
+        on_event: Callable[[str], None] | None,
+    ) -> None:
+        if on_event is None:
+            return
+        for outcome in report.outcomes:
+            payload = {
+                "event": report.event,
+                "decision": outcome.decision,
+                "scope": outcome.hook.scope,
+                "plugin": outcome.hook.plugin or None,
+                "description": outcome.hook.description,
+                "durationMs": outcome.duration_ms,
+                "message": (outcome.stderr or outcome.stdout).strip()[:1000],
+            }
+            encoded = base64.b64encode(
+                json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            ).decode("ascii")
+            on_event(f"hook {encoded}")
+
+    def _pre_compact_guidance(
+        self,
+        payload: dict[str, Any],
+        on_event: Callable[[str], None] | None,
+    ) -> str:
+        if self.hook_runner is None:
+            return ""
+        report = self.hook_runner.run(PRE_COMPACT, payload)
+        self._emit_hook_report(report, on_event)
+        return report.pre_compact_guidance()[:20_000]
+
     def _native_tool_names(self) -> list[str]:
-        names = set(self.tools.names) | {"ask_user", "delegate_agent"}
-        return sorted(
-            name
-            for name in names
-            if name in TOOL_SCHEMAS and tool_enabled(name, self.policy)
-        )
+        return sorted(name for name, contract in self.tool_contracts.items() if self._contract_enabled(contract))
+
+    def _contract_enabled(self, contract: ToolContract) -> bool:
+        if contract.origin == "builtin":
+            return contract.name in TOOL_SCHEMAS and tool_enabled(contract.name, self.policy)
+        if self.mode in {"plan", "review"}:
+            return contract.read_only and contract.trusted_read_only
+        return True
+
+    def _run_tool(self, name: str, arguments: dict[str, Any]):
+        contract = self.tool_contracts.get(name)
+        if contract is None:
+            raise ToolError(f"Unknown tool: {name}")
+        if not self._contract_enabled(contract):
+            raise ToolError(f"Tool is disabled by the current permission mode: {name}")
+        if contract.origin == "builtin" or contract.handler is None:
+            return self.tools.run(name, arguments)
+        value = contract.handler(arguments)
+        from .tools import ToolResult
+
+        if isinstance(value, ToolResult):
+            return value
+        if isinstance(value, dict):
+            ok = not bool(value.get("isError")) and bool(value.get("ok", True))
+            output = value.get("output", value.get("content", value))
+            if not isinstance(output, str):
+                output = json.dumps(output, ensure_ascii=False)
+            images = [str(item) for item in value.get("images", []) if isinstance(item, str)]
+            return ToolResult(ok, output, images=images)
+        return ToolResult(True, str(value))
 
     def _main_model_stream(self, messages: list[Message]):
         if getattr(self.client, "supports_native_tools", False):
@@ -452,10 +627,10 @@ class TuLAgent:
 
     def _initial_messages(self) -> list[Message]:
         messages = [Message("system", self._system_prompt())]
-        instruction_context = InstructionStore(self.settings.workspace).load().prompt
+        instruction_context = self.instruction_store.load().prompt
         if instruction_context:
             messages.append(Message("system", instruction_context))
-        skill_context = SkillStore(self.settings.workspace).prompt_context()
+        skill_context = self.skill_store.prompt_context()
         if skill_context:
             messages.append(Message("system", skill_context))
         return messages
@@ -493,9 +668,22 @@ class TuLAgent:
             f"Policy: write={self.policy.allow_write}, shell={self.policy.allow_shell}, "
             f"network={self.policy.allow_network}, confirmation={self.policy.require_confirmation}."
         )
+        extension_lines = [
+            f"- {contract.name}: {contract.description}"
+            for contract in self.tool_contracts.values()
+            if contract.origin != "builtin" and self._contract_enabled(contract)
+        ]
+        extension_hint = ""
+        if extension_lines:
+            extension_hint = (
+                "\nExtension tools available through the same tool-call protocol:\n"
+                + "\n".join(extension_lines)
+                + "\n"
+            )
         return (
             f"{SYSTEM_PROMPT}\nWorkspace: {self.settings.workspace}\n{mode_hint}\n"
             f"Thinking mode: {self.thinking.name}. {self.thinking.system_hint}\n{policy_hint}\n"
+            f"{extension_hint}"
         )
 
     def _finalize_after_tool_limit(
@@ -516,6 +704,11 @@ class TuLAgent:
             client=self.client,
             context_limit=self.settings.context_window_tokens,
             threshold_percent=self.settings.compact_threshold_percent,
+            pre_compact=(
+                lambda payload: self._pre_compact_guidance(payload, on_event)
+                if self.hook_runner is not None
+                else ""
+            ),
         )
         if messages is not session.messages:
             session.messages = messages
@@ -542,6 +735,9 @@ class TuLAgent:
 
     def _needs_confirmation(self, name: str) -> bool:
         dangerous = {"write_file", "run_shell", "apply_patch", "download_url", "clone_repo", "start_service", "stop_service"}
+        contract = self.tool_contracts.get(name)
+        if contract is not None and contract.origin != "builtin":
+            return self.policy.require_confirmation and not contract.trusted_read_only
         return name in dangerous and self.policy.require_confirmation
 
     def _run_subagent(
@@ -586,7 +782,20 @@ class TuLAgent:
         if on_event:
             prefix = f"{index}/{total} " if total > 1 else ""
             on_event(f"subagent {prefix}{name} mode={mode} think={thinking} rounds={max_rounds}")
-        subagent = TuLAgent(self.settings, mode=mode, thinking=thinking, client=self.client, approve=self.approve, ask_user=self.ask_user)
+        subagent = TuLAgent(
+            self.settings,
+            mode=mode,
+            thinking=thinking,
+            client=self.client,
+            approve=self.approve,
+            ask_user=self.ask_user,
+            extra_tool_contracts=[
+                contract for contract in self.tool_contracts.values() if contract.origin != "builtin"
+            ],
+            extra_skill_roots=self.extra_skill_roots,
+            extra_instruction_files=self.extra_instruction_files,
+            hook_runner=self.hook_runner,
+        )
         # forward the subagent's own events to the parent stream, tagged with its name,
         # so the UI can show what the subagent is doing (opencode-style nested activity)
         sub_on_event = None
@@ -608,6 +817,14 @@ class TuLAgent:
             # conversation in the sidebar
             session=Session(self.settings.workspace, persist=False),
         )
+        if self.hook_runner is not None:
+            report = self.hook_runner.run(SUBAGENT_STOP, {
+                "name": name,
+                "task": task,
+                "summary": result.answer[:20_000],
+                "rounds": result.rounds,
+            })
+            self._emit_hook_report(report, on_event)
         if on_event:
             # carry the subagent's full final summary so its card shows the complete
             # result, not just "rounds=N"
@@ -696,7 +913,7 @@ def consume_native_tool_calls(client: Any) -> list[NativeToolCall]:
     calls: list[NativeToolCall] = []
     for item in raw_calls:
         if isinstance(item, NativeToolCall):
-            if item.name in KNOWN_TOOL_NAMES and isinstance(item.arguments, dict):
+            if is_known_tool_name(item.name) and isinstance(item.arguments, dict):
                 calls.append(item)
             continue
         if isinstance(item, dict):
@@ -707,13 +924,13 @@ def consume_native_tool_calls(client: Any) -> list[NativeToolCall]:
             else:
                 call_id = str(item.get("id") or "")
                 parsed = [NativeToolCall(name, arguments, call_id) for name, arguments in normalize_tool_calls(item)]
-            calls.extend(call for call in parsed if call.name in KNOWN_TOOL_NAMES)
+            calls.extend(call for call in parsed if is_known_tool_name(call.name))
             continue
         if (
             isinstance(item, tuple)
             and len(item) in {2, 3}
             and isinstance(item[0], str)
-            and item[0] in KNOWN_TOOL_NAMES
+            and is_known_tool_name(item[0])
             and isinstance(item[1], dict)
         ):
             call_id = str(item[2]) if len(item) == 3 and item[2] is not None else ""
@@ -802,7 +1019,7 @@ def parse_dsml_tool_calls(text: str) -> list[tuple[str, dict[str, Any]]]:
         text,
     ):
         name_match = re.search(r'''(?i)\bname\s*=\s*["']([^"']+)["']''', invoke.group(1))
-        if not name_match or name_match.group(1) not in KNOWN_TOOL_NAMES:
+        if not name_match or not is_known_tool_name(name_match.group(1)):
             continue
         arguments: dict[str, Any] = {}
         for parameter in re.finditer(
@@ -892,7 +1109,7 @@ def _parse_xml_tool_call_single(text: str) -> tuple[str, dict[str, Any]] | None:
         name_match = re.match(r"^([A-Za-z_][\w-]*)\s*$", lines[0].strip())
         if name_match:
             name = name_match.group(1)
-            if name not in KNOWN_TOOL_NAMES:
+            if not is_known_tool_name(name):
                 return None
             rest = "\n".join(lines[1:]).strip()
             for candidate in [rest, *extract_json_objects(rest)]:
@@ -917,7 +1134,7 @@ def parse_labelled_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
     if not tool_match:
         return None
     name = tool_match.group(1).strip()
-    if name not in KNOWN_TOOL_NAMES:
+    if not is_known_tool_name(name):
         return None
     tail = text[tool_match.end():]
     args_match = re.search(r"(?is)(?:arguments|args|参数)\s*:\s*(\{.*\})", tail)
@@ -1047,6 +1264,18 @@ def sanitize_model_tool_history(messages: list[Message]) -> list[Message]:
                 index += 1
                 continue
         if is_tool_result_record(message):
+            index += 1
+            continue
+        if (
+            message.role == "assistant"
+            and sanitized
+            and sanitized[-1].role == "assistant"
+            and not parse_tool_calls(message.content)
+            and not parse_tool_calls(sanitized[-1].content)
+        ):
+            # v0.1.15 and earlier could persist an internal recovery answer after an
+            # already-complete reply. Keep the source JSONL intact, but do not feed the
+            # unsolicited adjacent answer back into every later model request.
             index += 1
             continue
         sanitized.append(message)
@@ -1451,7 +1680,7 @@ def confirmed_tool_stream_boundary(text: str, boundary: int) -> bool:
         candidate = tail[structured.start():]
         return not tool_json_is_explanatory_example(text, candidate)
     named = re.search(r'(?i)\{\s*"(?:tool|name)"\s*:\s*"([A-Za-z_][\w-]*)"', tail)
-    if named and named.group(1) in KNOWN_TOOL_NAMES:
+    if named and is_known_tool_name(named.group(1)):
         candidate = tail[named.start():]
         return not tool_json_is_explanatory_example(text, candidate)
     return parse_tool_call(text) is not None
@@ -1568,6 +1797,7 @@ def compact_context_messages(
     context_limit: int | None = None,
     threshold_percent: float | None = None,
     observed_tokens: int | None = None,
+    pre_compact: Callable[[dict[str, Any]], str] | None = None,
 ) -> list[Message]:
     if not force and os.getenv("DSTUL_AUTO_COMPACT", "1").lower() in {"0", "false", "no"}:
         return messages
@@ -1601,8 +1831,24 @@ def compact_context_messages(
     pinned_units, summarizable_units = preserved_skill_units(older_units, recent_units)
     pinned = flatten_message_units(pinned_units)
     summarizable = flatten_message_units(summarizable_units)
+    guidance = ""
+    if pre_compact is not None:
+        try:
+            guidance = pre_compact({
+                "estimatedTokens": estimated,
+                "observedTokens": observed,
+                "thresholdTokens": threshold,
+                "messageCount": len(messages),
+            }).strip()[:20_000]
+        except Exception:
+            guidance = ""
     summary_max_chars = max(1000, min(24_000, int(limit * 1.5)))
-    summary = summarize_messages_with_model(summarizable, client=client, on_event=on_event)
+    summary = summarize_messages_with_model(
+        summarizable,
+        client=client,
+        on_event=on_event,
+        guidance=guidance,
+    )
     if len(summary) > summary_max_chars:
         summary = summary[:summary_max_chars].rstrip() + "\n[summary truncated]"
     if not summary:
@@ -1706,6 +1952,7 @@ def summarize_messages_with_model(
     *,
     client: DeepSeekClient | None,
     on_event: Callable[[str], None] | None = None,
+    guidance: str = "",
 ) -> str:
     """Ask the model to write a Codex-style handoff summary of `messages`. Returns an
     empty string if no client is available or the call fails (caller falls back)."""
@@ -1714,7 +1961,10 @@ def summarize_messages_with_model(
     # Strip images from the transcript we summarize (keeps the summary call cheap and
     # text-only); the summary is prose anyway.
     transcript = [Message(m.role, m.content, name=m.name) for m in messages]
-    request = transcript + [Message("user", COMPACTION_PROMPT)]
+    prompt = COMPACTION_PROMPT
+    if guidance.strip():
+        prompt += "\n\nAdditional PreCompact hook guidance:\n" + guidance.strip()
+    request = transcript + [Message("user", prompt)]
     try:
         if on_event:
             on_event("context compacting (model summary)")
@@ -1940,16 +2190,16 @@ def normalize_tool_call(data: Any) -> tuple[str, dict[str, Any]] | None:
     if isinstance(data.get("tool"), str):
         name = data["tool"]
         arguments = normalize_tool_arguments(data)
-        return (name, arguments) if name in KNOWN_TOOL_NAMES and arguments is not None else None
+        return (name, arguments) if is_known_tool_name(name) and arguments is not None else None
     if isinstance(data.get("name"), str) and ("input" in data or "arguments" in data or "parameters" in data or "args" in data):
         name = data["name"]
         arguments = normalize_arguments(data.get("input", data.get("arguments", data.get("parameters", data.get("args", {})))))
-        return (name, arguments) if name in KNOWN_TOOL_NAMES and arguments is not None else None
+        return (name, arguments) if is_known_tool_name(name) and arguments is not None else None
     function_call = data.get("function_call")
     if isinstance(function_call, dict) and isinstance(function_call.get("name"), str):
         name = function_call["name"]
         arguments = normalize_arguments(function_call.get("arguments", {}))
-        return (name, arguments) if name in KNOWN_TOOL_NAMES and arguments is not None else None
+        return (name, arguments) if is_known_tool_name(name) and arguments is not None else None
     tool_calls = data.get("tool_calls")
     if isinstance(tool_calls, list) and tool_calls:
         first = tool_calls[0]
@@ -1958,11 +2208,11 @@ def normalize_tool_call(data: Any) -> tuple[str, dict[str, Any]] | None:
             if isinstance(function, dict) and isinstance(function.get("name"), str):
                 name = function["name"]
                 arguments = normalize_arguments(function.get("arguments", {}))
-                return (name, arguments) if name in KNOWN_TOOL_NAMES and arguments is not None else None
+                return (name, arguments) if is_known_tool_name(name) and arguments is not None else None
             if isinstance(first.get("name"), str):
                 name = first["name"]
                 arguments = normalize_arguments(first.get("arguments", first.get("input", first.get("parameters", first.get("args", {})))))
-                return (name, arguments) if name in KNOWN_TOOL_NAMES and arguments is not None else None
+                return (name, arguments) if is_known_tool_name(name) and arguments is not None else None
     return None
 
 
