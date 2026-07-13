@@ -24,7 +24,7 @@ DeepSeekFathom 是一个专门适配 DeepSeek OpenAI 兼容接口的终端编程
 
 Windows 普通用户直接下载并运行：
 
-**[DeepSeekFathom-0.1.14-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.14/DeepSeekFathom-0.1.14-Setup.exe)**
+**[DeepSeekFathom-0.1.15-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.15/DeepSeekFathom-0.1.15-Setup.exe)**
 
 Linux / macOS：
 
@@ -134,7 +134,9 @@ deepseekfathom desktop
 桌面端提供：
 
 - 左侧会话和技能目录
-- 设置页能力诊断：技能生效/覆盖候选、搜索路径、工具契约、权限门控和提示词成本估算
+- 设置页能力诊断：已加载项目指令、技能生效/覆盖候选、搜索路径、工具契约、权限门控和提示词成本估算
+- OpenAI/DeepSeek 原生工具调用和同轮多工具执行，兼容网关继续保留文本协议兜底
+- `list_skills` / `read_skill` 按需搜索、加载本项目、Agents 与 Claude 目录中的技能
 - 顶部模型、思考模式、权限模式、兼容接口选择
 - 右上角第三方 API / OpenAI-compatible Base URL 配置
 - 底部 `+` 上传文件
@@ -152,7 +154,7 @@ cd DeepSeekFathom
 
 ```text
 dist\DeepSeekFathom\DeepSeekFathom.exe
-dist\installer\DeepSeekFathom-0.1.14-Setup.exe
+dist\installer\DeepSeekFathom-0.1.15-Setup.exe
 ```
 
 安装程序会安装到当前用户目录，并自动创建名为 **DeepSeekFathom** 的桌面和开始菜单入口。桌面端使用独立的 `desktop-vX.Y.Z` 标签；GitHub Actions 会在推送该标签时构建 Windows artifact，并把 Setup EXE 上传到对应 Release。

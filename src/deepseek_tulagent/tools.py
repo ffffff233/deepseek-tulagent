@@ -22,6 +22,7 @@ from uuid import uuid4
 import zipfile
 
 from .policy import ApprovalPolicy
+from .skills import SkillStore, render_skill
 
 
 class ToolError(RuntimeError):
@@ -42,11 +43,53 @@ class ToolResult:
         return json.dumps(payload, ensure_ascii=False)
 
 
-def _bounded_diff(text: str, max_chars: int = 18_000) -> str:
+def _bounded_diff(text: str, max_chars: int = 18_000) -> tuple[str, bool, int]:
+    """Keep both ends of a large diff without cutting through a line.
+
+    Unified diffs commonly place a large deletion block before its replacement. A
+    prefix-only truncation therefore hides the additions and makes the UI report a
+    misleading one-sided change. Keeping a balanced head and tail preserves both
+    sides while the structured counters still describe the complete patch.
+    """
     if len(text) <= max_chars:
-        return text
-    omitted = len(text) - max_chars
-    return text[:max_chars] + f"\n... {omitted} 个字符未显示"
+        return text, False, 0
+    lines = text.splitlines()
+    budget = max(256, max_chars - 160)
+    head_budget = budget // 2
+    tail_budget = budget - head_budget
+    head: list[str] = []
+    used = 0
+    for line in lines:
+        cost = len(line) + 1
+        if head and used + cost > head_budget:
+            break
+        head.append(line)
+        used += cost
+    tail: list[str] = []
+    used = 0
+    for line in reversed(lines[len(head):]):
+        cost = len(line) + 1
+        if tail and used + cost > tail_budget:
+            break
+        tail.append(line)
+        used += cost
+    tail.reverse()
+    omitted_lines = max(0, len(lines) - len(head) - len(tail))
+    marker = f"... {omitted_lines} diff lines omitted ..."
+    return "\n".join((*head, marker, *tail)), True, omitted_lines
+
+
+def _diff_stats(text: str) -> tuple[int, int]:
+    additions = 0
+    deletions = 0
+    for line in text.splitlines():
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        if line.startswith("+"):
+            additions += 1
+        elif line.startswith("-"):
+            deletions += 1
+    return additions, deletions
 
 
 def _file_change_ui(path: str, old: str, new: str, *, existed: bool) -> dict[str, Any]:
@@ -60,12 +103,18 @@ def _file_change_ui(path: str, old: str, new: str, *, existed: bool) -> dict[str
             lineterm="",
         )
     )
+    bounded, truncated, omitted_lines = _bounded_diff(diff)
+    additions, deletions = _diff_stats(diff)
     return {
         "kind": "file_change",
         "operation": "modified" if existed else "created",
         "path": path,
         "paths": [path],
-        "diff": _bounded_diff(diff),
+        "diff": bounded,
+        "additions": additions,
+        "deletions": deletions,
+        "truncated": truncated,
+        "omitted_lines": omitted_lines,
     }
 
 
@@ -92,6 +141,8 @@ TOOL_DESCRIPTIONS = {
     "search_text": "read: search text in workspace files",
     "git_status": "read: show git short status",
     "read_file": "read: read UTF-8 text from a workspace file",
+    "list_skills": "read: search discovered skill names and descriptions without loading their bodies",
+    "read_skill": "read: load a discovered skill body into the current context on demand",
     "write_file": "gated write: create or overwrite a workspace file",
     "run_shell": "gated shell: run a shell command in the workspace",
     "apply_patch": "gated write: apply a unified diff with git apply",
@@ -134,6 +185,8 @@ class ToolRegistry:
             "search_text": self.search_text,
             "git_status": self.git_status,
             "read_file": self.read_file,
+            "list_skills": self.list_skills,
+            "read_skill": self.read_skill,
             "write_file": self.write_file,
             "run_shell": self.run_shell,
             "apply_patch": self.apply_patch,
@@ -184,6 +237,28 @@ class ToolRegistry:
         max_bytes = int(arguments.get("max_bytes", 20000))
         data = path.read_bytes()[:max_bytes]
         return ToolResult(True, data.decode("utf-8", errors="replace"))
+
+    def read_skill(self, arguments: dict[str, Any]) -> ToolResult:
+        name = require_str(arguments, "name")
+        extra = arguments.get("arguments", "")
+        if not isinstance(extra, str):
+            raise ToolError("read_skill arguments must be a string")
+        store = SkillStore(self.workspace)
+        skill = store.get(name)
+        if skill is None:
+            available = ", ".join(item.name for item in store.list()) or "none"
+            raise ToolError(f"Unknown skill: {name}. Available skills: {available}")
+        return ToolResult(True, render_skill(skill, extra))
+
+    def list_skills(self, arguments: dict[str, Any]) -> ToolResult:
+        query = str(arguments.get("query", ""))
+        limit = int(arguments.get("limit", 100))
+        skills = SkillStore(self.workspace).search(query, limit)
+        payload = [
+            {"name": skill.name, "description": skill.description, "scope": skill.scope}
+            for skill in skills
+        ]
+        return ToolResult(True, json.dumps({"skills": payload, "count": len(payload)}, ensure_ascii=False))
 
     def list_files(self, arguments: dict[str, Any]) -> ToolResult:
         root = self.resolve_workspace_path(str(arguments.get("path", ".")))
@@ -356,16 +431,23 @@ class ToolRegistry:
             output += "\n[stderr]\n" + completed.stderr
         paths = _patch_paths(patch)
         display_path = paths[0] if len(paths) == 1 else f"{len(paths)} 个文件"
+        succeeded = completed.returncode == 0
+        bounded, truncated, omitted_lines = _bounded_diff(patch)
+        additions, deletions = _diff_stats(patch)
         return ToolResult(
-            completed.returncode == 0,
-            output.strip() or "patch applied",
+            succeeded,
+            output.strip() or ("patch applied" if succeeded else "patch was not applied"),
             ui={
                 "kind": "file_change",
                 "operation": "modified",
                 "path": display_path,
                 "paths": paths,
-                "diff": _bounded_diff(patch),
-            },
+                "diff": bounded,
+                "additions": additions,
+                "deletions": deletions,
+                "truncated": truncated,
+                "omitted_lines": omitted_lines,
+            } if succeeded else None,
         )
 
     def download_url(self, arguments: dict[str, Any]) -> ToolResult:

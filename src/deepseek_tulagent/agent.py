@@ -10,18 +10,22 @@ import subprocess
 from typing import Any, Callable
 import unicodedata
 
+from .capabilities import TOOL_SCHEMAS, tool_enabled
 from .config import Settings
+from .instructions import INSTRUCTION_CONTEXT_PREFIX, InstructionStore
 from .messages import Message
 from .policy import ApprovalPolicy, ThinkingMode
-from .provider import DeepSeekClient
+from .provider import DeepSeekClient, NativeToolCall, parse_openai_tool_calls
 from .session import Session
-from .skills import SkillStore
+from .skills import SKILL_CONTEXT_PREFIX, SkillStore
 from .tools import ToolError, ToolRegistry
 
 
 SYSTEM_PROMPT = r"""You are DeepSeek TuLAgent, a concise coding agent running in a local workspace.
-You can answer normally or request exactly one tool call by returning a single JSON object:
+You can answer normally or request one or more tools. Use native tool calls when available.
+For providers that only support text, return a single JSON object per call:
 {"tool":"read_file","arguments":{"path":"README.md","max_bytes":12000}}
+For multiple text-only calls, use a standard top-level "tool_calls" array and no prose.
 
 Available tools:
 - ask_user(question, options?, allow_manual?, placeholder?): ask the user to choose from structured options or type a custom answer; use this when the next step needs the user's preference
@@ -30,6 +34,8 @@ Available tools:
 - search_text(query, path?, max_matches?)
 - git_status(timeout?)
 - read_file(path, max_bytes?)
+- list_skills(query?, limit?): search discovered skill names and descriptions without loading full bodies
+- read_skill(name, arguments?): load one discovered skill body on demand; read and follow it before continuing
 - write_file(path, content)
 - run_shell(command, timeout?)
 - apply_patch(patch, timeout?)
@@ -59,6 +65,7 @@ Rules:
   `curl -fsS --connect-timeout 5 https://api.ipify.org || curl -fsS --connect-timeout 5 https://ifconfig.me || curl -fsS --connect-timeout 5 https://checkip.amazonaws.com`
   then verify the service with `ss -tlnp`, local `curl`, and firewall status (`ufw status` or iptables/nftables when available).
 - For text search, prefer a narrow path and small max_matches. Broad searches can time out.
+- Before non-trivial work, scan the skills index. If a skill is plausibly relevant, call read_skill with its bare name before acting.
 - Use delegate_agent proactively for multi-branch investigation, independent review, verification, research, or long workflows that can be split into focused subtasks. For multiple independent tasks, call delegate_agent once with an agents array (up to 8 subagents). Good subagent names: researcher, reviewer, verifier, implementer, debugger.
 - When delegating, give each subagent a narrow task and ask for evidence plus a recommended next step. Set mode/thinking per subagent when it needs different permissions or reasoning depth. Do not delegate trivial one-step tasks.
 - For non-trivial tasks, first call todo_write to list concrete task goals before doing the work. Keep exactly one item in_progress while work remains. Update todo_write immediately when starting or completing each item; do not batch all completions at the end. Skip todo_write only for very small one-step requests or purely informational answers.
@@ -104,6 +111,8 @@ KNOWN_TOOL_NAMES = {
     "search_text",
     "git_status",
     "read_file",
+    "list_skills",
+    "read_skill",
     "write_file",
     "run_shell",
     "apply_patch",
@@ -150,6 +159,7 @@ class TuLAgent:
         client: DeepSeekClient | None = None,
         approve: Callable[[str, dict[str, Any]], bool] | None = None,
         ask_user: Callable[[dict[str, Any]], dict[str, Any] | str | None] | None = None,
+        context_tokens_hint: int | None = None,
     ):
         self.settings = settings
         self.mode = mode
@@ -160,6 +170,7 @@ class TuLAgent:
         self.approve = approve
         self.ask_user = ask_user
         self.last_model_messages: list[Message] = []
+        self.context_tokens_hint = max(0, int(context_tokens_hint or 0)) or None
 
     def run(
         self,
@@ -181,6 +192,8 @@ class TuLAgent:
         if not session.messages:
             for message in self._initial_messages():
                 session.append(message)
+        else:
+            self._refresh_runtime_context(session)
         session.append(Message("user", prompt, images=list(images or [])))
 
         final_answer = ""
@@ -203,6 +216,11 @@ class TuLAgent:
             if should_cancel and should_cancel():
                 raise RuntimeError("turn cancelled")
             model_source_messages = filter_internal_automation_messages(session.messages)
+            observed_context_tokens = (
+                self.context_tokens_hint
+                if rounds == 1
+                else latest_provider_context_tokens(self.client)
+            )
             compacted_messages = compact_context_messages(
                 model_source_messages,
                 self.settings.model,
@@ -210,7 +228,10 @@ class TuLAgent:
                 client=self.client,
                 context_limit=self.settings.context_window_tokens,
                 threshold_percent=self.settings.compact_threshold_percent,
+                observed_tokens=observed_context_tokens,
             )
+            if rounds == 1:
+                self.context_tokens_hint = None
             if compacted_messages is not model_source_messages:
                 session.messages = compacted_messages
                 session.rewrite()
@@ -240,7 +261,7 @@ class TuLAgent:
                 # until a real tool call/result proves the action. This prevents a false
                 # "created" message from flashing in the UI before recovery can run.
                 defer_for_tool_evidence = tool_evidence_required and not local_action_succeeded
-                for delta in self.client.stream_chat(model_messages):
+                for delta in self._main_model_stream(model_messages):
                     if should_cancel and should_cancel():
                         raise RuntimeError("turn cancelled")
                     parts.append(delta)
@@ -270,11 +291,15 @@ class TuLAgent:
                             emitted = safe
                 assistant_text = "".join(parts)
             else:
-                assistant_text = self.client.chat(model_messages)
+                assistant_text = self._main_model_chat(model_messages)
             if should_cancel and should_cancel():
                 raise RuntimeError("turn cancelled")
-            tool_call = None if is_question_mark_only(prompt) else parse_tool_call(assistant_text)
-            if not tool_call:
+            native_tool_calls = consume_native_tool_calls(self.client)
+            tool_calls = [] if is_question_mark_only(prompt) else (
+                [(call.name, call.arguments) for call in native_tool_calls]
+                or parse_tool_calls(assistant_text)
+            )
+            if not tool_calls:
                 assistant_text = plainify_assistant_text(assistant_text)
                 if (
                     tool_evidence_required
@@ -339,57 +364,63 @@ class TuLAgent:
                     continue
                 final_answer = assistant_text
                 break
-            name, arguments = tool_call
             # Tool call detected. If any text already streamed to the UI, replace it
             # with the prose around the tool JSON (or clear it) so the raw call never
             # stays visible as an assistant message.
             if stream and on_final is not None:
                 prose = strip_tool_call_display(assistant_text)
                 on_final("" if is_tool_intro_only(prose) else prose)
-            session.append(Message("assistant", assistant_text))
+            assistant_record = assistant_text
+            if native_tool_calls:
+                assistant_record = append_native_tool_call_record(assistant_text, native_tool_calls)
+            session.append(Message("assistant", assistant_record))
             last_turn_had_tool_result = False
             last_turn_had_tool_error = False
-            if name == "todo_write":
-                todo_was_written = True
-            if on_event:
-                on_event(f"tool {name} {summarize_arguments(arguments)}")
-            event_content: str | None = None
-            try:
-                tool_images: list[str] = []
-                if name == "ask_user":
-                    content = self._ask_user(arguments)
-                elif name == "delegate_agent":
-                    content = self._run_subagent(arguments, on_event=on_event, should_cancel=should_cancel)
-                elif self._needs_confirmation(name) and not self._approved(name, arguments):
-                    raise ToolError(f"confirmation required for tool: {name}")
-                else:
-                    result = self.tools.run(name, arguments)
-                    content = result.to_message()
-                    event_content = result.output if name == "todo_write" else content
-                    if name == "todo_write":
-                        last_todo_has_open_items = todo_result_has_open_items(result.output)
-                    tool_images = list(getattr(result, "images", None) or [])
-            except (ToolError, ValueError, OSError, subprocess.SubprocessError, TypeError) as exc:  # type: ignore[name-defined]
-                content = json.dumps({"ok": False, "output": str(exc)}, ensure_ascii=False)
-                event_content = content
-                tool_images = []
-            if on_event:
-                _trimmed = trim_tool_content(event_content if event_content is not None else content)
-                _b64 = base64.b64encode(_trimmed.encode("utf-8")).decode("ascii")
-                on_event(f"done {name} {_b64}")
-                if tool_images:
-                    media_payload = json.dumps({"images": tool_images}, ensure_ascii=False)
-                    on_event(f"media {name} {base64.b64encode(media_payload.encode('utf-8')).decode('ascii')}")
+            round_had_tool_error = False
+            for name, arguments in tool_calls:
                 if name == "todo_write":
-                    on_event(f"todo {_b64}")
-            session.append(Message("user", tool_result_message(name, trim_tool_content(content)), images=tool_images))
+                    todo_was_written = True
+                if on_event:
+                    on_event(f"tool {name} {summarize_arguments(arguments)}")
+                event_content: str | None = None
+                try:
+                    tool_images: list[str] = []
+                    if name == "ask_user":
+                        content = self._ask_user(arguments)
+                    elif name == "delegate_agent":
+                        content = self._run_subagent(arguments, on_event=on_event, should_cancel=should_cancel)
+                    elif self._needs_confirmation(name) and not self._approved(name, arguments):
+                        raise ToolError(f"confirmation required for tool: {name}")
+                    else:
+                        result = self.tools.run(name, arguments)
+                        content = result.to_message()
+                        event_content = result.output if name == "todo_write" else content
+                        if name == "todo_write":
+                            last_todo_has_open_items = todo_result_has_open_items(result.output)
+                        tool_images = list(getattr(result, "images", None) or [])
+                except (ToolError, ValueError, OSError, subprocess.SubprocessError, TypeError) as exc:  # type: ignore[name-defined]
+                    content = json.dumps({"ok": False, "output": str(exc)}, ensure_ascii=False)
+                    event_content = content
+                    tool_images = []
+                if on_event:
+                    _trimmed = trim_tool_content(event_content if event_content is not None else content)
+                    _b64 = base64.b64encode(_trimmed.encode("utf-8")).decode("ascii")
+                    on_event(f"done {name} {_b64}")
+                    if tool_images:
+                        media_payload = json.dumps({"images": tool_images}, ensure_ascii=False)
+                        on_event(f"media {name} {base64.b64encode(media_payload.encode('utf-8')).decode('ascii')}")
+                    if name == "todo_write":
+                        on_event(f"todo {_b64}")
+                session.append(Message("user", tool_result_message(name, trim_tool_content(content)), images=tool_images))
+                failed = is_failed_tool_result(content)
+                round_had_tool_error = round_had_tool_error or failed
+                if name in LOCAL_ACTION_TOOLS and not failed:
+                    local_action_succeeded = True
+                last_tool_name = name
+                if should_cancel and should_cancel():
+                    raise RuntimeError("turn cancelled")
             last_turn_had_tool_result = True
-            last_turn_had_tool_error = is_failed_tool_result(content)
-            if name in LOCAL_ACTION_TOOLS and not last_turn_had_tool_error:
-                local_action_succeeded = True
-            last_tool_name = name
-            if should_cancel and should_cancel():
-                raise RuntimeError("turn cancelled")
+            last_turn_had_tool_error = round_had_tool_error
             if stop_after_tool:
                 return AgentResult(session.session_id, "", rounds)
         else:
@@ -401,12 +432,53 @@ class TuLAgent:
 
         return AgentResult(session.session_id, final_answer, rounds)
 
+    def _native_tool_names(self) -> list[str]:
+        names = set(self.tools.names) | {"ask_user", "delegate_agent"}
+        return sorted(
+            name
+            for name in names
+            if name in TOOL_SCHEMAS and tool_enabled(name, self.policy)
+        )
+
+    def _main_model_stream(self, messages: list[Message]):
+        if getattr(self.client, "supports_native_tools", False):
+            return self.client.stream_chat(messages, tool_names=self._native_tool_names())
+        return self.client.stream_chat(messages)
+
+    def _main_model_chat(self, messages: list[Message]) -> str:
+        if getattr(self.client, "supports_native_tools", False):
+            return self.client.chat(messages, tool_names=self._native_tool_names())
+        return self.client.chat(messages)
+
     def _initial_messages(self) -> list[Message]:
         messages = [Message("system", self._system_prompt())]
+        instruction_context = InstructionStore(self.settings.workspace).load().prompt
+        if instruction_context:
+            messages.append(Message("system", instruction_context))
         skill_context = SkillStore(self.settings.workspace).prompt_context()
         if skill_context:
             messages.append(Message("system", skill_context))
         return messages
+
+    def _refresh_runtime_context(self, session: Session) -> None:
+        current = self._initial_messages()
+        messages = list(session.messages)
+        if not messages or messages[0].role != "system":
+            messages.insert(0, current[0])
+        else:
+            messages[0] = current[0]
+
+        index = 1
+        while index < len(messages) and messages[index].role == "system":
+            content = messages[index].content
+            if is_runtime_context(content) or content.startswith("Available skills:\n") or content == "Skills: none discovered.":
+                messages.pop(index)
+                continue
+            index += 1
+        messages[1:1] = current[1:]
+        if messages != session.messages:
+            session.messages = messages
+            session.rewrite()
 
     def _system_prompt(self) -> str:
         mode_hint = {
@@ -613,68 +685,144 @@ class TuLAgent:
         return messages + [Message("system", "Private model deliberation notes for this turn:\n" + joined)]
 
 
+def consume_native_tool_calls(client: Any) -> list[NativeToolCall]:
+    raw_calls = getattr(client, "last_tool_calls", None)
+    if not isinstance(raw_calls, list) or not raw_calls:
+        return []
+    try:
+        client.last_tool_calls = []
+    except (AttributeError, TypeError):
+        pass
+    calls: list[NativeToolCall] = []
+    for item in raw_calls:
+        if isinstance(item, NativeToolCall):
+            if item.name in KNOWN_TOOL_NAMES and isinstance(item.arguments, dict):
+                calls.append(item)
+            continue
+        if isinstance(item, dict):
+            if isinstance(item.get("function"), dict):
+                parsed = parse_openai_tool_calls({"tool_calls": [item]})
+            elif isinstance(item.get("tool_calls"), list) or isinstance(item.get("function_call"), dict):
+                parsed = parse_openai_tool_calls(item)
+            else:
+                call_id = str(item.get("id") or "")
+                parsed = [NativeToolCall(name, arguments, call_id) for name, arguments in normalize_tool_calls(item)]
+            calls.extend(call for call in parsed if call.name in KNOWN_TOOL_NAMES)
+            continue
+        if (
+            isinstance(item, tuple)
+            and len(item) in {2, 3}
+            and isinstance(item[0], str)
+            and item[0] in KNOWN_TOOL_NAMES
+            and isinstance(item[1], dict)
+        ):
+            call_id = str(item[2]) if len(item) == 3 and item[2] is not None else ""
+            calls.append(NativeToolCall(item[0], item[1], call_id))
+    return calls
+
+
+def append_native_tool_call_record(
+    assistant_text: str,
+    calls: list[NativeToolCall],
+) -> str:
+    payload = {
+        "_native_tool_protocol": "openai-chat",
+        "tool_calls": [
+            {
+                **({"id": call.call_id} if call.call_id else {}),
+                "type": "function",
+                "function": {
+                    "name": call.name,
+                    "arguments": json.dumps(call.arguments, ensure_ascii=False, separators=(",", ":")),
+                },
+            }
+            for call in calls
+        ]
+    }
+    record = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return f"{assistant_text.rstrip()}\n{record}" if assistant_text.strip() else record
+
+
 def parse_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
+    calls = parse_tool_calls(text)
+    return calls[0] if calls else None
+
+
+def parse_tool_calls(text: str) -> list[tuple[str, dict[str, Any]]]:
     stripped = text.strip()
-    dsml = parse_dsml_tool_call(stripped)
+    dsml = parse_dsml_tool_calls(stripped)
     if dsml:
         return dsml
-    candidates = [stripped]
-    fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, flags=re.DOTALL)
-    candidates.extend(fenced)
-    candidates.extend(extract_json_objects(stripped))
-    for candidate in candidates:
+    xml = parse_xml_tool_calls(stripped)
+    if xml:
+        return xml
+    try:
+        exact = json.loads(stripped)
+    except json.JSONDecodeError:
+        exact = None
+    exact_calls = normalize_tool_calls(exact)
+    if exact_calls and not tool_json_is_explanatory_example(stripped, stripped):
+        return exact_calls
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+    for candidate in extract_top_level_json_objects(stripped):
         if tool_json_is_explanatory_example(stripped, candidate):
             continue
         try:
             data = json.loads(candidate)
         except json.JSONDecodeError:
             continue
-        parsed = normalize_tool_call(data)
+        parsed = normalize_tool_calls(data)
         if parsed:
-            return parsed
+            calls.extend(parsed)
+    if calls:
+        return calls
     labelled = parse_labelled_tool_call(stripped)
     if labelled:
-        return labelled
-    xml = parse_xml_tool_call(stripped)
-    if xml:
-        return xml
+        return [labelled]
     # Do NOT infer a tool from ordinary markdown code fences. Codex/opencode receive
     # tool calls as structured events; guessing from ```bash creates false positives and
     # turns normal code examples into tools. Keep action-shell parsing available only via
     # an explicit opt-in env for legacy behavior.
     if os.getenv("DSTUL_PARSE_ACTION_SHELL", "0").lower() in {"1", "true", "yes"}:
-        return parse_action_shell_block(stripped)
-    return None
+        action = parse_action_shell_block(stripped)
+        return [action] if action else []
+    return []
 
 
 def parse_dsml_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
-    invoke = re.search(
+    calls = parse_dsml_tool_calls(text)
+    return calls[0] if calls else None
+
+
+def parse_dsml_tool_calls(text: str) -> list[tuple[str, dict[str, Any]]]:
+    calls: list[tuple[str, dict[str, Any]]] = []
+    for invoke in re.finditer(
         rf"(?is)<{_DSML_TAG}invoke\b([^>]*)>(.*?)</{_DSML_TAG}invoke\s*>",
         text,
-    )
-    if not invoke:
-        return None
-    name_match = re.search(r'''(?i)\bname\s*=\s*["']([^"']+)["']''', invoke.group(1))
-    if not name_match or name_match.group(1) not in KNOWN_TOOL_NAMES:
-        return None
-    arguments: dict[str, Any] = {}
-    for parameter in re.finditer(
-        rf"(?is)<{_DSML_TAG}parameter\b([^>]*)>(.*?)</{_DSML_TAG}parameter\s*>",
-        invoke.group(2),
     ):
-        attrs, raw_value = parameter.groups()
-        parameter_name = re.search(r'''(?i)\bname\s*=\s*["']([^"']+)["']''', attrs)
-        if not parameter_name:
+        name_match = re.search(r'''(?i)\bname\s*=\s*["']([^"']+)["']''', invoke.group(1))
+        if not name_match or name_match.group(1) not in KNOWN_TOOL_NAMES:
             continue
-        value: Any = raw_value
-        string_flag = re.search(r'''(?i)\bstring\s*=\s*["']true["']''', attrs)
-        if not string_flag:
-            try:
-                value = json.loads(raw_value.strip())
-            except json.JSONDecodeError:
-                value = raw_value
-        arguments[parameter_name.group(1)] = value
-    return name_match.group(1), arguments
+        arguments: dict[str, Any] = {}
+        for parameter in re.finditer(
+            rf"(?is)<{_DSML_TAG}parameter\b([^>]*)>(.*?)</{_DSML_TAG}parameter\s*>",
+            invoke.group(2),
+        ):
+            attrs, raw_value = parameter.groups()
+            parameter_name = re.search(r'''(?i)\bname\s*=\s*["']([^"']+)["']''', attrs)
+            if not parameter_name:
+                continue
+            value: Any = raw_value
+            string_flag = re.search(r'''(?i)\bstring\s*=\s*["']true["']''', attrs)
+            if not string_flag:
+                try:
+                    value = json.loads(raw_value.strip())
+                except json.JSONDecodeError:
+                    value = raw_value
+            arguments[parameter_name.group(1)] = value
+        calls.append((name_match.group(1), arguments))
+    return calls
 
 
 def tool_json_is_explanatory_example(text: str, candidate: str) -> bool:
@@ -683,12 +831,18 @@ def tool_json_is_explanatory_example(text: str, candidate: str) -> bool:
     position = text.find(candidate)
     if position < 0:
         return False
-    context = (text[max(0, position - 240):position] + text[position + len(candidate):position + len(candidate) + 80]).lower()
+    prefix = text[max(0, position - 240):position].lower()
+    suffix = text[position + len(candidate):position + len(candidate) + 80].lower()
     cues = (
         "正确格式", "格式应该", "格式应为", "比如", "例如", "示例", "例子",
         "correct format", "format should", "for example", "example", "e.g.",
     )
-    return any(cue in context for cue in cues)
+    action_cues = ("now execute", "execute now", "now call", "call it now", "run it now")
+    last_example = max((prefix.rfind(cue) for cue in cues), default=-1)
+    last_action = max((prefix.rfind(cue) for cue in action_cues), default=-1)
+    if last_action > last_example:
+        return False
+    return last_example >= 0 or any(cue in suffix for cue in cues)
 
 
 # Hermes/Qwen/GLM/Kimi-style tool calls wrapped in <tool_call>…</tool_call> tags.
@@ -697,6 +851,24 @@ _TOOL_TAG_OPEN_RE = re.compile(r"(?is)<+\s*tool_call\b[^>]*>(.*)$")
 
 
 def parse_xml_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
+    calls = parse_xml_tool_calls(text)
+    return calls[0] if calls else None
+
+
+def parse_xml_tool_calls(text: str) -> list[tuple[str, dict[str, Any]]]:
+    blocks = [match.group(0) for match in _TOOL_TAG_RE.finditer(text)]
+    if not blocks:
+        open_match = _TOOL_TAG_OPEN_RE.search(text)
+        blocks = [open_match.group(0)] if open_match else []
+    calls: list[tuple[str, dict[str, Any]]] = []
+    for block in blocks:
+        call = _parse_xml_tool_call_single(block)
+        if call:
+            calls.append(call)
+    return calls
+
+
+def _parse_xml_tool_call_single(text: str) -> tuple[str, dict[str, Any]] | None:
     """Parse a <tool_call>…</tool_call> block (also tolerating an unterminated tag from a
     truncated stream). The inner payload may be JSON ({"name","arguments"}), or a
     name-then-JSON / name-then-key=value form."""
@@ -858,13 +1030,16 @@ def sanitize_model_tool_history(messages: list[Message]) -> list[Message]:
     while index < len(messages):
         message = messages[index]
         if message.role == "assistant":
-            tool_call = parse_tool_call(message.content)
-            if tool_call:
-                name, _arguments = tool_call
-                following = messages[index + 1] if index + 1 < len(messages) else None
-                if following is not None and tool_result_matches(name, following):
-                    sanitized.extend((message, following))
-                    index += 2
+            tool_calls = parse_tool_calls(message.content)
+            if tool_calls:
+                results = messages[index + 1:index + 1 + len(tool_calls)]
+                if len(results) == len(tool_calls) and all(
+                    tool_result_matches(name, result)
+                    for (name, _arguments), result in zip(tool_calls, results)
+                ):
+                    sanitized.append(message)
+                    sanitized.extend(results)
+                    index += 1 + len(results)
                     continue
                 prose = strip_tool_call_display(message.content).strip()
                 if prose and not is_tool_intro_only(prose):
@@ -1373,6 +1548,16 @@ COMPACTION_SUMMARY_PREFIX = (
 )
 
 
+def latest_provider_context_tokens(client: Any) -> int | None:
+    usage = getattr(client, "last_usage", None)
+    if usage is None or not getattr(usage, "source", ""):
+        return None
+    input_tokens = max(0, int(getattr(usage, "input_tokens", 0) or 0))
+    output_tokens = max(0, int(getattr(usage, "output_tokens", 0) or 0))
+    total_tokens = max(0, int(getattr(usage, "total_tokens", 0) or 0))
+    return max(total_tokens, input_tokens + output_tokens) or None
+
+
 def compact_context_messages(
     messages: list[Message],
     model: str,
@@ -1382,6 +1567,7 @@ def compact_context_messages(
     client: DeepSeekClient | None = None,
     context_limit: int | None = None,
     threshold_percent: float | None = None,
+    observed_tokens: int | None = None,
 ) -> list[Message]:
     if not force and os.getenv("DSTUL_AUTO_COMPACT", "1").lower() in {"0", "false", "no"}:
         return messages
@@ -1389,30 +1575,130 @@ def compact_context_messages(
     ratio = max(1.0, min(99.0, float(threshold_percent if threshold_percent is not None else 95.0))) / 100
     threshold = int(limit * ratio)
     estimated = estimate_message_tokens(messages)
-    if not force and estimated <= threshold:
-        return messages
-    if len(messages) <= 10:
+    observed = max(0, int(observed_tokens or 0))
+    effective_tokens = max(estimated, observed)
+    if not force and effective_tokens <= threshold:
         return messages
 
-    head: list[Message] = [messages[0]] if messages and messages[0].role == "system" else []
-    body = messages[1:] if head else messages
-    recent = body[-8:]
-    older = body[:-8]
-    if not older:
+    head: list[Message] = []
+    body_start = 0
+    if messages and messages[0].role == "system":
+        head.append(messages[0])
+        body_start = 1
+        while body_start < len(messages) and is_runtime_context(messages[body_start].content):
+            head.append(messages[body_start])
+            body_start += 1
+    body = messages[body_start:]
+    recent_budget = max(512, min(32_000, int(threshold * 0.35)))
+    older_units, recent_units = split_recent_context_units(body, recent_budget)
+    if not older_units:
         return messages
+    recent = flatten_message_units(recent_units)
 
     # Codex-style: hand the older history to the model to write a handoff summary, and
     # replace it with that summary. Fall back to local truncation only if there is no
     # client or the summary call fails, so compaction never breaks a turn.
-    summary = summarize_messages_with_model(older, client=client, on_event=on_event)
+    pinned_units, summarizable_units = preserved_skill_units(older_units, recent_units)
+    pinned = flatten_message_units(pinned_units)
+    summarizable = flatten_message_units(summarizable_units)
+    summary_max_chars = max(1000, min(24_000, int(limit * 1.5)))
+    summary = summarize_messages_with_model(summarizable, client=client, on_event=on_event)
+    if len(summary) > summary_max_chars:
+        summary = summary[:summary_max_chars].rstrip() + "\n[summary truncated]"
     if not summary:
-        summary = summarize_messages_locally(older, max_chars=min(24000, max(4000, limit * 2)))
-    compacted = head + [
-        Message("system", COMPACTION_SUMMARY_PREFIX + summary)
-    ] + recent
+        summary = summarize_messages_locally(summarizable, max_chars=summary_max_chars)
+    summary_messages = [Message("system", COMPACTION_SUMMARY_PREFIX + summary)] if summary else []
+    compacted = head + summary_messages + pinned + recent
+    compacted_estimate = estimate_message_tokens(compacted)
+    if compacted == messages or (not force and compacted_estimate >= estimated):
+        return messages
     if on_event:
-        on_event(f"context compacted {estimated} -> {estimate_message_tokens(compacted)} est tokens")
+        trigger = f", upstream snapshot {observed}" if observed > estimated else ""
+        on_event(f"context compacted {estimated} -> {compacted_estimate} est tokens{trigger}")
     return compacted
+
+
+def is_runtime_context(content: str) -> bool:
+    return content.startswith(INSTRUCTION_CONTEXT_PREFIX) or content.startswith(SKILL_CONTEXT_PREFIX)
+
+
+def context_message_units(messages: list[Message]) -> list[list[Message]]:
+    """Group an assistant tool call with every matching result.
+
+    Compression may move or summarize whole units, but never leaves an assistant call
+    or a tool result orphaned at the recent-history boundary.
+    """
+    units: list[list[Message]] = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        calls = parse_tool_calls(message.content) if message.role == "assistant" else []
+        if calls:
+            results = messages[index + 1:index + 1 + len(calls)]
+            if len(results) == len(calls) and all(
+                tool_result_matches(name, result)
+                for (name, _arguments), result in zip(calls, results)
+            ):
+                units.append([message, *results])
+                index += 1 + len(results)
+                continue
+        units.append([message])
+        index += 1
+    return units
+
+
+def flatten_message_units(units: list[list[Message]]) -> list[Message]:
+    return [message for unit in units for message in unit]
+
+
+def split_recent_context_units(
+    messages: list[Message],
+    token_budget: int,
+    *,
+    min_units: int = 2,
+    max_units: int = 6,
+) -> tuple[list[list[Message]], list[list[Message]]]:
+    units = context_message_units(messages)
+    if len(units) <= min_units:
+        return [], units
+    selected: list[list[Message]] = []
+    selected_tokens = 0
+    for unit in reversed(units):
+        unit_tokens = estimate_message_tokens(unit)
+        if selected and len(selected) >= min_units and (
+            len(selected) >= max_units or selected_tokens + unit_tokens > token_budget
+        ):
+            break
+        selected.append(unit)
+        selected_tokens += unit_tokens
+    selected.reverse()
+    return units[:len(units) - len(selected)], selected
+
+
+def preserved_skill_units(
+    older: list[list[Message]],
+    recent: list[list[Message]],
+) -> tuple[list[list[Message]], list[list[Message]]]:
+    def fingerprints(unit: list[Message]) -> list[str]:
+        return [message.content for message in unit if "<skill-pin" in message.content]
+
+    seen = {content for unit in recent for content in fingerprints(unit)}
+    pins: list[list[Message]] = []
+    pinned_chars = 0
+    for unit in reversed(older):
+        marked = fingerprints(unit)
+        unit_chars = sum(len(message.content) for message in unit)
+        if not marked or any(content in seen for content in marked):
+            continue
+        if len(pins) >= 4 or pinned_chars + unit_chars > 60_000:
+            continue
+        seen.update(marked)
+        pins.append(unit)
+        pinned_chars += unit_chars
+    pins.reverse()
+    pinned_ids = {id(unit) for unit in pins}
+    summarizable = [unit for unit in older if id(unit) not in pinned_ids]
+    return pins, summarizable
 
 
 def summarize_messages_with_model(
@@ -1617,6 +1903,37 @@ def normalize_shell_block(block: str) -> str:
     return "\n".join(lines)
 
 
+def normalize_tool_calls(data: Any) -> list[tuple[str, dict[str, Any]]]:
+    if isinstance(data, list):
+        calls: list[tuple[str, dict[str, Any]]] = []
+        for item in data:
+            calls.extend(normalize_tool_calls(item))
+        return calls
+    if not isinstance(data, dict):
+        return []
+    raw_calls = data.get("tool_calls")
+    if isinstance(raw_calls, list):
+        calls = []
+        for item in raw_calls:
+            if not isinstance(item, dict):
+                continue
+            function = item.get("function")
+            if isinstance(function, dict):
+                normalized = normalize_tool_call(
+                    {
+                        "name": function.get("name"),
+                        "arguments": function.get("arguments", {}),
+                    }
+                )
+            else:
+                normalized = normalize_tool_call(item)
+            if normalized:
+                calls.append(normalized)
+        return calls
+    normalized = normalize_tool_call(data)
+    return [normalized] if normalized else []
+
+
 def normalize_tool_call(data: Any) -> tuple[str, dict[str, Any]] | None:
     if not isinstance(data, dict):
         return None
@@ -1709,9 +2026,60 @@ def normalize_subagent_mode_and_thinking(
     elif mode not in valid_modes:
         mode = parent_mode if parent_mode in valid_modes else "plan"
 
+    resolved_parent = parent_mode if parent_mode in valid_modes else "plan"
+    if not subagent_mode_within_parent(mode, resolved_parent):
+        mode = resolved_parent
+
     if thinking not in valid_thinking:
         thinking = parent_thinking if parent_thinking in valid_thinking else "fast"
     return mode, thinking
+
+
+def subagent_mode_within_parent(child_mode: str, parent_mode: str) -> bool:
+    child = ApprovalPolicy.from_mode(child_mode)
+    parent = ApprovalPolicy.from_mode(parent_mode)
+    if child.allow_write and not parent.allow_write:
+        return False
+    if child.allow_shell and not parent.allow_shell:
+        return False
+    if child.allow_network and not parent.allow_network:
+        return False
+    if parent.require_confirmation and not child.require_confirmation and (
+        child.allow_write or child.allow_shell or child.allow_network
+    ):
+        return False
+    return True
+
+
+def extract_top_level_json_objects(text: str) -> list[str]:
+    """Return balanced JSON objects embedded in prose without returning nested copies."""
+
+    objects: list[str] = []
+    start: int | None = None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"' and depth:
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}" and depth:
+            depth -= 1
+            if depth == 0 and start is not None:
+                objects.append(text[start:index + 1])
+                start = None
+    return objects
 
 
 def extract_json_objects(text: str) -> list[str]:

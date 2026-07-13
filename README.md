@@ -35,7 +35,7 @@ The product, repository, and CLI all use **DeepSeekFathom**. Only the pip distri
 
 Windows users can download and run the installer directly:
 
-**[DeepSeekFathom-0.1.14-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.14/DeepSeekFathom-0.1.14-Setup.exe)**
+**[DeepSeekFathom-0.1.15-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.15/DeepSeekFathom-0.1.15-Setup.exe)**
 
 Linux / macOS:
 
@@ -145,7 +145,9 @@ deepseekfathom run --mode agent --think fast --yes "run tests and fix failures"
 The desktop app includes:
 
 - conversation navigation and a Codex-style `/` command menu (skills + `/compact`, `/subagent`, `/new`, `/settings`)
-- read-only capability diagnostics for skill winners/shadowed candidates, search roots, tool contracts, permission gates, and prompt-cost estimates
+- read-only capability diagnostics for loaded project instructions, skill winners/shadowed candidates, search roots, tool contracts, permission gates, and prompt-cost estimates
+- native OpenAI/DeepSeek tool calls with multi-call support and a text-protocol fallback for compatible gateways
+- on-demand `list_skills` / `read_skill` loading across DeepSeekFathom, Agents, and Claude skill conventions
 - model, thinking mode, permission mode, and provider-format selectors
 - DeepSeek, OpenAI (Chat and Responses), Google Gemini, and Anthropic Claude API support, with Base URL / API key settings
 - `+` file uploads
@@ -170,7 +172,7 @@ cd DeepSeekFathom
 .\scripts\build_windows_exe.ps1
 ```
 
-Outputs: `dist\DeepSeekFathom\DeepSeekFathom.exe` and, when Inno Setup 6 is installed, `dist\installer\DeepSeekFathom-0.1.14-Setup.exe`. The installer installs per user and creates branded **DeepSeekFathom** desktop and Start menu entries. Desktop releases use independent `desktop-vX.Y.Z` tags; GitHub Actions builds the installer from those tags and attaches it to the matching Release.
+Outputs: `dist\DeepSeekFathom\DeepSeekFathom.exe` and, when Inno Setup 6 is installed, `dist\installer\DeepSeekFathom-0.1.15-Setup.exe`. The installer installs per user and creates branded **DeepSeekFathom** desktop and Start menu entries. Desktop releases use independent `desktop-vX.Y.Z` tags; GitHub Actions builds the installer from those tags and attaches it to the matching Release.
 
 ## Conversations
 
