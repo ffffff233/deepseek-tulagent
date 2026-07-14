@@ -2,14 +2,14 @@ from pathlib import Path
 import json
 import re
 
-from deepseek_tulagent.agent import AgentResult, TuLAgent, compact_context_messages
-from deepseek_tulagent.config import Settings
-from deepseek_tulagent.messages import Message
-from deepseek_tulagent.session import Session
-from deepseek_tulagent.tools import ToolRegistry, _file_change_ui
+from deepseekfathom._core.agent import AgentResult, FathomAgent, compact_context_messages
+from deepseekfathom._core.config import Settings
+from deepseekfathom._core.messages import Message
+from deepseekfathom._core.session import Session
+from deepseekfathom._core.tools import ToolRegistry, _file_change_ui
 
 
-ASSET_ROOT = Path(__file__).parents[1] / "src" / "deepseek_tulagent" / "desktop" / "assets"
+ASSET_ROOT = Path(__file__).parents[1] / "src" / "deepseekfathom" / "_core" / "desktop" / "assets"
 
 
 def test_large_replacement_diff_keeps_both_sides_and_full_counts() -> None:
@@ -37,10 +37,10 @@ def test_failed_patch_does_not_claim_a_file_change(tmp_path: Path) -> None:
 
 
 def test_desktop_batches_small_stream_deltas(monkeypatch, tmp_path: Path) -> None:
-    import deepseek_tulagent.desktop.app as desktop
+    import deepseekfathom._core.desktop.app as desktop
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     session = Session(tmp_path, session_id="delta-batch")
     session.append(Message("user", "start"))
@@ -68,7 +68,7 @@ def test_desktop_batches_small_stream_deltas(monkeypatch, tmp_path: Path) -> Non
 
     window = Window()
     api.bind_window(window)
-    monkeypatch.setattr(desktop, "TuLAgent", FakeAgent)
+    monkeypatch.setattr(desktop, "FathomAgent", FakeAgent)
 
     api._run_agent_turn("continue", [], "delta-batch", "turn-batch")
 
@@ -218,7 +218,7 @@ def test_agent_uses_desktop_context_hint_for_automatic_compaction(tmp_path: Path
     )
     client = Client()
 
-    result = TuLAgent(
+    result = FathomAgent(
         config,
         mode="root",
         client=client,

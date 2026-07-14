@@ -6,8 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from deepseek_tulagent import plugins as plugin_module
-from deepseek_tulagent.plugins import (
+from deepseekfathom._core import plugins as plugin_module
+from deepseekfathom._core.plugins import (
     InstalledPlugin,
     PluginError,
     PluginState,
@@ -212,7 +212,7 @@ def test_discovery_keeps_disabled_plugins_visible(tmp_path: Path):
 
 
 def test_project_discovery_never_auto_enables_plugin(tmp_path: Path):
-    root = tmp_path / ".deepseek-tulagent" / "plugins" / "project-pack"
+    root = tmp_path / ".deepseekfathom" / "plugins" / "project-pack"
     write_manifest(root, {"name": "project-pack"})
 
     packages = discover_project_plugins(tmp_path)

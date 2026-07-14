@@ -1,11 +1,24 @@
 [project]
-name = "deepseek-tulagent"
-version = "0.1.108"
-description = "A lightweight TuL-style coding agent tailored for DeepSeek's OpenAI-compatible API."
+name = "deepseekfathom"
+version = "0.1.109"
+description = "A local coding agent for DeepSeek and OpenAI-compatible APIs."
 readme = "README.md"
 requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+  { name = "ffffff233" },
+]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
 dependencies = [
   "httpx>=0.27.0",
+  "prompt-toolkit>=3.0.50,<4",
 ]
 
 [project.optional-dependencies]
@@ -14,13 +27,14 @@ desktop = [
 ]
 
 [project.scripts]
-deepseekfathom = "deepseek_tulagent.cli:main"
-deepseekfathom-desktop = "deepseek_tulagent.desktop.app:main"
-# Compatibility aliases retained for existing installations.
-dstul = "deepseek_tulagent.cli:main"
-deepseek-tulagent = "deepseek_tulagent.cli:main"
-deepseekTul = "deepseek_tulagent.cli:main"
-deepseekTulDesktop = "deepseek_tulagent.desktop.app:main"
+deepseekfathom = "deepseekfathom.cli:main"
+deepseekfathom-desktop = "deepseekfathom.desktop:main"
+
+[project.urls]
+Homepage = "https://github.com/ffffff233/DeepSeekFathom"
+Repository = "https://github.com/ffffff233/DeepSeekFathom.git"
+Issues = "https://github.com/ffffff233/DeepSeekFathom/issues"
+Changelog = "https://github.com/ffffff233/DeepSeekFathom/blob/main/CHANGELOG-CLI.md"
 
 [build-system]
 requires = ["hatchling"]
@@ -31,4 +45,4 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/deepseek_tulagent"]
+packages = ["src/deepseekfathom"]

@@ -1,5 +1,28 @@
 # CLI 更新记录 / CLI Changelog
 
+## v0.1.109
+
+中文：
+
+- **CLI 与桌面端扩展运行时对齐**：同一套 MCP、官方/用户插件、Hooks、插件 Skills 和插件指令会进入终端会话；可从 `/` 菜单查看状态、连接已配置的 MCP，并让动态 MCP 工具遵守当前权限与审批边界。
+- **文件写入和补丁直接展示逐行差异**：删除行红色、新增行绿色、未变化上下文行无底色，删除块排在对应新增块之前；显示真实旧/新行号、文件路径、完整增删计数和截断提示，Windows 与 Linux 终端共用同一差异协议。
+- **重做 Windows 与 Linux 命令输入**：使用 Prompt Toolkit 提供中文编辑、光标移动、历史、终端缩放、Ctrl+C / Ctrl+D 和紧凑的两列斜杠菜单；初始化异常时保留原生控制台/termios 降级路径，重定向输出统一为 UTF-8。
+- **修复真实 Windows 终端中的斜杠输入**：移除会把输入区撑到屏幕底部的状态栏，`/` 命令与说明保持可见；连续输入 `//` 后退格会正确回到 `/` 并恢复菜单，不再卡住。
+- **CLI 品牌统一为 DeepSeekFathom**，帮助、标题、更新与恢复提示不再出现旧名称；命令输入保持单一、克制的终端编辑区。
+- **pip 分发名统一为 `deepseekfathom`**：只安装 `deepseekfathom` 与 `deepseekfathom-desktop` 两个命令入口；配置、会话、Skills 和插件会安全迁移到 `.deepseekfathom`，迁移只补缺失文件，不覆盖用户内容。
+- **安全清理旧 pip 分发**：只在旧版 `0.1.108` 的名称、入口、路径和元数据全部精确匹配时删除旧包与四个旧别名，并离线原子修复两个 DeepSeekFathom 入口；Windows 使用隐藏助手，不再闪出终端，Linux 同步支持。
+- **新增 `Max` 思考等级并排在 `Ultra` 之后**：`Max` 向上游原样发送 `reasoning_effort=max` 并使用最高本地推理轮次；`minimal` 与 `none` 不再出现在可选列表。
+
+English:
+
+- Brought MCP, official/user plugins, Hooks, plugin Skills, and plugin instructions into the same CLI runtime used by Desktop, with status commands, connection controls, dynamic tools, and permission enforcement.
+- Rendered write/patch operations as direct line-by-line diffs with real old/new line numbers, deletions before additions, red/green changed rows, neutral context, counts, paths, and truncation notices on Windows and Linux.
+- Rebuilt Windows and Linux input with Prompt Toolkit for Chinese editing, cursor movement, history, resize handling, and a compact two-column slash menu, while preserving native console/termios fallbacks.
+- Fixed real Windows terminal slash editing so `//` can be deleted back to `/`, the command menu returns immediately, and the composer no longer reserves an empty full-screen toolbar area.
+- Unified CLI branding as DeepSeekFathom and added `Max` after `Ultra`, sending `reasoning_effort=max` upstream unchanged.
+- Renamed the pip distribution to `deepseekfathom`, removed legacy command entry points, and migrated user data safely into `.deepseekfathom` without overwriting existing files.
+- Added an exact-match, offline migration that removes the old 0.1.108 distribution and four aliases while atomically preserving the two DeepSeekFathom launchers on Windows and Linux.
+
 ## v0.1.108
 
 中文：

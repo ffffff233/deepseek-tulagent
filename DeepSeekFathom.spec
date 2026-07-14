@@ -6,10 +6,14 @@ datas = []
 binaries = []
 hiddenimports = ['clr', 'proxy_tools', 'bottle', 'webview.platforms.edgechromium', 'webview.platforms.winforms', 'webview.platforms.mshtml']
 hiddenimports += collect_submodules('webview')
-hiddenimports += collect_submodules('deepseek_tulagent')
-# Package UI assets from this checkout. collect_all('deepseek_tulagent') can resolve
+hiddenimports += collect_submodules('deepseekfathom')
+# Package UI assets from this checkout. collect_all('deepseekfathom') can resolve
 # an older site-packages copy and produce a new EXE with an old frontend.
-datas += [('src\\deepseek_tulagent\\desktop\\assets', 'deepseek_tulagent\\desktop\\assets')]
+datas += [('build\\desktop-release\\assets', 'deepseekfathom\\_core\\desktop\\assets')]
+datas += [('build\\third-party-licenses', 'licenses')]
+datas += [('LICENSE', '.')]
+datas += [('NOTICE', '.')]
+datas += [('scripts\\Languages\\LICENSE', 'licenses\\inno-setup-chinese-translation')]
 tmp_ret = collect_all('webview')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
@@ -45,7 +49,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    version='assets\\windows-version-info.txt',
+    version='build\\desktop-release\\windows-version-info.txt',
     icon=['assets\\app-icon.ico'],
 )
 coll = COLLECT(

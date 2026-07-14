@@ -9,20 +9,21 @@ import re
 import subprocess
 import urllib.parse
 import zipfile
+from types import SimpleNamespace
 import pytest
 
-from deepseek_tulagent.agent import RECOVER_AFTER_TOOL_FAILURE_PROMPT, TuLAgent, compact_context_messages, context_window_info, context_window_tokens, estimate_message_tokens, filter_internal_automation_messages, is_question_mark_only, normalize_subagent_mode_and_thinking, normalize_subagent_specs, normalize_user_question, parse_tool_call, plainify_assistant_text, promises_more_work, trim_tool_content, tool_result_message
-from deepseek_tulagent.capabilities import collect_capability_report
-from deepseek_tulagent.cli import main
-from deepseek_tulagent.config import Settings, get_settings, merge_file_config, resolve_model
-from deepseek_tulagent.messages import Message
-from deepseek_tulagent.policy import ApprovalPolicy, ThinkingMode
-from deepseek_tulagent.provider import UsageStats, apply_anthropic_cache_control, apply_thinking_payload, cache_affinity_headers, extract_error_message, parse_usage_stats, prompt_cache_key
-from deepseek_tulagent.session import Session, SessionStore
-from deepseek_tulagent.skills import SkillStore
-from deepseek_tulagent.tui import ChatTui, TuiState
-from deepseek_tulagent.ui import ThinkingSpinner, composer_display_text, composer_prompt, display_width, filter_slash_items, format_agent_event, palette_footer_text, print_box, read_bracketed_paste, read_escape_suffix, read_raw_char, redraw_composer, selected_window_start, should_submit_newline, tail_for_width, slash_selection_insertion
-from deepseek_tulagent.tools import ToolError, ToolRegistry, normalize_bing_url, normalize_duckduckgo_url
+from deepseekfathom._core.agent import RECOVER_AFTER_TOOL_FAILURE_PROMPT, FathomAgent, compact_context_messages, context_window_info, context_window_tokens, estimate_message_tokens, filter_internal_automation_messages, is_question_mark_only, normalize_subagent_mode_and_thinking, normalize_subagent_specs, normalize_user_question, parse_tool_call, plainify_assistant_text, promises_more_work, trim_tool_content, tool_result_message
+from deepseekfathom._core.capabilities import collect_capability_report
+from deepseekfathom._core.cli import main
+from deepseekfathom._core.config import Settings, get_settings, merge_file_config, resolve_model
+from deepseekfathom._core.messages import Message
+from deepseekfathom._core.policy import ApprovalPolicy, ThinkingMode
+from deepseekfathom._core.provider import UsageStats, apply_anthropic_cache_control, apply_thinking_payload, cache_affinity_headers, extract_error_message, parse_usage_stats, prompt_cache_key
+from deepseekfathom._core.session import Session, SessionStore
+from deepseekfathom._core.skills import SkillStore
+from deepseekfathom._core.tui import ChatTui, TuiState, render_messages, wrap_display_text
+from deepseekfathom._core.ui import ThinkingSpinner, clip_visible, composer_display_text, composer_prompt, configure_utf8_stdio, display_width, filter_slash_items, format_agent_event, palette_footer_text, plain_terminal, print_box, read_bracketed_paste, read_composer, read_escape_suffix, read_raw_char, redraw_composer, selected_window_start, should_submit_newline, tail_for_width, slash_selection_insertion
+from deepseekfathom._core.tools import ToolError, ToolRegistry, normalize_bing_url, normalize_duckduckgo_url
 
 
 class FakeClient:
@@ -188,7 +189,7 @@ def test_parse_provider_usage_stats():
 
 
 def test_openai_native_tool_schema_and_stream_fragments_are_normalized():
-    from deepseek_tulagent.provider import (
+    from deepseekfathom._core.provider import (
         append_openai_tool_call_deltas,
         finalize_openai_tool_call_deltas,
         openai_tool_definitions,
@@ -219,8 +220,8 @@ def test_openai_native_tool_schema_and_stream_fragments_are_normalized():
 
 
 def test_native_tool_history_preserves_call_ids_after_session_reload(tmp_path: Path):
-    from deepseek_tulagent.agent import append_native_tool_call_record
-    from deepseek_tulagent.provider import NativeToolCall, openai_messages
+    from deepseekfathom._core.agent import append_native_tool_call_record
+    from deepseekfathom._core.provider import NativeToolCall, openai_messages
 
     session = Session(tmp_path, session_id="native-history")
     session.append(
@@ -264,14 +265,14 @@ def test_client_reports_native_tools_only_for_chat_completions(
 ):
     from dataclasses import replace
 
-    from deepseek_tulagent.provider import DeepSeekClient
+    from deepseekfathom._core.provider import DeepSeekClient
 
     client = DeepSeekClient(replace(settings(tmp_path), provider_format=provider_format))
     assert client.supports_native_tools is expected
 
 
 def test_agent_executes_multiple_native_tool_calls(tmp_path: Path):
-    from deepseek_tulagent.provider import NativeToolCall
+    from deepseekfathom._core.provider import NativeToolCall
 
     (tmp_path / "README.md").write_text("hello", encoding="utf-8")
 
@@ -295,7 +296,7 @@ def test_agent_executes_multiple_native_tool_calls(tmp_path: Path):
             return "Both tools completed."
 
     client = NativeClient()
-    result = TuLAgent(settings(tmp_path), client=client).run("inspect README", require_todo=False)
+    result = FathomAgent(settings(tmp_path), client=client).run("inspect README", require_todo=False)
     loaded = SessionStore(tmp_path).load(result.session_id)
     tool_results = [message.content for message in loaded.messages if message.content.startswith("TOOL_RESULT")]
     assert result.answer == "Both tools completed."
@@ -305,7 +306,7 @@ def test_agent_executes_multiple_native_tool_calls(tmp_path: Path):
 
 
 def test_client_keeps_latest_usage_separate_from_cumulative(tmp_path: Path):
-    from deepseek_tulagent.provider import DeepSeekClient
+    from deepseekfathom._core.provider import DeepSeekClient
 
     client = DeepSeekClient(settings(tmp_path))
     client._record_usage({"usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}})
@@ -414,7 +415,7 @@ def test_plainify_assistant_text_removes_decorative_stars():
 
 
 def test_parse_xml_tool_call_variants():
-    from deepseek_tulagent.agent import should_hold_stream_output, safe_stream_emit_length, strip_tool_call_display
+    from deepseekfathom._core.agent import should_hold_stream_output, safe_stream_emit_length, strip_tool_call_display
 
     # Hermes/Qwen name+arguments JSON inside <tool_call> tags
     v1 = '<tool_call>\n{"name": "write_file", "arguments": {"path": "a.txt", "content": "hi"}}\n</tool_call>'
@@ -445,7 +446,7 @@ def test_parse_xml_tool_call_variants():
 def test_stream_holds_mid_line_tool_calls():
     """A tool call appended to the SAME line as prose must still be held back — only the
     prose before the marker is safe to stream."""
-    from deepseek_tulagent.agent import safe_stream_emit_length
+    from deepseekfathom._core.agent import safe_stream_emit_length
 
     # <tool_call> tag right after a sentence
     t1 = '好的，我来调用：<tool_call>{"name":"write_file","arguments":{}}'
@@ -461,7 +462,7 @@ def test_stream_holds_mid_line_tool_calls():
 
 
 def test_unknown_name_input_json_is_not_treated_as_tool_call():
-    from deepseek_tulagent.agent import safe_stream_emit_length
+    from deepseekfathom._core.agent import safe_stream_emit_length
 
     text = '模型参数示例：{"name":"temperature","input":{"value":0.2},"arguments":"not a tool"}'
     assert parse_tool_call(text) is None
@@ -485,7 +486,7 @@ def test_parse_parameters_alias_for_tool_arguments():
 
 def test_strip_leaves_no_bracket_or_tag_residue():
     """Parsing succeeds but a stray brace/angle-bracket must not be left as prose."""
-    from deepseek_tulagent.agent import strip_tool_call_display as strip
+    from deepseekfathom._core.agent import strip_tool_call_display as strip
 
     # extra trailing brace after the tool JSON
     assert strip('现在执行。\n{"tool":"run_shell","arguments":{"command":"ls"}}}') == "现在执行。"
@@ -499,7 +500,7 @@ def test_strip_leaves_no_bracket_or_tag_residue():
 
 def test_strip_removes_labelled_tool_format():
     """Our labelled Tool:/工具: format must be stripped from display too, not just JSON."""
-    from deepseek_tulagent.agent import strip_tool_call_display as strip
+    from deepseekfathom._core.agent import strip_tool_call_display as strip
 
     assert strip('好的，我来运行命令。\nTool: run_shell\nArguments: {"command":"ls"}') == "好的，我来运行命令。"
     assert strip("我检查一下。\n工具: read_file\n参数: {\"path\":\"x\"}") == "我检查一下。"
@@ -572,10 +573,10 @@ def test_agent_runs_read_tool_loop(tmp_path: Path):
         '{"tool":"read_file","arguments":{"path":"README.md"}}',
         "README says hello.",
     ])
-    result = TuLAgent(settings(tmp_path), client=client).run("summarize")
+    result = FathomAgent(settings(tmp_path), client=client).run("summarize")
     assert result.answer == "README says hello."
     assert result.rounds == 2
-    assert (tmp_path / ".deepseek-tulagent" / "sessions").exists()
+    assert (tmp_path / ".deepseekfathom" / "sessions").exists()
 
 
 def test_agent_delegates_to_subagent_with_isolated_context(tmp_path: Path):
@@ -597,12 +598,12 @@ def test_agent_delegates_to_subagent_with_isolated_context(tmp_path: Path):
             return "主代理总结：已收到子代理结果。"
 
     client = DelegateClient()
-    result = TuLAgent(settings(tmp_path), mode="root", client=client).run("主任务秘密：委派检查")
+    result = FathomAgent(settings(tmp_path), mode="root", client=client).run("主任务秘密：委派检查")
     assert result.answer == "主代理总结：已收到子代理结果。"
     assert client.subagent_saw_parent_prompt is False
     # the delegated subagent must NOT create its own on-disk conversation: only the
     # parent's session file should exist in the sessions directory
-    session_files = list((tmp_path / ".deepseek-tulagent" / "sessions").glob("*.jsonl"))
+    session_files = list((tmp_path / ".deepseekfathom" / "sessions").glob("*.jsonl"))
     assert len(session_files) == 1, session_files
 
 
@@ -621,7 +622,7 @@ def test_subagent_treats_thinking_mode_in_mode_field_as_thinking(tmp_path: Path)
             assert "子代理 fast 结论" in messages[-1].content
             return "主代理收到。"
 
-    result = TuLAgent(settings(tmp_path), mode="root", thinking="fast", client=DelegateClient()).run("委派检查")
+    result = FathomAgent(settings(tmp_path), mode="root", thinking="fast", client=DelegateClient()).run("委派检查")
     assert result.answer == "主代理收到。"
 
 
@@ -641,7 +642,7 @@ def test_subagent_inherits_parent_mode_and_accepts_thinking_field(tmp_path: Path
             return "主代理收到。"
 
     client = DelegateClient()
-    result = TuLAgent(settings(tmp_path), mode="root", thinking="fast", client=client).run("委派检查权限")
+    result = FathomAgent(settings(tmp_path), mode="root", thinking="fast", client=client).run("委派检查权限")
     assert result.answer == "主代理收到。"
     assert "Current mode: root" in client.subagent_system
     assert "Policy: write=True, shell=True, network=True, confirmation=False." in client.subagent_system
@@ -664,10 +665,48 @@ def test_subagent_honors_explicit_mode_and_thinking(tmp_path: Path):
             return "主代理收到。"
 
     client = DelegateClient()
-    TuLAgent(settings(tmp_path), mode="root", thinking="fast", client=client).run("委派只读检查")
+    FathomAgent(settings(tmp_path), mode="root", thinking="fast", client=client).run("委派只读检查")
     assert "Current mode: review" in client.subagent_system
     assert "Policy: write=False, shell=True, network=False, confirmation=True." in client.subagent_system
     assert "Thinking mode: balanced." in client.subagent_system
+
+
+def test_subagent_forks_client_with_its_own_upstream_thinking(tmp_path: Path):
+    captured = {}
+
+    class ChildClient:
+        def __init__(self, child_settings):
+            captured["settings"] = child_settings
+            self.closed = False
+
+        def chat(self, _messages):
+            return "子代理完成。"
+
+        def close(self):
+            self.closed = True
+            captured["closed"] = True
+
+    class ParentClient:
+        def fork_for_settings(self, child_settings):
+            return ChildClient(child_settings)
+
+    parent_settings = settings(tmp_path).with_runtime(
+        thinking_enabled=True,
+        reasoning_effort="low",
+    )
+    agent = FathomAgent(parent_settings, mode="root", thinking="fast", client=ParentClient())
+    result = agent._run_one_subagent(
+        {"name": "max-check", "task": "检查参数", "thinking": "max", "max_rounds": 1},
+        1,
+        1,
+    )
+
+    assert result["summary"] == "子代理完成。"
+    assert captured["settings"].reasoning_effort == "max"
+    payload = {}
+    apply_thinking_payload(payload, captured["settings"])
+    assert payload["reasoning_effort"] == "max"
+    assert captured["closed"] is True
 
 
 def test_agent_delegates_to_multiple_subagents_in_one_tool_call(tmp_path: Path):
@@ -693,7 +732,7 @@ def test_agent_delegates_to_multiple_subagents_in_one_tool_call(tmp_path: Path):
             assert "reviewer 结论" in messages[-1].content
             return "主代理收到两个子代理结果。"
 
-    result = TuLAgent(settings(tmp_path), mode="root", thinking="fast", client=MultiDelegateClient()).run("并行委派检查")
+    result = FathomAgent(settings(tmp_path), mode="root", thinking="fast", client=MultiDelegateClient()).run("并行委派检查")
     assert result.answer == "主代理收到两个子代理结果。"
 
 
@@ -717,7 +756,7 @@ def test_agent_delegate_respects_cancel_before_subagent_runs(tmp_path: Path):
         cancelled["value"] = True
 
     try:
-        TuLAgent(settings(tmp_path), mode="root", client=DelegateClient()).run(
+        FathomAgent(settings(tmp_path), mode="root", client=DelegateClient()).run(
             "委派检查",
             on_event=on_event,
             should_cancel=should_cancel,
@@ -762,7 +801,7 @@ def test_normalize_subagent_specs_accepts_agents_and_tasks():
 
 
 def test_subagents_slash_item_is_hidden_from_quick_palette(tmp_path: Path):
-    from deepseek_tulagent.cli import slash_items
+    from deepseekfathom._core.cli import slash_items
 
     labels = [label for label, _description in slash_items(settings(tmp_path))]
     assert "/subagents" not in labels
@@ -774,6 +813,7 @@ def test_palette_footer_explains_quit_keys():
     assert "ctrl-c" in footer.lower()
     assert "ctrl-d" in footer.lower()
     assert "esc" in footer.lower()
+    assert "j/k" not in footer.lower()
 
 
 def test_agent_ask_user_feeds_answer_back_to_model(tmp_path: Path):
@@ -795,7 +835,7 @@ def test_agent_ask_user_feeds_answer_back_to_model(tmp_path: Path):
         answers.append(question)
         return {"answer": "python", "label": "Python"}
 
-    result = TuLAgent(settings(tmp_path), mode="root", client=AskClient(), ask_user=ask_user).run("创建程序")
+    result = FathomAgent(settings(tmp_path), mode="root", client=AskClient(), ask_user=ask_user).run("创建程序")
     assert result.answer == "已选择 Python。"
     assert answers[0]["question"] == "用什么语言开发？"
     assert answers[0]["options"][0]["label"] == "Python"
@@ -818,7 +858,7 @@ def test_streamed_tool_json_is_not_printed_as_visible_delta(tmp_path: Path):
     visible: list[str] = []
     events: list[str] = []
     client = StreamingToolClient()
-    result = TuLAgent(settings(tmp_path), mode="root", thinking="instant", client=client).run(
+    result = FathomAgent(settings(tmp_path), mode="root", thinking="instant", client=client).run(
         "读取 README",
         stream=True,
         on_delta=visible.append,
@@ -845,7 +885,7 @@ def test_streamed_fenced_tool_json_is_not_printed_as_visible_delta(tmp_path: Pat
 
     (tmp_path / "README.md").write_text("hello", encoding="utf-8")
     visible: list[str] = []
-    result = TuLAgent(settings(tmp_path), mode="root", client=StreamingFencedToolClient()).run(
+    result = FathomAgent(settings(tmp_path), mode="root", client=StreamingFencedToolClient()).run(
         "读取 README",
         stream=True,
         on_delta=visible.append,
@@ -871,7 +911,7 @@ def test_character_split_tool_fence_is_removed_from_desktop_stream(tmp_path: Pat
     (tmp_path / "README.md").write_text("hello", encoding="utf-8")
     visible: list[str] = []
     finals: list[str] = []
-    result = TuLAgent(settings(tmp_path), mode="root", client=CharacterStreamingClient()).run(
+    result = FathomAgent(settings(tmp_path), mode="root", client=CharacterStreamingClient()).run(
         "读取 README",
         stream=True,
         on_delta=visible.append,
@@ -907,7 +947,7 @@ def test_character_split_dsml_executes_without_leaking_markup(tmp_path: Path):
 
     visible: list[str] = []
     finals: list[str] = []
-    result = TuLAgent(settings(tmp_path), mode="root", client=DsmlClient()).run(
+    result = FathomAgent(settings(tmp_path), mode="root", client=DsmlClient()).run(
         "在桌面写一个 HTML 游戏",
         stream=True,
         on_delta=visible.append,
@@ -939,7 +979,7 @@ def test_promised_attachment_read_continues_without_user_nudge(tmp_path: Path):
     visible: list[str] = []
     finals: list[str] = []
     client = PromiseThenToolClient()
-    result = TuLAgent(settings(tmp_path), mode="root", client=client).run(
+    result = FathomAgent(settings(tmp_path), mode="root", client=client).run(
         "请读取附件 CHANGELOG.md",
         stream=True,
         on_delta=visible.append,
@@ -969,7 +1009,7 @@ def test_streamed_tool_call_with_preface_is_not_printed_as_visible_delta(tmp_pat
 
     (tmp_path / "README.md").write_text("hello", encoding="utf-8")
     visible: list[str] = []
-    result = TuLAgent(settings(tmp_path), mode="root", client=StreamingPrefaceToolClient()).run(
+    result = FathomAgent(settings(tmp_path), mode="root", client=StreamingPrefaceToolClient()).run(
         "读取 README",
         stream=True,
         on_delta=visible.append,
@@ -1024,7 +1064,7 @@ def test_local_create_requires_real_tool_result_and_holds_long_arguments(tmp_pat
         def event(text: str) -> None:
             timeline.append("event:" + text)
 
-        result = TuLAgent(settings(workspace), mode="root", client=client).run(
+        result = FathomAgent(settings(workspace), mode="root", client=client).run(
             "在桌面上创建一个小游戏HTML",
             stream=True,
             on_delta=delta,
@@ -1060,7 +1100,7 @@ def test_ordinary_markdown_stream_does_not_lock_or_emit_toolpending(tmp_path: Pa
     visible: list[str] = []
     finals: list[str] = []
     events: list[str] = []
-    result = TuLAgent(settings(tmp_path), mode="root", client=MarkdownClient()).run(
+    result = FathomAgent(settings(tmp_path), mode="root", client=MarkdownClient()).run(
         "解释代码和 JSON 示例",
         stream=True,
         on_delta=visible.append,
@@ -1084,7 +1124,7 @@ def test_repeated_fake_local_completion_is_replaced_with_honest_failure(tmp_path
             self.calls += 1
             return "文件已经创建好了。"
 
-    result = TuLAgent(settings(tmp_path), mode="root", client=FakeCompletionClient()).run(
+    result = FathomAgent(settings(tmp_path), mode="root", client=FakeCompletionClient()).run(
         "在桌面创建 result.txt",
         require_todo=False,
     )
@@ -1094,7 +1134,7 @@ def test_repeated_fake_local_completion_is_replaced_with_honest_failure(tmp_path
 
 
 def test_local_tool_evidence_detection_covers_natural_create_wording():
-    from deepseek_tulagent.agent import claims_local_action_completed, requires_local_tool_action
+    from deepseekfathom._core.agent import claims_local_action_completed, requires_local_tool_action
 
     assert requires_local_tool_action("在桌面做一个小游戏 HTML")
     assert requires_local_tool_action("帮我生成 result.txt 文件")
@@ -1107,7 +1147,7 @@ def test_local_tool_evidence_detection_covers_natural_create_wording():
 
 def test_initial_messages_keep_large_system_prompt_cacheable(tmp_path: Path):
     SkillStore(tmp_path).create("repo-debug", "Debug this repository.", "Run tests.")
-    agent = TuLAgent(settings(tmp_path), client=FakeClient(["done"]))
+    agent = FathomAgent(settings(tmp_path), client=FakeClient(["done"]))
     initial = agent._initial_messages()
     assert [message.role for message in initial] == ["system", "system"]
     assert "Available tools:" in initial[0].content
@@ -1147,7 +1187,7 @@ def test_agent_continues_after_assistant_promises_next_tool(tmp_path: Path):
                 return '{"tool":"start_service","arguments":{"name":"login","command":"python3 -m http.server 8097"}}'
             return "服务器已启动。"
 
-    result = TuLAgent(settings(tmp_path), mode="root", client=ContinueClient()).run("写登录 HTML，然后启动服务")
+    result = FathomAgent(settings(tmp_path), mode="root", client=ContinueClient()).run("写登录 HTML，然后启动服务")
     assert result.answer == "服务器已启动。"
     assert result.rounds == 4
 
@@ -1166,7 +1206,7 @@ def test_goal_mode_does_not_stop_on_intermediate_answer(tmp_path: Path):
                 return '{"tool":"write_file","arguments":{"path":"done.txt","content":"ok"}}'
             return "目标已完成：done.txt 已写入。"
 
-    result = TuLAgent(settings(tmp_path), mode="root", client=GoalClient()).run(
+    result = FathomAgent(settings(tmp_path), mode="root", client=GoalClient()).run(
         "开始",
         goal="写出 done.txt",
     )
@@ -1176,7 +1216,7 @@ def test_goal_mode_does_not_stop_on_intermediate_answer(tmp_path: Path):
 
 
 def test_goal_mode_allows_explicit_block(tmp_path: Path):
-    result = TuLAgent(settings(tmp_path), mode="root", client=FakeClient(["被阻塞：缺少目标路径。"])).run(
+    result = FathomAgent(settings(tmp_path), mode="root", client=FakeClient(["被阻塞：缺少目标路径。"])).run(
         "开始",
         goal="完成未知文件",
     )
@@ -1199,7 +1239,7 @@ def test_agent_retries_after_tool_failure_when_model_stops(tmp_path: Path):
                 return '{"tool":"list_files","arguments":{"path":"."}}'
             return "已改为列目录确认文件不存在。"
 
-    result = TuLAgent(settings(tmp_path), mode="root", client=RetryClient()).run("读取 missing.txt，如果失败就检查目录")
+    result = FathomAgent(settings(tmp_path), mode="root", client=RetryClient()).run("读取 missing.txt，如果失败就检查目录")
     assert result.answer == "已改为列目录确认文件不存在。"
     assert result.rounds == 4
     session_text = "\n".join(message.content for message in SessionStore(tmp_path).load(result.session_id).messages)
@@ -1226,7 +1266,7 @@ def test_desktop_buffers_failed_tool_recovery_draft(tmp_path: Path):
 
     visible: list[str] = []
     finals: list[str] = []
-    result = TuLAgent(settings(tmp_path), mode="root", client=RetryClient()).run(
+    result = FathomAgent(settings(tmp_path), mode="root", client=RetryClient()).run(
         "读取 missing.txt，如果失败就检查目录",
         stream=True,
         on_delta=visible.append,
@@ -1259,7 +1299,7 @@ def test_agent_does_not_retry_when_only_one_tool_in_batch_failed(tmp_path: Path)
             raise AssertionError("a partial-success batch must not start an unsolicited recovery round")
 
     client = PartialSuccessClient()
-    result = TuLAgent(settings(tmp_path), mode="root", client=client).run(
+    result = FathomAgent(settings(tmp_path), mode="root", client=client).run(
         "检查目标文件和当前目录",
         require_todo=False,
     )
@@ -1315,7 +1355,7 @@ def test_valid_tool_protocol_pair_stays_in_model_context():
 
 
 def test_desktop_marks_orphaned_legacy_tool_as_not_executed():
-    from deepseek_tulagent.desktop.app import serialize_messages
+    from deepseekfathom._core.desktop.app import serialize_messages
 
     call = '{"tool":"write_file","arguments":{"path":"snake.html","content":"game"}}'
     visible = serialize_messages([
@@ -1333,7 +1373,7 @@ def test_desktop_marks_orphaned_legacy_tool_as_not_executed():
 
 
 def test_desktop_pairs_multiple_native_tool_calls_with_each_result():
-    from deepseek_tulagent.desktop.app import serialize_messages
+    from deepseekfathom._core.desktop.app import serialize_messages
 
     calls = json.dumps({
         "tool_calls": [
@@ -1354,8 +1394,8 @@ def test_desktop_pairs_multiple_native_tool_calls_with_each_result():
 
 
 def test_session_markdown_exports_visible_transcript_without_protocol(tmp_path: Path):
-    from deepseek_tulagent.desktop.app import session_markdown
-    from deepseek_tulagent.session import Session
+    from deepseekfathom._core.desktop.app import session_markdown
+    from deepseekfathom._core.session import Session
 
     session = Session(tmp_path, session_id="export-test", created_at="2026-07-11T12:00:00+00:00", persist=False)
     session.messages = [
@@ -1381,7 +1421,7 @@ def test_session_markdown_exports_visible_transcript_without_protocol(tmp_path: 
 
 
 def test_markdown_export_filename_is_windows_safe():
-    from deepseek_tulagent.desktop.app import safe_markdown_filename
+    from deepseekfathom._core.desktop.app import safe_markdown_filename
 
     assert safe_markdown_filename(' 项目：A/B*? ') == "项目：A_B__.md"
     assert safe_markdown_filename('Project:A') == "Project_A.md"
@@ -1394,11 +1434,11 @@ def test_markdown_export_filename_is_windows_safe():
 def test_desktop_export_session_uses_native_save_dialog(monkeypatch, tmp_path: Path):
     import webview
 
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     session = Session(tmp_path, session_id="native-export")
     session.append(Message("user", "导出这段对话"))
     session.append(Message("assistant", "已经准备好。"))
@@ -1429,11 +1469,11 @@ def test_desktop_export_session_uses_native_save_dialog(monkeypatch, tmp_path: P
 
 
 def test_desktop_export_session_cancel_does_not_write(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     session = Session(tmp_path, session_id="cancel-export")
     session.append(Message("user", "不要保存"))
 
@@ -1448,11 +1488,11 @@ def test_desktop_export_session_cancel_does_not_write(monkeypatch, tmp_path: Pat
 
 
 def test_desktop_export_session_rejects_active_generation(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     api.session = Session(tmp_path, session_id="active-export")
     api._running = True
@@ -1470,7 +1510,7 @@ def test_complex_task_gets_private_execution_hint(tmp_path: Path):
             assert "delegate_agent" in messages[-1].content
             return "ok"
 
-    result = TuLAgent(settings(tmp_path), mode="root", client=InspectClient()).run("写一个 HTML，然后启动服务，再检查端口并验证公网访问")
+    result = FathomAgent(settings(tmp_path), mode="root", client=InspectClient()).run("写一个 HTML，然后启动服务，再检查端口并验证公网访问")
     assert result.answer == "ok"
 
 
@@ -1491,7 +1531,7 @@ def test_complex_task_requires_todo_write_before_prose(tmp_path: Path):
             return "已完成：任务目标已列出。"
 
     events: list[str] = []
-    result = TuLAgent(settings(tmp_path), mode="root", client=PlanOnlyThenTodoClient()).run(
+    result = FathomAgent(settings(tmp_path), mode="root", client=PlanOnlyThenTodoClient()).run(
         "检查这个复杂 bug，然后修复，再运行测试验证",
         on_event=events.append,
         max_tool_rounds=3,
@@ -1513,7 +1553,7 @@ def test_agent_finalizes_instead_of_pausing_after_tool_limit(tmp_path: Path):
             return "工具轮数已到。README 已读取，但还没完成更多验证。"
 
     (tmp_path / "README.md").write_text("hello", encoding="utf-8")
-    result = TuLAgent(settings(tmp_path), mode="root", client=LimitClient()).run("连续检查", max_tool_rounds=2)
+    result = FathomAgent(settings(tmp_path), mode="root", client=LimitClient()).run("连续检查", max_tool_rounds=2)
     assert result.answer == "工具轮数已到。README 已读取，但还没完成更多验证。"
     assert "Paused after tool execution" not in result.answer
 
@@ -1550,7 +1590,7 @@ def test_agent_can_continue_search_after_empty_result(tmp_path: Path):
                 return type("Result", (), {"to_message": lambda _self: '{"ok": false, "output": "no web search results parsed"}'})()
             return type("Result", (), {"to_message": lambda _self: '{"ok": true, "output": "- Reuters\\n  https://example.com\\n  news"}'})()
 
-    agent = TuLAgent(settings(tmp_path), mode="root", client=SearchRetryClient())
+    agent = FathomAgent(settings(tmp_path), mode="root", client=SearchRetryClient())
     agent.tools = FakeSearchTools()
     result = agent.run("搜索美国近况用必应")
     assert result.answer == "美国近况总结。"
@@ -1567,11 +1607,11 @@ def test_question_mark_only_goes_to_model_but_ignores_tools(tmp_path: Path):
             return '{"tool":"list_files","arguments":{"path":"."}}'
 
     client = QuestionClient()
-    result = TuLAgent(settings(tmp_path), client=client).run("？")
+    result = FathomAgent(settings(tmp_path), client=client).run("？")
     assert client.calls == 1
     assert result.rounds == 1
     assert result.answer == '{"tool":"list_files","arguments":{"path":"."}}'
-    transcript = next((tmp_path / ".deepseek-tulagent" / "sessions").glob("*.jsonl")).read_text(encoding="utf-8")
+    transcript = next((tmp_path / ".deepseekfathom" / "sessions").glob("*.jsonl")).read_text(encoding="utf-8")
     assert "TOOL_RESULT" not in transcript
     assert is_question_mark_only("???") is True
 
@@ -1581,8 +1621,8 @@ def test_agent_executes_explicit_json_tool_call(tmp_path: Path):
         '{"tool":"run_shell","arguments":{"command":"printf repo-ok"}}',
         "工具结果是 repo-ok。",
     ])
-    result = TuLAgent(settings(tmp_path), mode="root", client=client).run("检查仓库")
-    transcript = next((tmp_path / ".deepseek-tulagent" / "sessions").glob("*.jsonl")).read_text(encoding="utf-8")
+    result = FathomAgent(settings(tmp_path), mode="root", client=client).run("检查仓库")
+    transcript = next((tmp_path / ".deepseekfathom" / "sessions").glob("*.jsonl")).read_text(encoding="utf-8")
     assert "TOOL_RESULT name=run_shell" in transcript
     assert "repo-ok" in transcript
     assert result.answer == "工具结果是 repo-ok。"
@@ -1626,7 +1666,7 @@ def test_tool_result_is_sent_as_user_context_not_tool_role(tmp_path: Path):
             return "done"
 
     (tmp_path / "README.md").write_text("hello", encoding="utf-8")
-    result = TuLAgent(settings(tmp_path), mode="root", client=InspectingClient()).run("read")
+    result = FathomAgent(settings(tmp_path), mode="root", client=InspectingClient()).run("read")
     assert result.answer == "done"
 
 
@@ -1641,7 +1681,7 @@ def test_stop_after_tool_does_not_call_model_again(tmp_path: Path):
 
     (tmp_path / "README.md").write_text("hello", encoding="utf-8")
     client = OneToolClient()
-    result = TuLAgent(settings(tmp_path), mode="root", client=client).run("read", stop_after_tool=True)
+    result = FathomAgent(settings(tmp_path), mode="root", client=client).run("read", stop_after_tool=True)
     assert client.calls == 1
     assert result.answer == ""
 
@@ -1656,7 +1696,7 @@ def test_doctor_reports_default_v4_pro(monkeypatch, tmp_path: Path, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     code = main(["doctor"])
     out = capsys.readouterr().out
     assert code == 2
@@ -1682,6 +1722,8 @@ def test_thinking_mode_resolves_model_and_budget():
     assert ThinkingMode.resolve("balanced").reasoning_effort == "medium"
     assert deep.reasoning_effort == "high"
     assert ultra.reasoning_effort == "xhigh"
+    assert ThinkingMode.resolve("max").reasoning_effort == "max"
+    assert ThinkingMode.user_selectable_names() == ["fast", "balanced", "deep", "ultra", "max"]
     assert deep.deliberation_passes > 0
     assert deep.system_hint
 
@@ -1691,7 +1733,7 @@ def test_deepseek_payload_includes_thinking_controls(tmp_path: Path):
     payload = {}
     apply_thinking_payload(payload, settings_obj)
     assert payload["thinking"] == {"type": "enabled"}
-    assert "reasoning_effort" not in payload
+    assert payload["reasoning_effort"] == "xhigh"
 
     payload = {}
     apply_thinking_payload(payload, settings(tmp_path).with_runtime(thinking_enabled=False))
@@ -1772,7 +1814,7 @@ def test_write_file_is_atomic_on_replace_failure(monkeypatch, tmp_path: Path):
     def fail_replace(src, dst):
         raise OSError("simulated replace crash")
 
-    monkeypatch.setattr("deepseek_tulagent.tools.os.replace", fail_replace)
+    monkeypatch.setattr("deepseekfathom._core.tools.os.replace", fail_replace)
     try:
         tools.run("write_file", {"path": "file.txt", "content": "new"})
     except OSError:
@@ -1808,7 +1850,7 @@ def test_run_shell_background_command_starts_service(tmp_path: Path):
     result = tools.run("run_shell", {"command": "python3 -m http.server 0 &", "name": "test-http"})
     assert result.ok is True
     assert "Started test-http" in result.output
-    assert (tmp_path / ".deepseek-tulagent" / "services" / "test-http.pid").exists()
+    assert (tmp_path / ".deepseekfathom" / "services" / "test-http.pid").exists()
     tools.run("stop_service", {"name": "test-http"})
 
 
@@ -1823,8 +1865,8 @@ def test_start_service_uses_hidden_process_launcher(monkeypatch, tmp_path: Path)
         captured.update(kwargs)
         return FakeProcess()
 
-    monkeypatch.setattr("deepseek_tulagent.tools.shell_invocation", lambda command: (["shell", command], False))
-    monkeypatch.setattr("deepseek_tulagent.tools.popen_hidden", fake_popen)
+    monkeypatch.setattr("deepseekfathom._core.tools.shell_invocation", lambda command: (["shell", command], False))
+    monkeypatch.setattr("deepseekfathom._core.tools.popen_hidden", fake_popen)
     tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
 
     result = tools.run("start_service", {"name": "server", "command": "serve --port 8000"})
@@ -1833,14 +1875,14 @@ def test_start_service_uses_hidden_process_launcher(monkeypatch, tmp_path: Path)
     assert captured["command"] == ["shell", "serve --port 8000"]
     assert captured["shell"] is False
     assert captured["stderr"] is subprocess.STDOUT
-    assert (tmp_path / ".deepseek-tulagent" / "services" / "server.pid").read_text() == "4242"
+    assert (tmp_path / ".deepseekfathom" / "services" / "server.pid").read_text() == "4242"
 
 
 def test_run_shell_handles_none_stdout_and_stderr(monkeypatch, tmp_path: Path):
     def fake_run(*_args, **_kwargs):
         return type("Completed", (), {"returncode": 0, "stdout": None, "stderr": None})()
 
-    monkeypatch.setattr("deepseek_tulagent.tools.subprocess.run", fake_run)
+    monkeypatch.setattr("deepseekfathom._core.tools.subprocess.run", fake_run)
     tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
     result = tools.run("run_shell", {"command": "echo ok"})
     assert result.ok is True
@@ -1848,7 +1890,7 @@ def test_run_shell_handles_none_stdout_and_stderr(monkeypatch, tmp_path: Path):
 
 
 def test_desktop_error_summary_hides_trace_noise():
-    from deepseek_tulagent.desktop.app import user_error_summary
+    from deepseekfathom._core.desktop.app import user_error_summary
 
     assert user_error_summary("API error 400: invalid model") == "上游 API 返回错误：400: invalid model"
     assert "旧版本处理空输出时崩溃" in user_error_summary("'NoneType' object is not subscriptable")
@@ -1859,8 +1901,8 @@ def test_agent_mode_requires_confirmation_for_shell(tmp_path: Path):
         '{"tool":"run_shell","arguments":{"command":"echo should-not-run"}}',
         "Shell was blocked.",
     ])
-    result = TuLAgent(settings(tmp_path), mode="agent", client=client).run("run shell")
-    transcript = next((tmp_path / ".deepseek-tulagent" / "sessions").glob("*.jsonl")).read_text(encoding="utf-8")
+    result = FathomAgent(settings(tmp_path), mode="agent", client=client).run("run shell")
+    transcript = next((tmp_path / ".deepseekfathom" / "sessions").glob("*.jsonl")).read_text(encoding="utf-8")
     assert "confirmation required" in transcript
     assert result.answer == "Shell was blocked."
 
@@ -1870,8 +1912,8 @@ def test_yolo_mode_auto_approves_shell(tmp_path: Path):
         '{"tool":"run_shell","arguments":{"command":"echo ran"}}',
         "Shell ran.",
     ])
-    result = TuLAgent(settings(tmp_path), mode="yolo", client=client).run("run shell")
-    transcript = next((tmp_path / ".deepseek-tulagent" / "sessions").glob("*.jsonl")).read_text(encoding="utf-8")
+    result = FathomAgent(settings(tmp_path), mode="yolo", client=client).run("run shell")
+    transcript = next((tmp_path / ".deepseekfathom" / "sessions").glob("*.jsonl")).read_text(encoding="utf-8")
     assert "ran" in transcript
     assert result.answer == "Shell ran."
 
@@ -1881,8 +1923,8 @@ def test_agent_executes_tool_fence_with_top_level_parameters(tmp_path: Path):
         '```tool\n{"tool":"run_shell","command":"printf top-level-ok","timeout":5}\n```',
         "done",
     ])
-    result = TuLAgent(settings(tmp_path), mode="root", client=client).run("run shell")
-    transcript = next((tmp_path / ".deepseek-tulagent" / "sessions").glob("*.jsonl")).read_text(encoding="utf-8")
+    result = FathomAgent(settings(tmp_path), mode="root", client=client).run("run shell")
+    transcript = next((tmp_path / ".deepseekfathom" / "sessions").glob("*.jsonl")).read_text(encoding="utf-8")
     assert "top-level-ok" in transcript
     assert "Missing string argument: command" not in transcript
     assert result.answer == "done"
@@ -1893,13 +1935,13 @@ def test_agent_mode_can_approve_selected_tool(tmp_path: Path):
         '{"tool":"run_shell","arguments":{"command":"echo approved"}}',
         "Shell approved.",
     ])
-    result = TuLAgent(
+    result = FathomAgent(
         settings(tmp_path),
         mode="agent",
         client=client,
         approve=lambda name, args: name == "run_shell",
     ).run("run shell")
-    transcript = next((tmp_path / ".deepseek-tulagent" / "sessions").glob("*.jsonl")).read_text(encoding="utf-8")
+    transcript = next((tmp_path / ".deepseekfathom" / "sessions").glob("*.jsonl")).read_text(encoding="utf-8")
     assert "approved" in transcript
     assert result.answer == "Shell approved."
 
@@ -1996,8 +2038,8 @@ def test_clone_repo_uses_github_archive_fallback(monkeypatch, tmp_path: Path):
         requested_urls.append(request.full_url)
         return FakeResponse()
 
-    monkeypatch.setattr("deepseek_tulagent.tools.subprocess.run", fake_run)
-    monkeypatch.setattr("deepseek_tulagent.tools.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("deepseekfathom._core.tools.subprocess.run", fake_run)
+    monkeypatch.setattr("deepseekfathom._core.tools.urllib.request.urlopen", fake_urlopen)
 
     tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
     result = tools.run("clone_repo", {"repo": "https://github.com/nexu-io/open-design.git", "path": "open-design", "branch": "main"})
@@ -2016,7 +2058,7 @@ def test_clone_repo_accepts_repo_url_argument_alias(monkeypatch, tmp_path: Path)
         clone_commands.append(command)
         return subprocess.CompletedProcess(command, 0, "ok", "")
 
-    monkeypatch.setattr("deepseek_tulagent.tools.subprocess.run", fake_run)
+    monkeypatch.setattr("deepseekfathom._core.tools.subprocess.run", fake_run)
     tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
     result = tools.run("clone_repo", {"repo/url": "https://github.com/esengine/DeepSeek-Reasonix", "path": str(tmp_path / "Reasonix")})
     assert result.ok is True
@@ -2024,7 +2066,7 @@ def test_clone_repo_accepts_repo_url_argument_alias(monkeypatch, tmp_path: Path)
 
 
 def test_system_prompt_mentions_clone_repo(tmp_path: Path):
-    prompt = TuLAgent(settings(tmp_path), client=FakeClient(["ok"]))._system_prompt()
+    prompt = FathomAgent(settings(tmp_path), client=FakeClient(["ok"]))._system_prompt()
     assert "clone_repo(repo or url, path, branch?, timeout?)" in prompt
     assert "prefer clone_repo over manual git clone" in prompt
     assert "Windows paths" in prompt
@@ -2074,7 +2116,7 @@ def test_inspect_media_attaches_image_to_tool_result(tmp_path: Path):
 
 
 def test_agent_emits_todo_event_for_todo_write(tmp_path: Path):
-    from deepseek_tulagent.desktop.app import parse_agent_event
+    from deepseekfathom._core.desktop.app import parse_agent_event
 
     events: list[str] = []
     client = FakeClient(
@@ -2084,7 +2126,7 @@ def test_agent_emits_todo_event_for_todo_write(tmp_path: Path):
             "目标已完成：已修复。",
         ]
     )
-    result = TuLAgent(settings(tmp_path), mode="root", thinking="instant", client=client).run(
+    result = FathomAgent(settings(tmp_path), mode="root", thinking="instant", client=client).run(
         "修一个复杂 bug",
         goal="完成复杂 bug 修复",
         on_event=events.append,
@@ -2116,7 +2158,7 @@ def test_agent_continues_after_required_todo_write(tmp_path: Path):
             assert "TOOL_RESULT name=write_file" in messages[-1].content
             return "已完成：done.txt 已写入。"
 
-    result = TuLAgent(settings(tmp_path), mode="root", client=TodoThenWorkClient()).run(
+    result = FathomAgent(settings(tmp_path), mode="root", client=TodoThenWorkClient()).run(
         "检查这个复杂 bug，然后修复，再验证",
         max_tool_rounds=4,
     )
@@ -2144,7 +2186,7 @@ def test_agent_preserves_substantive_answer_after_completed_todo_write(tmp_path:
         def stream_chat(self, messages):
             yield self.chat(messages)
 
-    result = TuLAgent(settings(tmp_path), mode="root", client=CompletedTodoThenSummaryClient()).run(
+    result = FathomAgent(settings(tmp_path), mode="root", client=CompletedTodoThenSummaryClient()).run(
         "整理这个复杂问题，然后给出最终说明",
         stream=True,
         on_final=finals.append,
@@ -2182,7 +2224,7 @@ def test_web_search_uses_baidu_first(monkeypatch, tmp_path: Path):
             '<div class="c-abstract">摘要</div></html>'
         )
 
-    monkeypatch.setattr("deepseek_tulagent.tools.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("deepseekfathom._core.tools.urllib.request.urlopen", fake_urlopen)
     monkeypatch.delenv("DSTUL_SEARCH_ENGINES", raising=False)
     tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
     result = tools.run("web_search", {"query": "测试", "max_results": 1})
@@ -2219,7 +2261,7 @@ def test_web_search_falls_back_from_baidu_to_bing(monkeypatch, tmp_path: Path):
             '<div class="b_caption"><p>必应摘要</p></div></li></html>'
         )
 
-    monkeypatch.setattr("deepseek_tulagent.tools.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("deepseekfathom._core.tools.urllib.request.urlopen", fake_urlopen)
     tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
     result = tools.run("web_search", {"query": "测试", "max_results": 1})
     assert result.ok is True
@@ -2250,7 +2292,7 @@ def test_web_search_accepts_engine_override(monkeypatch, tmp_path: Path):
         captured.update(urllib.parse.parse_qs(parsed.query))
         return FakeResponse()
 
-    monkeypatch.setattr("deepseek_tulagent.tools.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("deepseekfathom._core.tools.urllib.request.urlopen", fake_urlopen)
     tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
     result = tools.run(
         "web_search",
@@ -2292,7 +2334,7 @@ def test_web_search_supports_duckduckgo_fallback(monkeypatch, tmp_path: Path):
             '<div class="result__snippet">DDG 摘要</div></div></div>'
         )
 
-    monkeypatch.setattr("deepseek_tulagent.tools.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("deepseekfathom._core.tools.urllib.request.urlopen", fake_urlopen)
     tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
     result = tools.run("web_search", {"query": "测试", "max_results": 1})
     assert result.ok is True
@@ -2333,7 +2375,7 @@ def test_web_search_can_fetch_top_result_pages(monkeypatch, tmp_path: Path):
             return FakeResponse("<html></html>")
         return FakeResponse("<html><title>A page</title><body><main>正文内容 " + ("x" * 200) + "</main></body></html>")
 
-    monkeypatch.setattr("deepseek_tulagent.tools.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("deepseekfathom._core.tools.urllib.request.urlopen", fake_urlopen)
     tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
     result = tools.run("web_search", {"query": "测试", "engines": "bing", "fetch_pages": 1})
     assert result.ok is True
@@ -2367,7 +2409,7 @@ def test_web_search_respects_robots_when_fetching_pages(monkeypatch, tmp_path: P
             return FakeResponse("User-agent: *\nDisallow: /\n")
         raise AssertionError(f"page should not be fetched when robots blocks it: {url}")
 
-    monkeypatch.setattr("deepseek_tulagent.tools.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("deepseekfathom._core.tools.urllib.request.urlopen", fake_urlopen)
     tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
     result = tools.run("web_search", {"query": "测试", "engines": "bing", "fetch_pages": 1})
     assert result.ok is True
@@ -2380,7 +2422,7 @@ def test_web_search_reports_all_engine_failures(monkeypatch, tmp_path: Path):
         raise OSError("network blocked")
 
     monkeypatch.delenv("DSTUL_SEARCH_ENGINES", raising=False)
-    monkeypatch.setattr("deepseek_tulagent.tools.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("deepseekfathom._core.tools.urllib.request.urlopen", fake_urlopen)
     tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
     result = tools.run("web_search", {"query": "测试", "max_results": 3})
     assert result.ok is False
@@ -2409,7 +2451,7 @@ def test_web_search_reads_direct_url(monkeypatch, tmp_path: Path):
             return FakeResponse(b"User-agent: *\nAllow: /\n")
         return FakeResponse(b"<html><head><title>Page Title</title></head><body><h1>Hello</h1><p>Body text</p></body></html>")
 
-    monkeypatch.setattr("deepseek_tulagent.tools.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("deepseekfathom._core.tools.urllib.request.urlopen", fake_urlopen)
     tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
     result = tools.run("web_search", {"query": "https://example.com/page"})
     assert result.ok is True
@@ -2428,7 +2470,7 @@ def test_web_search_direct_url_respects_robots(monkeypatch, tmp_path: Path):
         def read(self, _limit=-1):
             return b"User-agent: *\nDisallow: /\n"
 
-    monkeypatch.setattr("deepseek_tulagent.tools.urllib.request.urlopen", lambda *_args, **_kwargs: FakeResponse())
+    monkeypatch.setattr("deepseekfathom._core.tools.urllib.request.urlopen", lambda *_args, **_kwargs: FakeResponse())
     tools = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root"))
     result = tools.run("web_search", {"query": "https://example.com/page"})
     assert result.ok is False
@@ -2447,8 +2489,8 @@ def test_skill_store_discovers_and_creates_workspace_skills(tmp_path: Path):
 
 def test_skill_inspection_reports_winner_shadowed_and_root_priority(tmp_path: Path):
     home = tmp_path / "home"
-    project_skill = tmp_path / ".deepseek-tulagent" / "skills" / "repo-debug" / "SKILL.md"
-    user_skill = home / ".deepseek-tulagent" / "skills" / "repo-debug" / "SKILL.md"
+    project_skill = tmp_path / ".deepseekfathom" / "skills" / "repo-debug" / "SKILL.md"
+    user_skill = home / ".deepseekfathom" / "skills" / "repo-debug" / "SKILL.md"
     project_skill.parent.mkdir(parents=True)
     user_skill.parent.mkdir(parents=True)
     project_skill.write_text("---\nname: repo-debug\ndescription: project winner\n---\n\nProject", encoding="utf-8")
@@ -2460,7 +2502,7 @@ def test_skill_inspection_reports_winner_shadowed_and_root_priority(tmp_path: Pa
     assert [candidate.status for candidate in candidates] == ["winner", "shadowed"]
     assert candidates[0].skill.path == project_skill
     assert candidates[1].winner_path == project_skill
-    assert inspection.roots[0].path == (tmp_path / ".deepseek-tulagent" / "skills").resolve()
+    assert inspection.roots[0].path == (tmp_path / ".deepseekfathom" / "skills").resolve()
     assert inspection.roots[0].priority == 0
 
 
@@ -2505,15 +2547,15 @@ def test_skill_tools_search_and_load_body_on_demand(tmp_path: Path):
 
 
 def test_instruction_store_loads_stable_hierarchy_and_local_override(tmp_path: Path):
-    from deepseek_tulagent.instructions import InstructionStore
+    from deepseekfathom._core.instructions import InstructionStore
 
     home = tmp_path / "home"
     project = tmp_path / "project"
     workspace = project / "packages" / "app"
-    (home / ".deepseek-tulagent").mkdir(parents=True)
+    (home / ".deepseekfathom").mkdir(parents=True)
     workspace.mkdir(parents=True)
     (project / ".git").mkdir()
-    (home / ".deepseek-tulagent" / "AGENTS.md").write_text("user rule", encoding="utf-8")
+    (home / ".deepseekfathom" / "AGENTS.md").write_text("user rule", encoding="utf-8")
     (project / "REASONIX.md").write_text("root rule", encoding="utf-8")
     (workspace / "AGENTS.md").write_text("workspace rule", encoding="utf-8")
     (workspace / "AGENTS.local.md").write_text("local rule", encoding="utf-8")
@@ -2537,7 +2579,7 @@ def test_existing_session_refreshes_runtime_context_without_losing_history(tmp_p
     ]
     session.rewrite()
 
-    agent = TuLAgent(settings(tmp_path), client=FakeClient(["done"]))
+    agent = FathomAgent(settings(tmp_path), client=FakeClient(["done"]))
     agent._refresh_runtime_context(session)
 
     assert "Available tools:" in session.messages[0].content
@@ -2562,8 +2604,8 @@ def test_compaction_preserves_runtime_context_and_loaded_skill(tmp_path: Path):
 
 def test_capability_report_is_deterministic_and_path_redacted(tmp_path: Path):
     home = tmp_path / "home"
-    project_skill = tmp_path / ".deepseek-tulagent" / "skills" / "demo" / "SKILL.md"
-    user_skill = home / ".deepseek-tulagent" / "skills" / "demo" / "SKILL.md"
+    project_skill = tmp_path / ".deepseekfathom" / "skills" / "demo" / "SKILL.md"
+    user_skill = home / ".deepseekfathom" / "skills" / "demo" / "SKILL.md"
     project_skill.parent.mkdir(parents=True)
     user_skill.parent.mkdir(parents=True)
     project_skill.write_text("---\nname: demo\ndescription: project\n---\n\nProject", encoding="utf-8")
@@ -2576,21 +2618,21 @@ def test_capability_report_is_deterministic_and_path_redacted(tmp_path: Path):
 
     assert [tool["name"] for tool in tools] == sorted(tool["name"] for tool in tools)
     assert all(tool["schema"] and tool["schemaTokenEstimate"] > 0 for tool in tools)
-    assert report["summary"]["tools"] == 19
+    assert report["summary"]["tools"] == len(tools)
     assert report["summary"]["shadowedSkills"] == 1
     assert {issue["code"] for issue in report["issues"]} >= {"skill.shadowed"}
     assert "instruction.not_loaded" not in {issue["code"] for issue in report["issues"]}
     assert report["instructions"]["entries"][0]["loaded"] is True
     assert str(tmp_path.resolve()) not in serialized
     assert "never-copy-this" not in serialized
-    assert "<workspace>/.deepseek-tulagent/skills/demo/SKILL.md" in serialized
+    assert "<workspace>/.deepseekfathom/skills/demo/SKILL.md" in serialized
 
 
 def test_desktop_user_data_migration_never_overwrites_existing_files(tmp_path: Path):
-    from deepseek_tulagent.desktop.app import _copy_missing_user_data
+    from deepseekfathom._core.desktop.app import _copy_missing_user_data
 
-    legacy = tmp_path / "installed" / ".deepseek-tulagent"
-    stable = tmp_path / "home" / ".deepseek-tulagent"
+    legacy = tmp_path / "installed" / ".deepseekfathom"
+    stable = tmp_path / "home" / ".deepseekfathom"
     (legacy / "sessions").mkdir(parents=True)
     (stable / "sessions").mkdir(parents=True)
     (legacy / "sessions" / "old.jsonl").write_text("legacy", encoding="utf-8")
@@ -2627,7 +2669,7 @@ def test_settings_read_local_config_file(monkeypatch, tmp_path: Path):
         }),
         encoding="utf-8",
     )
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(config_home))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(config_home))
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
     monkeypatch.chdir(tmp_path)
@@ -2640,7 +2682,7 @@ def test_settings_read_local_config_file(monkeypatch, tmp_path: Path):
 
 def test_empty_cli_defaults_to_root_fast_start(monkeypatch, tmp_path: Path):
     captured = {}
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config"))
 
     def fake_interactive(settings_obj, mode, thinking, yes, resume=None):
         captured["mode"] = mode
@@ -2648,13 +2690,13 @@ def test_empty_cli_defaults_to_root_fast_start(monkeypatch, tmp_path: Path):
         captured["resume"] = resume
         return 0
 
-    monkeypatch.setattr("deepseek_tulagent.cli.interactive", fake_interactive)
+    monkeypatch.setattr("deepseekfathom._core.cli.interactive", fake_interactive)
     assert main([]) == 0
     assert captured == {"mode": "root", "thinking": "fast", "resume": None}
 
 
 def test_cli_desktop_command_invokes_desktop(monkeypatch):
-    import deepseek_tulagent.desktop.app as desktop
+    import deepseekfathom._core.desktop.app as desktop
 
     called = {}
     monkeypatch.setattr(desktop, "main", lambda: called.setdefault("ok", True))
@@ -2663,10 +2705,10 @@ def test_cli_desktop_command_invokes_desktop(monkeypatch):
 
 
 def test_desktop_api_boot_and_runtime(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
+    import deepseekfathom._core.desktop.app as desktop
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test")
     api = desktop.DesktopApi()
     assert "window" not in api.__dict__
@@ -2694,7 +2736,7 @@ def test_desktop_api_boot_and_runtime(monkeypatch, tmp_path: Path):
 def test_desktop_windows_single_instance_mutex(monkeypatch):
     import ctypes
 
-    import deepseek_tulagent.desktop.app as desktop
+    import deepseekfathom._core.desktop.app as desktop
 
     class Call:
         def __init__(self, fn):
@@ -2734,10 +2776,10 @@ def test_desktop_windows_single_instance_mutex(monkeypatch):
 
 
 def test_desktop_api_rejects_parallel_turn(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
+    import deepseekfathom._core.desktop.app as desktop
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     api._running = True
     api._active_turn_id = "active-turn"
@@ -2754,11 +2796,11 @@ def test_desktop_send_after_cancel_queues_next_turn(monkeypatch, tmp_path: Path)
     import time
     import threading
 
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.agent import AgentResult
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.agent import AgentResult
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     entered_first = threading.Event()
     release_first = threading.Event()
@@ -2776,7 +2818,7 @@ def test_desktop_send_after_cancel_queues_next_turn(monkeypatch, tmp_path: Path)
                 kwargs["on_delta"]("迟到输出")
             return AgentResult(kwargs["session"].session_id, "完成", 1)
 
-    monkeypatch.setattr(desktop, "TuLAgent", FakeAgent)
+    monkeypatch.setattr(desktop, "FathomAgent", FakeAgent)
 
     first = api.send({"prompt": "第一条"})
     assert first["ok"] is True
@@ -2802,13 +2844,13 @@ def test_desktop_queued_turn_does_not_steal_later_session(monkeypatch, tmp_path:
     import time
     import threading
 
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.agent import AgentResult
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.agent import AgentResult
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     first_session = Session(tmp_path, session_id="first-session")
     queued_session = Session(tmp_path, session_id="queued-session")
@@ -2837,7 +2879,7 @@ def test_desktop_queued_turn_does_not_steal_later_session(monkeypatch, tmp_path:
                 kwargs["on_delta"]("迟到输出")
             return AgentResult(kwargs["session"].session_id, "完成", 1)
 
-    monkeypatch.setattr(desktop, "TuLAgent", FakeAgent)
+    monkeypatch.setattr(desktop, "FathomAgent", FakeAgent)
 
     api.send({"prompt": "第一条"})
     assert entered_first.wait(timeout=2)
@@ -2861,11 +2903,11 @@ def test_desktop_queued_turn_can_be_cancelled_before_it_starts(monkeypatch, tmp_
     import time
     import threading
 
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.agent import AgentResult
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.agent import AgentResult
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     entered_first = threading.Event()
     release_first = threading.Event()
@@ -2883,7 +2925,7 @@ def test_desktop_queued_turn_can_be_cancelled_before_it_starts(monkeypatch, tmp_
                 kwargs["on_delta"]("迟到输出")
             return AgentResult(kwargs["session"].session_id, "完成", 1)
 
-    monkeypatch.setattr(desktop, "TuLAgent", FakeAgent)
+    monkeypatch.setattr(desktop, "FathomAgent", FakeAgent)
 
     api.send({"prompt": "第一条"})
     assert entered_first.wait(timeout=2)
@@ -2903,12 +2945,12 @@ def test_desktop_queued_turn_can_be_cancelled_before_it_starts(monkeypatch, tmp_
 
 
 def test_desktop_rejects_deleting_a_queued_turn_session(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     pending = Session(tmp_path, session_id="pending-session")
     pending.append(Message("user", "保留"))
@@ -2928,10 +2970,10 @@ def test_desktop_rejects_deleting_a_queued_turn_session(monkeypatch, tmp_path: P
 
 
 def test_desktop_upload_saves_file(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
+    import deepseekfathom._core.desktop.app as desktop
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     result = api.save_upload({"name": "../hello.txt", "content": "data:text/plain;base64,aGVsbG8="})
     assert result["ok"] is True
@@ -2940,10 +2982,10 @@ def test_desktop_upload_saves_file(monkeypatch, tmp_path: Path):
 
 
 def test_desktop_upload_preserves_same_named_files(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
+    import deepseekfathom._core.desktop.app as desktop
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     first = api.save_upload({"name": "notes.txt", "content": "data:text/plain;base64,b25l"})
     second = api.save_upload({"name": "notes.txt", "content": "data:text/plain;base64,dHdv"})
@@ -2955,17 +2997,17 @@ def test_desktop_upload_preserves_same_named_files(monkeypatch, tmp_path: Path):
 
 
 def test_desktop_upload_rejects_invalid_base64(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
+    import deepseekfathom._core.desktop.app as desktop
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     result = desktop.DesktopApi().save_upload({"name": "bad.txt", "content": "data:text/plain;base64,%%%"})
     assert result["ok"] is False
     assert "Base64" in result["error"]
 
 
 def test_network_attachment_uses_server_filename_and_never_overwrites(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
+    import deepseekfathom._core.desktop.app as desktop
 
     class Response:
         headers = {
@@ -2987,7 +3029,7 @@ def test_network_attachment_uses_server_filename_and_never_overwrites(monkeypatc
         def stream(self, *_args, **_kwargs): return Response()
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     monkeypatch.setattr("httpx.Client", Client)
     api = desktop.DesktopApi()
     first = api.download_attachment({"url": "https://example.test/file?id=1"})
@@ -3001,7 +3043,7 @@ def test_network_attachment_uses_server_filename_and_never_overwrites(monkeypatc
 
 
 def test_failed_network_attachment_keeps_existing_file_and_cleans_part(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
+    import deepseekfathom._core.desktop.app as desktop
 
     class Response:
         headers = {
@@ -3021,10 +3063,10 @@ def test_failed_network_attachment_keeps_existing_file_and_cleans_part(monkeypat
         def stream(self, *_args, **_kwargs): return Response()
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     monkeypatch.setattr("httpx.Client", Client)
     api = desktop.DesktopApi()
-    upload_dir = api.settings.workspace / ".deepseek-tulagent" / "uploads"
+    upload_dir = api.settings.workspace / ".deepseekfathom" / "uploads"
     upload_dir.mkdir(parents=True)
     existing = upload_dir / "keep.txt"
     existing.write_text("original", encoding="utf-8")
@@ -3037,10 +3079,10 @@ def test_failed_network_attachment_keeps_existing_file_and_cleans_part(monkeypat
 
 
 def test_desktop_configure_merges_existing_key(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
+    import deepseekfathom._core.desktop.app as desktop
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     merge_file_config({"api_key": "sk-old", "base_url": "https://api.deepseek.com", "model": "deepseek-v4-flash"})
     api = desktop.DesktopApi()
     result = api.configure({
@@ -3060,12 +3102,12 @@ def test_desktop_configure_merges_existing_key(monkeypatch, tmp_path: Path):
 
 
 def test_desktop_configure_can_clear_custom_base_url(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.config import load_file_config
-    from deepseek_tulagent.provider import DeepSeekClient
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.config import load_file_config
+    from deepseekfathom._core.provider import DeepSeekClient
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://stale-env.example/v1")
     merge_file_config({
         "api_key": "sk-old",
@@ -3089,9 +3131,9 @@ def test_desktop_configure_can_clear_custom_base_url(monkeypatch, tmp_path: Path
 def test_concurrent_config_merges_preserve_all_fields(monkeypatch, tmp_path: Path):
     import threading
 
-    from deepseek_tulagent.config import load_file_config
+    from deepseekfathom._core.config import load_file_config
 
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     threads = [
         threading.Thread(target=merge_file_config, args=({f"field_{index}": index},))
         for index in range(24)
@@ -3106,12 +3148,12 @@ def test_concurrent_config_merges_preserve_all_fields(monkeypatch, tmp_path: Pat
 
 
 def test_desktop_manual_compact(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
 
     # force the model-summary path to fall back to local truncation (no network)
@@ -3139,12 +3181,12 @@ def test_desktop_manual_compact(monkeypatch, tmp_path: Path):
 
 
 def test_desktop_context_status_reports_local_context_threshold(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     api.settings = api.settings.with_runtime(model="custom-32k")
     api.session = Session(tmp_path, session_id="s")
@@ -3212,13 +3254,13 @@ def test_desktop_context_status_reports_local_context_threshold(monkeypatch, tmp
 
 
 def test_desktop_session_switch_returns_fresh_context(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.provider import UsageStats
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.provider import UsageStats
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     first = Session(tmp_path, session_id="first")
     first.messages = [Message("system", "system"), Message("user", "old")]
@@ -3248,10 +3290,10 @@ def test_desktop_session_switch_returns_fresh_context(monkeypatch, tmp_path: Pat
 
 
 def test_desktop_rejects_stale_session_navigation(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
+    import deepseekfathom._core.desktop.app as desktop
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     for session_id in ("older", "newer"):
         session = Session(tmp_path, session_id=session_id)
         session.messages = [Message("user", session_id)]
@@ -3272,13 +3314,13 @@ def test_desktop_rejects_stale_session_navigation(monkeypatch, tmp_path: Path):
 
 
 def test_desktop_context_usage_survives_restart(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.provider import UsageStats
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.provider import UsageStats
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     first = desktop.DesktopApi()
     session = Session(tmp_path, session_id="persisted-usage")
     session.messages = [Message("system", "system"), Message("user", "hello"), Message("assistant", "world")]
@@ -3328,12 +3370,12 @@ def test_desktop_context_usage_survives_restart(monkeypatch, tmp_path: Path):
 
 
 def test_desktop_context_calibrates_local_delta_from_upstream_tokenizer(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     session = Session(tmp_path, session_id="calibrated")
     request = [Message("system", "system " * 200), Message("user", "hello " * 80)]
@@ -3359,12 +3401,12 @@ def test_desktop_context_calibrates_local_delta_from_upstream_tokenizer(monkeypa
 
 
 def test_desktop_context_prefers_upstream_total_with_reasoning_tokens(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     session = Session(tmp_path, session_id="reasoning-total")
     request = [Message("system", "system"), Message("user", "hello")]
@@ -3391,12 +3433,12 @@ def test_desktop_context_prefers_upstream_total_with_reasoning_tokens(monkeypatc
 
 
 def test_desktop_migrates_v2_context_snapshot_to_full_prompt_plus_output(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     session = Session(tmp_path, session_id="legacy-v2")
     session.messages = [Message("system", "system"), Message("user", "hello"), Message("assistant", "world")]
     session.rewrite()
@@ -3425,12 +3467,12 @@ def test_desktop_migrates_v2_context_snapshot_to_full_prompt_plus_output(monkeyp
 
 
 def test_desktop_context_marks_upstream_usage_that_is_smaller_than_sent_prompt(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     session = Session(tmp_path, session_id="underreported")
     request = [Message("system", "x" * 40_000), Message("user", "hello")]
@@ -3454,7 +3496,7 @@ def test_desktop_context_marks_upstream_usage_that_is_smaller_than_sent_prompt(m
 
 
 def test_desktop_brand_uses_transparent_whale_asset():
-    root = Path(__file__).parents[1] / "src" / "deepseek_tulagent" / "desktop" / "assets"
+    root = Path(__file__).parents[1] / "src" / "deepseekfathom" / "_core" / "desktop" / "assets"
     html = (root / "index.html").read_text(encoding="utf-8")
     css = (root / "style.css").read_text(encoding="utf-8")
     icon = (root / "app-icon.png").read_bytes()
@@ -3463,7 +3505,7 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert '<img src="app-icon.png" alt="">' in brand
     assert "<svg" not in brand
     assert 'class="introLogo" src="app-icon.png"' in html
-    assert '<span id="version">v0.1.16</span>' in html
+    assert '<span id="version">v...</span>' in html
     assert 'id="settingsView"' in html and '<dialog id="settingsDialog"' not in html
     assert 'id="settingsBackTop"' in html and 'id="settingsBackBottom"' in html
     js = (root / "app.js").read_text(encoding="utf-8")
@@ -3480,7 +3522,7 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert 'id="ctxOutput"' in html and 'id="ctxCache"' in html and 'id="ctxSessionCache"' in html
     assert 'class="convItem" data-act="exportMd">导出 Markdown</button>' in html
     assert "window.pywebview.api.export_session(sid)" in js
-    assert 'style.css?v=0.1.16.1' in html and 'app.js?v=0.1.16.1' in html
+    assert 'style.css?v=__DESKTOP_VERSION__' in html and 'app.js?v=__DESKTOP_VERSION__' in html
     assert 'state.currentAssistant.remove();' in js
     assert "suppressedTurnIds: new Set()" in js
     assert "state.suppressedTurnIds.add(turnId)" in js
@@ -3490,16 +3532,16 @@ def test_desktop_brand_uses_transparent_whale_asset():
     assert "sessions.slice(0, 40)" not in js
     assert "sessions.forEach" in js
     assert "function initSessionScrollbar()" in js
-    assert 'THINKING_TIERS = ["fast", "balanced", "deep", "ultra"]' in (root.parent / "app.py").read_text(encoding="utf-8")
+    assert "THINKING_TIERS = ThinkingMode.user_selectable_names()" in (root.parent / "app.py").read_text(encoding="utf-8")
     assert '"ultra": "XHigh"' in (root.parent / "app.py").read_text(encoding="utf-8")
     assert icon.startswith(b"\x89PNG\r\n\x1a\n")
 
 
 def test_desktop_send_exposes_selected_local_attachment_paths(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
+    import deepseekfathom._core.desktop.app as desktop
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     captured: dict[str, str] = {}
 
@@ -3524,7 +3566,7 @@ def test_desktop_send_exposes_selected_local_attachment_paths(monkeypatch, tmp_p
 
 
 def test_desktop_local_file_selection_does_not_copy_contents(tmp_path: Path):
-    from deepseek_tulagent.desktop.app import describe_local_paths
+    from deepseekfathom._core.desktop.app import describe_local_paths
 
     source = tmp_path / "large-local.bin"
     source.write_bytes(b"local-only")
@@ -3539,7 +3581,7 @@ def test_desktop_local_file_selection_does_not_copy_contents(tmp_path: Path):
 
 
 def test_native_drop_extracts_pywebview_full_paths(tmp_path: Path):
-    from deepseek_tulagent.desktop.app import native_drop_paths
+    from deepseekfathom._core.desktop.app import native_drop_paths
 
     first = str(tmp_path / "one.txt")
     second = str(tmp_path / "two.txt")
@@ -3553,17 +3595,22 @@ def test_native_drop_extracts_pywebview_full_paths(tmp_path: Path):
 
 
 def test_pyinstaller_uses_checkout_assets_instead_of_stale_site_package():
-    spec = (Path(__file__).parents[1] / "DeepSeekFathom.spec").read_text(encoding="utf-8")
-    assert "tmp_ret = collect_all('deepseek_tulagent')" not in spec
-    assert "src\\\\deepseek_tulagent\\\\desktop\\\\assets" in spec
+    root = Path(__file__).parents[1]
+    spec = (root / "DeepSeekFathom.spec").read_text(encoding="utf-8")
+    preparer = (root / "scripts" / "prepare_desktop_build.py").read_text(encoding="utf-8")
+    build_script = (root / "scripts" / "build_windows_exe.ps1").read_text(encoding="utf-8")
+    assert "tmp_ret = collect_all('deepseekfathom')" not in spec
+    assert "build\\\\desktop-release\\\\assets" in spec
     assert "pathex=['src']" in spec
+    assert 'root / "src" / "deepseekfathom" / "_core" / "desktop" / "assets"' in preparer
+    assert build_script.index("prepare_desktop_build.py") < build_script.index("PyInstaller")
 
 
 def test_desktop_cancel_ignores_stale_turn_id(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
+    import deepseekfathom._core.desktop.app as desktop
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     api._running = True
     api._active_turn_id = "current-turn"
@@ -3582,12 +3629,12 @@ def test_desktop_cancel_ignores_stale_turn_id(monkeypatch, tmp_path: Path):
 
 
 def test_desktop_rejects_deleting_or_compacting_active_turn_session(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     api.session = Session(tmp_path, session_id="active-session")
     api.session.append(Message("user", "keep"))
@@ -3607,13 +3654,13 @@ def test_desktop_turn_events_stay_bound_to_origin_session(monkeypatch, tmp_path:
     import re
     import threading
 
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.agent import AgentResult
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.agent import AgentResult
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     turn_session = Session(tmp_path, session_id="turn-session")
     other_session = Session(tmp_path, session_id="other-session")
@@ -3647,7 +3694,7 @@ def test_desktop_turn_events_stay_bound_to_origin_session(monkeypatch, tmp_path:
 
     window = Window()
     api.bind_window(window)
-    monkeypatch.setattr(desktop, "TuLAgent", FakeAgent)
+    monkeypatch.setattr(desktop, "FathomAgent", FakeAgent)
 
     worker = threading.Thread(target=api._run_agent_turn, args=("新对话任务", []), daemon=True)
     worker.start()
@@ -3669,13 +3716,13 @@ def test_desktop_turn_events_stay_bound_to_origin_session(monkeypatch, tmp_path:
 def test_desktop_edit_resend_drops_old_tool_result_context(monkeypatch, tmp_path: Path):
     import time
 
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.agent import AgentResult
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.agent import AgentResult
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     api.session = Session(tmp_path, session_id="edit-session")
     api.session.append(Message("system", "system"))
@@ -3695,7 +3742,7 @@ def test_desktop_edit_resend_drops_old_tool_result_context(monkeypatch, tmp_path
             captured["messages"] = [message.content for message in kwargs["session"].messages]
             return AgentResult(kwargs["session"].session_id, "新的回答", 1)
 
-    monkeypatch.setattr(desktop, "TuLAgent", FakeAgent)
+    monkeypatch.setattr(desktop, "FathomAgent", FakeAgent)
     result = api.edit_resend({"prompt": "你好，帮我创建 b.txt", "srcIndex": 1})
     assert result["ok"] is True
     deadline = time.time() + 2
@@ -3714,13 +3761,13 @@ def test_desktop_edit_resend_drops_old_tool_result_context(monkeypatch, tmp_path
 def test_desktop_edit_resend_preserves_later_turns_after_regeneration(monkeypatch, tmp_path: Path):
     import time
 
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.agent import AgentResult
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session, SessionStore
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.agent import AgentResult
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session, SessionStore
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     api.session = Session(tmp_path, session_id="edit-preserve-session")
     for message in [
@@ -3747,7 +3794,7 @@ def test_desktop_edit_resend_preserves_later_turns_after_regeneration(monkeypatc
             kwargs["session"].append(Message("assistant", "第二答新版"))
             return AgentResult(kwargs["session"].session_id, "第二答新版", 1)
 
-    monkeypatch.setattr(desktop, "TuLAgent", FakeAgent)
+    monkeypatch.setattr(desktop, "FathomAgent", FakeAgent)
     result = api.edit_resend({"prompt": "第二问新版", "srcIndex": 3})
     assert result["ok"] is True
     deadline = time.time() + 2
@@ -3764,13 +3811,13 @@ def test_desktop_edit_resend_preserves_later_turns_after_regeneration(monkeypatc
 def test_desktop_retry_preserves_images_and_commits_only_after_success(monkeypatch, tmp_path: Path):
     import time
 
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.agent import AgentResult
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session, SessionStore
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.agent import AgentResult
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session, SessionStore
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     api.session = Session(tmp_path, session_id="retry-image-session")
     image = "data:image/png;base64,aW1hZ2U="
@@ -3790,7 +3837,7 @@ def test_desktop_retry_preserves_images_and_commits_only_after_success(monkeypat
             kwargs["session"].append(Message("assistant", "new answer"))
             return AgentResult(kwargs["session"].session_id, "new answer", 1)
 
-    monkeypatch.setattr(desktop, "TuLAgent", FakeAgent)
+    monkeypatch.setattr(desktop, "FathomAgent", FakeAgent)
     result = api.retry({"srcIndex": 1})
     assert result["ok"] is True
     deadline = time.time() + 2
@@ -3810,12 +3857,12 @@ def test_desktop_retry_failure_keeps_original_jsonl_and_restores_transcript(monk
     import re
     import time
 
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     api.session = Session(tmp_path, session_id="retry-rollback-session")
     api.session.append(Message("user", "keep prompt"))
@@ -3843,7 +3890,7 @@ def test_desktop_retry_failure_keeps_original_jsonl_and_restores_transcript(monk
 
     window = Window()
     api.bind_window(window)
-    monkeypatch.setattr(desktop, "TuLAgent", FailingAgent)
+    monkeypatch.setattr(desktop, "FathomAgent", FailingAgent)
     result = api.retry({"srcIndex": 1})
     assert result["ok"] is True
     deadline = time.time() + 2
@@ -3862,12 +3909,12 @@ def test_desktop_cancelled_retry_keeps_original_jsonl(monkeypatch, tmp_path: Pat
     import threading
     import time
 
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     api.session = Session(tmp_path, session_id="retry-cancel-session")
     api.session.append(Message("user", "original prompt"))
@@ -3888,7 +3935,7 @@ def test_desktop_cancelled_retry_keeps_original_jsonl(monkeypatch, tmp_path: Pat
                 time.sleep(0.01)
             raise RuntimeError("turn cancelled")
 
-    monkeypatch.setattr(desktop, "TuLAgent", CancelAgent)
+    monkeypatch.setattr(desktop, "FathomAgent", CancelAgent)
     result = api.retry({"srcIndex": 1})
     assert entered.wait(timeout=2)
     cancelled = api.cancel({"turnId": result["turnId"]})
@@ -3902,12 +3949,12 @@ def test_desktop_cancelled_retry_keeps_original_jsonl(monkeypatch, tmp_path: Pat
 
 
 def test_desktop_branch_preserves_message_images(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session, SessionStore
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session, SessionStore
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     api.session = Session(tmp_path, session_id="branch-image-source")
     image = "data:image/png;base64,aW1hZ2U="
@@ -3923,12 +3970,12 @@ def test_desktop_branch_preserves_message_images(monkeypatch, tmp_path: Path):
 def test_desktop_send_passes_goal_to_agent(monkeypatch, tmp_path: Path):
     import time
 
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.agent import AgentResult
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.agent import AgentResult
+    from deepseekfathom._core.session import Session
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     api = desktop.DesktopApi()
     api.session = Session(tmp_path, session_id="goal-session")
     captured = {}
@@ -3942,7 +3989,7 @@ def test_desktop_send_passes_goal_to_agent(monkeypatch, tmp_path: Path):
             captured["goal"] = kwargs.get("goal")
             return AgentResult(kwargs["session"].session_id, "目标已完成。", 1)
 
-    monkeypatch.setattr(desktop, "TuLAgent", FakeAgent)
+    monkeypatch.setattr(desktop, "FathomAgent", FakeAgent)
     result = api.send({"prompt": "继续", "goal": "完成部署"})
     assert result["ok"] is True
     deadline = time.time() + 2
@@ -3955,12 +4002,12 @@ def test_desktop_send_passes_goal_to_agent(monkeypatch, tmp_path: Path):
 
 
 def test_desktop_session_metadata_pin_and_rename(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.desktop.app as desktop
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session, SessionStore
+    import deepseekfathom._core.desktop.app as desktop
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session, SessionStore
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config-home"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config-home"))
     session = Session(tmp_path, session_id="abc")
     session.append(Message("user", "请检查这个项目并修复测试失败的问题"))
     api = desktop.DesktopApi()
@@ -3974,14 +4021,14 @@ def test_desktop_session_metadata_pin_and_rename(monkeypatch, tmp_path: Path):
 
 
 def test_session_title_from_text():
-    from deepseek_tulagent.session import session_title_from_text
+    from deepseekfathom._core.session import session_title_from_text
 
     assert session_title_from_text("  你好   世界  ") == "你好 世界"
     assert session_title_from_text("") == "未命名会话"
 
 
 def test_desktop_event_parser():
-    from deepseek_tulagent.desktop.app import parse_agent_event
+    from deepseekfathom._core.desktop.app import parse_agent_event
 
     assert parse_agent_event("tool run_shell command=ls") == {"kind": "tool", "name": "run_shell", "detail": "command=ls"}
     assert parse_agent_event("thinking pass 1/2")["kind"] == "thinking"
@@ -4006,7 +4053,7 @@ def test_desktop_event_parser():
 
 
 def test_session_handoff_prints_resume_command(capsys):
-    from deepseek_tulagent.cli import print_session_handoff
+    from deepseekfathom._core.cli import print_session_handoff
 
     print_session_handoff("abc-123")
     err = capsys.readouterr().err
@@ -4015,7 +4062,7 @@ def test_session_handoff_prints_resume_command(capsys):
 
 
 def test_slash_palette_prints_commands_and_tools(tmp_path: Path, monkeypatch, capsys):
-    from deepseek_tulagent.cli import print_palette
+    from deepseekfathom._core.cli import print_palette
 
     monkeypatch.chdir(tmp_path)
     print_palette(settings(tmp_path))
@@ -4029,9 +4076,9 @@ def test_slash_palette_prints_commands_and_tools(tmp_path: Path, monkeypatch, ca
 
 
 def test_compact_history_hides_tool_noise(capsys):
-    from deepseek_tulagent.cli import print_recent_session_messages
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session
+    from deepseekfathom._core.cli import print_recent_session_messages
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session
 
     session = Session(Path("/tmp"), session_id="s")
     session.messages = [
@@ -4057,12 +4104,12 @@ def test_session_handoff_is_not_printed_after_run(monkeypatch, tmp_path: Path, c
             pass
 
         def run(self, *args, **kwargs):
-            from deepseek_tulagent.agent import AgentResult
+            from deepseekfathom._core.agent import AgentResult
 
             return AgentResult("abc-123", "done", 1)
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("deepseek_tulagent.cli.TuLAgent", FakeAgent)
+    monkeypatch.setattr("deepseekfathom._core.cli.FathomAgent", FakeAgent)
     code = main(["run", "--mode", "plan", "hello"])
     captured = capsys.readouterr()
     assert code == 0
@@ -4071,10 +4118,10 @@ def test_session_handoff_is_not_printed_after_run(monkeypatch, tmp_path: Path, c
 
 
 def test_interactive_model_command_uses_picker(monkeypatch, tmp_path: Path, capsys):
-    import deepseek_tulagent.cli as cli
+    import deepseekfathom._core.cli as cli
 
     prompts = iter(["/model", "/exit"])
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config"))
 
     class FakeDeepSeekClient:
         def __init__(self, *_args, **_kwargs):
@@ -4099,10 +4146,10 @@ def test_interactive_model_command_uses_picker(monkeypatch, tmp_path: Path, caps
 
 
 def test_interactive_think_command_uses_picker(monkeypatch, tmp_path: Path, capsys):
-    import deepseek_tulagent.cli as cli
+    import deepseekfathom._core.cli as cli
 
     prompts = iter(["/think", "/exit"])
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config"))
 
     class FakeDeepSeekClient:
         def __init__(self, *_args, **_kwargs):
@@ -4125,8 +4172,34 @@ def test_interactive_think_command_uses_picker(monkeypatch, tmp_path: Path, caps
     assert get_settings().default_thinking == "deep"
 
 
+def test_interactive_think_command_switches_to_max(monkeypatch, tmp_path: Path, capsys):
+    import deepseekfathom._core.cli as cli
+
+    prompts = iter(["/think max", "/exit"])
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config"))
+
+    class FakeDeepSeekClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ping(self):
+            return {"model_available": True}
+
+    monkeypatch.setattr(cli, "startup_animation", lambda enabled=True: None)
+    monkeypatch.setattr(cli, "read_composer", lambda *_args, **_kwargs: next(prompts))
+    monkeypatch.setattr(cli, "DeepSeekClient", FakeDeepSeekClient)
+
+    code = cli.interactive(settings(tmp_path), "root", "fast", True)
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "thinking set to max" in out
+    assert "reasoning_effort=max" in out
+    assert "internal_passes=6" in out
+    assert get_settings().default_thinking == "max"
+
+
 def test_interactive_subagents_command_returns_to_prompt(monkeypatch, tmp_path: Path, capsys):
-    import deepseek_tulagent.cli as cli
+    import deepseekfathom._core.cli as cli
 
     prompts = iter(["/subagents", "/exit"])
 
@@ -4150,7 +4223,7 @@ def test_interactive_subagents_command_returns_to_prompt(monkeypatch, tmp_path: 
 
 
 def test_interactive_cancel_command_returns_to_normal_prompt(monkeypatch, tmp_path: Path, capsys):
-    import deepseek_tulagent.cli as cli
+    import deepseekfathom._core.cli as cli
 
     prompts = iter(["/cancel", "/exit"])
 
@@ -4174,7 +4247,7 @@ def test_interactive_cancel_command_returns_to_normal_prompt(monkeypatch, tmp_pa
 
 
 def test_interactive_goal_command_passes_goal_to_agent(monkeypatch, tmp_path: Path, capsys):
-    import deepseek_tulagent.cli as cli
+    import deepseekfathom._core.cli as cli
 
     prompts = iter(["/goal 完成部署", "继续", "/exit"])
     captured = {}
@@ -4191,9 +4264,9 @@ def test_interactive_goal_command_passes_goal_to_agent(monkeypatch, tmp_path: Pa
             pass
 
         def run(self, *_args, **kwargs):
-            from deepseek_tulagent.agent import AgentResult
-            from deepseek_tulagent.messages import Message
-            from deepseek_tulagent.session import Session
+            from deepseekfathom._core.agent import AgentResult
+            from deepseekfathom._core.messages import Message
+            from deepseekfathom._core.session import Session
 
             captured["goal"] = kwargs.get("goal")
             session = Session(tmp_path, session_id="abc-123")
@@ -4203,7 +4276,7 @@ def test_interactive_goal_command_passes_goal_to_agent(monkeypatch, tmp_path: Pa
     monkeypatch.setattr(cli, "startup_animation", lambda enabled=True: None)
     monkeypatch.setattr(cli, "read_composer", lambda *_args, **_kwargs: next(prompts))
     monkeypatch.setattr(cli, "DeepSeekClient", FakeDeepSeekClient)
-    monkeypatch.setattr(cli, "TuLAgent", FakeAgent)
+    monkeypatch.setattr(cli, "FathomAgent", FakeAgent)
 
     code = cli.interactive(settings(tmp_path), "root", "fast", True)
     out = capsys.readouterr().out
@@ -4213,7 +4286,7 @@ def test_interactive_goal_command_passes_goal_to_agent(monkeypatch, tmp_path: Pa
 
 
 def test_interactive_line_mode_streams_agent_output(monkeypatch, tmp_path: Path, capsys):
-    import deepseek_tulagent.cli as cli
+    import deepseekfathom._core.cli as cli
 
     prompts = iter(["检查", "/exit"])
     captured = {}
@@ -4230,9 +4303,9 @@ def test_interactive_line_mode_streams_agent_output(monkeypatch, tmp_path: Path,
             pass
 
         def run(self, *_args, **kwargs):
-            from deepseek_tulagent.agent import AgentResult
-            from deepseek_tulagent.messages import Message
-            from deepseek_tulagent.session import Session
+            from deepseekfathom._core.agent import AgentResult
+            from deepseekfathom._core.messages import Message
+            from deepseekfathom._core.session import Session
 
             captured["stream"] = kwargs.get("stream")
             kwargs["on_delta"]("流")
@@ -4244,7 +4317,7 @@ def test_interactive_line_mode_streams_agent_output(monkeypatch, tmp_path: Path,
     monkeypatch.setattr(cli, "startup_animation", lambda enabled=True: None)
     monkeypatch.setattr(cli, "read_composer", lambda *_args, **_kwargs: next(prompts))
     monkeypatch.setattr(cli, "DeepSeekClient", FakeDeepSeekClient)
-    monkeypatch.setattr(cli, "TuLAgent", FakeAgent)
+    monkeypatch.setattr(cli, "FathomAgent", FakeAgent)
 
     code = cli.interactive(settings(tmp_path), "root", "fast", True)
     out = capsys.readouterr().out
@@ -4254,7 +4327,7 @@ def test_interactive_line_mode_streams_agent_output(monkeypatch, tmp_path: Path,
 
 
 def test_interactive_line_mode_uses_spinner_until_first_delta(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.cli as cli
+    import deepseekfathom._core.cli as cli
 
     prompts = iter(["检查", "/exit"])
     events: list[str] = []
@@ -4289,9 +4362,9 @@ def test_interactive_line_mode_uses_spinner_until_first_delta(monkeypatch, tmp_p
             pass
 
         def run(self, *_args, **kwargs):
-            from deepseek_tulagent.agent import AgentResult
-            from deepseek_tulagent.messages import Message
-            from deepseek_tulagent.session import Session
+            from deepseekfathom._core.agent import AgentResult
+            from deepseekfathom._core.messages import Message
+            from deepseekfathom._core.session import Session
 
             events.append("run")
             kwargs["on_delta"]("ok")
@@ -4303,7 +4376,7 @@ def test_interactive_line_mode_uses_spinner_until_first_delta(monkeypatch, tmp_p
     monkeypatch.setattr(cli, "read_composer", lambda *_args, **_kwargs: next(prompts))
     monkeypatch.setattr(cli, "DeepSeekClient", FakeDeepSeekClient)
     monkeypatch.setattr(cli, "ThinkingSpinner", FakeSpinner)
-    monkeypatch.setattr(cli, "TuLAgent", FakeAgent)
+    monkeypatch.setattr(cli, "FathomAgent", FakeAgent)
 
     assert cli.interactive(settings(tmp_path), "root", "fast", True) == 0
     assert events[:3] == ["enter:thinking:fast", "run", "stop"]
@@ -4311,7 +4384,7 @@ def test_interactive_line_mode_uses_spinner_until_first_delta(monkeypatch, tmp_p
 
 
 def test_interactive_startup_prints_version(monkeypatch, tmp_path: Path, capsys):
-    import deepseek_tulagent.cli as cli
+    import deepseekfathom._core.cli as cli
 
     prompts = iter(["/exit"])
 
@@ -4330,12 +4403,12 @@ def test_interactive_startup_prints_version(monkeypatch, tmp_path: Path, capsys)
     code = cli.interactive(settings(tmp_path), "root", "fast", True)
     out = capsys.readouterr().out
     assert code == 0
-    assert "app      : DeepSeek TuLAgent" in out
+    assert "app      : DeepSeekFathom" in out
     assert "version  : test (latest)" in out
 
 
 def test_auto_thinking_uses_model_choice(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.cli as cli
+    import deepseekfathom._core.cli as cli
 
     class FakeDeepSeekClient:
         def __init__(self, *_args, **_kwargs):
@@ -4347,6 +4420,26 @@ def test_auto_thinking_uses_model_choice(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(cli, "DeepSeekClient", FakeDeepSeekClient)
     selected = cli.choose_auto_thinking(settings(tmp_path), "hard debugging task")
     assert selected.name == "deep"
+
+
+def test_auto_thinking_keeps_ultra_before_max(monkeypatch, tmp_path: Path):
+    import deepseekfathom._core.cli as cli
+
+    captured = {}
+
+    class FakeDeepSeekClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def chat(self, messages):
+            captured["prompt"] = messages[-1].content
+            return "max"
+
+    monkeypatch.setattr(cli, "DeepSeekClient", FakeDeepSeekClient)
+    selected = cli.choose_auto_thinking(settings(tmp_path), "complex task")
+
+    assert selected.name == "max"
+    assert captured["prompt"].index("ultra") < captured["prompt"].index("max")
 
 
 def test_internal_thinking_runs_extra_model_pass(tmp_path: Path, monkeypatch):
@@ -4365,14 +4458,14 @@ def test_internal_thinking_runs_extra_model_pass(tmp_path: Path, monkeypatch):
             return "final answer"
 
     client = ThinkingClient()
-    result = TuLAgent(settings(tmp_path), thinking="deep", client=client).run("solve")
+    result = FathomAgent(settings(tmp_path), thinking="deep", client=client).run("solve")
     assert client.calls == 3
     assert result.answer == "final answer"
 
 
 def test_context_compaction_keeps_recent_messages(monkeypatch):
-    from deepseek_tulagent.messages import Message
-    import deepseek_tulagent.agent as agent
+    from deepseekfathom._core.messages import Message
+    import deepseekfathom._core.agent as agent
 
     messages = [Message("system", "system")]
     messages.extend(Message("user", "old " + str(index) + " " + ("x" * 200)) for index in range(20))
@@ -4395,8 +4488,8 @@ def test_token_estimate_handles_cjk_and_images():
 
 
 def test_auto_compaction_is_persisted(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.agent as agent
-    from deepseek_tulagent.session import Session
+    import deepseekfathom._core.agent as agent
+    from deepseekfathom._core.session import Session
 
     monkeypatch.setattr(agent, "context_window_tokens", lambda _model: 200)
     session = Session(tmp_path, session_id="auto-compact")
@@ -4404,7 +4497,7 @@ def test_auto_compaction_is_persisted(monkeypatch, tmp_path: Path):
     session.messages.extend(Message("user", "old " + str(index) + " " + ("x" * 200)) for index in range(20))
     session.rewrite()
 
-    result = TuLAgent(settings(tmp_path), client=FakeClient(["persisted summary", "final answer"])).run(
+    result = FathomAgent(settings(tmp_path), client=FakeClient(["persisted summary", "final answer"])).run(
         "new request", session=session, require_todo=False
     )
 
@@ -4433,8 +4526,8 @@ def test_context_window_info_handles_current_global_and_china_models():
 
 
 def test_context_compaction_uses_model_handoff_summary(monkeypatch):
-    from deepseek_tulagent.messages import Message
-    import deepseek_tulagent.agent as agent
+    from deepseekfathom._core.messages import Message
+    import deepseekfathom._core.agent as agent
 
     messages = [Message("system", "system")]
     messages.extend(Message("user", "old " + str(index) + " " + ("x" * 200)) for index in range(20))
@@ -4458,8 +4551,8 @@ def test_context_compaction_uses_model_handoff_summary(monkeypatch):
 
 
 def test_session_persists_and_reloads_images(tmp_path: Path):
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session, SessionStore
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session, SessionStore
 
     img = "data:image/png;base64,iVBORw0KGgoAAAANS"
     session = Session(tmp_path, session_id="img")
@@ -4470,8 +4563,8 @@ def test_session_persists_and_reloads_images(tmp_path: Path):
 
 
 def test_auto_context_compaction_can_be_disabled(monkeypatch):
-    from deepseek_tulagent.messages import Message
-    import deepseek_tulagent.agent as agent
+    from deepseekfathom._core.messages import Message
+    import deepseekfathom._core.agent as agent
 
     messages = [Message("system", "system")]
     messages.extend(Message("user", "old " + ("x" * 200)) for _ in range(20))
@@ -4482,7 +4575,7 @@ def test_auto_context_compaction_can_be_disabled(monkeypatch):
 
 
 def test_update_version_comparison():
-    from deepseek_tulagent.updates import is_newer, normalize_version
+    from deepseekfathom._core.updates import is_newer, normalize_version
 
     assert normalize_version("v0.1.2") == "0.1.2"
     assert is_newer("v0.1.2", "0.1.1") is True
@@ -4492,30 +4585,35 @@ def test_update_version_comparison():
 def test_cli_and_desktop_versions_are_independent():
     import tomllib
 
-    from deepseek_tulagent import __version__
-    from deepseek_tulagent.desktop import DESKTOP_VERSION
-    from deepseek_tulagent.updates import REPO
+    from deepseekfathom._core import __version__
+    from deepseekfathom._core.desktop import DESKTOP_VERSION
+    from deepseekfathom._core.updates import REPO
+    from scripts.prepare_desktop_build import render_version_info
 
     root = Path(__file__).parents[1]
     project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    assert project["name"] == "deepseek-tulagent"
-    assert project["version"] == __version__ == "0.1.108"
-    assert project["scripts"]["deepseekfathom"] == "deepseek_tulagent.cli:main"
-    assert DESKTOP_VERSION == "0.1.16"
+    assert project["name"] == "deepseekfathom"
+    assert project["version"] == __version__ == "0.1.109"
+    assert project["scripts"]["deepseekfathom"] == "deepseekfathom.cli:main"
+    assert DESKTOP_VERSION == "0.1.17"
     assert REPO == "ffffff233/DeepSeekFathom"
-    assert '#define MyAppVersion "0.1.16"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
-    version_info = (root / "assets" / "windows-version-info.txt").read_text(encoding="utf-8")
-    assert 'filevers=(0, 1, 16, 0)' in version_info
-    assert 'prodvers=(0, 1, 16, 0)' in version_info
-    assert "StringStruct('FileVersion', '0.1.16')" in version_info
+    installer = (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
+    assert "MyAppVersion must be provided" in installer
+    assert '#define MyAppVersion "0.1.17"' not in installer
+    version_info = render_version_info(DESKTOP_VERSION)
+    assert 'filevers=(0, 1, 17, 0)' in version_info
+    assert 'prodvers=(0, 1, 17, 0)' in version_info
+    assert "StringStruct('FileVersion', '0.1.17')" in version_info
     notice = (root / "NOTICE").read_text(encoding="utf-8")
     assert "Copyright (c) 2026 Reasonix Contributors" in notice
     assert "78e9e2656ae5275cbdd29429053fdcc1cc97373c" in notice
-    assert 'Source: "..\\NOTICE"; DestDir: "{app}"; DestName: "NOTICE.txt"' in (root / "scripts" / "windows_installer.iss").read_text(encoding="utf-8")
+    assert 'Source: "..\\NOTICE"; DestDir: "{app}"; DestName: "NOTICE.txt"' in installer
+    assert 'Source: "..\\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"' in installer
+    assert "third-party-licenses" in (root / "DeepSeekFathom.spec").read_text(encoding="utf-8")
 
 
 def test_update_refuses_dirty_source_tree(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.updates as updates
+    import deepseekfathom._core.updates as updates
 
     subprocesses = [
         ["git", "init"],
@@ -4535,7 +4633,7 @@ def test_update_refuses_dirty_source_tree(monkeypatch, tmp_path: Path):
 
 
 def test_update_non_git_install_uses_tarball_not_git(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.updates as updates
+    import deepseekfathom._core.updates as updates
     import sys
 
     captured = {}
@@ -4555,7 +4653,7 @@ def test_update_non_git_install_uses_tarball_not_git(monkeypatch, tmp_path: Path
 
 def test_windows_terminal_module_fallbacks(monkeypatch):
     import builtins
-    import deepseek_tulagent.ui as ui
+    import deepseekfathom._core.ui as ui
 
     monkeypatch.setattr(ui, "termios", None)
     monkeypatch.setattr(ui, "tty", None)
@@ -4565,8 +4663,69 @@ def test_windows_terminal_module_fallbacks(monkeypatch):
     assert ui.choose_palette([("/model", "choose model")]) is None
 
 
+@pytest.mark.parametrize("use_ansi", [True, False])
+def test_windows_choose_palette_supports_vt_and_plain_consoles(monkeypatch, use_ansi):
+    import deepseekfathom._core.ui as ui
+
+    class TtyBuffer(io.StringIO):
+        def isatty(self):
+            return True
+
+    class FakeMsvcrt:
+        def __init__(self):
+            self.keys = ["\xe0", "P", "\r"]
+
+        def getwch(self):
+            return self.keys.pop(0)
+
+    output = TtyBuffer()
+    monkeypatch.setattr(ui.os, "name", "nt")
+    monkeypatch.setattr(ui.sys, "stdin", TtyBuffer())
+    monkeypatch.setattr(ui.sys, "stdout", output)
+    monkeypatch.setattr(ui, "_load_msvcrt", FakeMsvcrt)
+    monkeypatch.setattr(ui, "terminal_supports_ansi", lambda _stream=None: use_ansi)
+
+    selected = ui.choose_palette(
+        [("deepseek-v4-flash", "current"), ("deepseek-v4-pro", "available")],
+        title="models",
+    )
+
+    assert selected == "deepseek-v4-pro"
+    if use_ansi:
+        assert "\033[?25l" in output.getvalue()
+    else:
+        assert "\033[" not in output.getvalue()
+        assert "models /" in output.getvalue()
+
+
+def test_windows_palette_does_not_steal_j_as_navigation(monkeypatch):
+    import deepseekfathom._core.ui as ui
+
+    class TtyBuffer(io.StringIO):
+        def isatty(self):
+            return True
+
+    class FakeMsvcrt:
+        def __init__(self):
+            self.keys = ["j", "\r"]
+
+        def getwch(self):
+            return self.keys.pop(0)
+
+    output = TtyBuffer()
+    monkeypatch.setattr(ui.sys, "stdout", output)
+
+    selected = ui.windows_slash_select(
+        [("/json", "JSON tools"), ("/zeta", "last item")],
+        FakeMsvcrt(),
+        use_ansi=False,
+    )
+
+    assert selected == "/json"
+
+
 def test_update_git_failure_falls_back_to_tarball(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.updates as updates
+    import deepseekfathom._core.updates as updates
 
     (tmp_path / ".git").mkdir()
     calls = []
@@ -4588,8 +4747,8 @@ def test_update_git_failure_falls_back_to_tarball(monkeypatch, tmp_path: Path):
 
 
 def test_update_command_runs_updater(monkeypatch, capsys):
-    import deepseek_tulagent.cli as cli
-    from deepseek_tulagent.updates import UpdateInfo
+    import deepseekfathom._core.cli as cli
+    from deepseekfathom._core.updates import UpdateInfo
 
     monkeypatch.setattr(cli, "check_for_update", lambda current, timeout=5.0: UpdateInfo(current, "0.1.2", "url"))
     monkeypatch.setattr(cli, "update_to", lambda version: (True, f"updated {version}"))
@@ -4602,12 +4761,12 @@ def test_update_command_runs_updater(monkeypatch, capsys):
 
 def test_session_store_lists_and_loads_messages(tmp_path: Path):
     client = FakeClient(["hello"])
-    result = TuLAgent(settings(tmp_path), mode="plan", client=client).run("say hello")
+    result = FathomAgent(settings(tmp_path), mode="plan", client=client).run("say hello")
     store = SessionStore(tmp_path)
     listed = store.list()
     assert listed[0]["session_id"] == result.session_id
     loaded = store.load(result.session_id)
-    assert [message.role for message in loaded.messages] == ["system", "system", "user", "assistant"]
+    assert [message.role for message in loaded.messages] == ["system", "user", "assistant"]
 
 
 def test_session_list_uses_index_without_loading_large_transcript(monkeypatch, tmp_path: Path):
@@ -4628,7 +4787,7 @@ def test_session_list_uses_index_without_loading_large_transcript(monkeypatch, t
 
 
 def test_session_list_persistent_index_omits_images_and_preserves_recovery(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.session as session_module
+    import deepseekfathom._core.session as session_module
 
     image = "data:image/png;base64," + ("A" * 250_000)
     session = Session(tmp_path, session_id="image-index")
@@ -4656,9 +4815,9 @@ def test_session_list_persistent_index_omits_images_and_preserves_recovery(monke
 
 
 def test_session_list_upgrades_current_legacy_metadata_without_parsing_images(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.session as session_module
+    import deepseekfathom._core.session as session_module
 
-    sessions_dir = tmp_path / ".deepseek-tulagent" / "sessions"
+    sessions_dir = tmp_path / ".deepseekfathom" / "sessions"
     sessions_dir.mkdir(parents=True)
     path = sessions_dir / "legacy-image.jsonl"
     image = "data:image/png;base64," + ("B" * 250_000)
@@ -4689,9 +4848,9 @@ def test_session_list_upgrades_current_legacy_metadata_without_parsing_images(mo
 
 
 def test_session_list_upgrades_legacy_log_and_reuses_cache_across_stores(monkeypatch, tmp_path: Path):
-    import deepseek_tulagent.session as session_module
+    import deepseekfathom._core.session as session_module
 
-    sessions_dir = tmp_path / ".deepseek-tulagent" / "sessions"
+    sessions_dir = tmp_path / ".deepseekfathom" / "sessions"
     sessions_dir.mkdir(parents=True)
     path = sessions_dir / "legacy-index.jsonl"
     events = [
@@ -4740,7 +4899,7 @@ def test_session_list_invalidates_stale_index_when_jsonl_changes(tmp_path: Path)
 
 
 def test_session_rewrite_refreshes_index_title_and_delete_removes_index(tmp_path: Path):
-    import deepseek_tulagent.session as session_module
+    import deepseekfathom._core.session as session_module
 
     session = Session(tmp_path, session_id="rewrite-index")
     session.append(Message("user", "old title"))
@@ -4765,7 +4924,7 @@ def test_session_rewrite_refreshes_index_title_and_delete_removes_index(tmp_path
 def test_resume_global_session_appends_to_original_file(monkeypatch, tmp_path: Path):
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
-    home_session_dir = home / ".deepseek-tulagent" / "sessions"
+    home_session_dir = home / ".deepseekfathom" / "sessions"
     home_session_dir.mkdir(parents=True)
     session_id = "00000000-0000-4000-8000-000000000001"
     session_file = home_session_dir / f"{session_id}.jsonl"
@@ -4778,11 +4937,11 @@ def test_resume_global_session_appends_to_original_file(monkeypatch, tmp_path: P
     loaded = SessionStore(workspace).load(session_id)
     loaded.append(type(loaded.messages[0])(role="assistant", content="new"))
     assert "new" in session_file.read_text(encoding="utf-8")
-    assert not (workspace / ".deepseek-tulagent" / "sessions" / f"{session_id}.jsonl").exists()
+    assert not (workspace / ".deepseekfathom" / "sessions" / f"{session_id}.jsonl").exists()
 
 
 def test_session_load_skips_corrupt_jsonl_rows_without_hiding_conversation(tmp_path: Path):
-    sessions_dir = tmp_path / ".deepseek-tulagent" / "sessions"
+    sessions_dir = tmp_path / ".deepseekfathom" / "sessions"
     sessions_dir.mkdir(parents=True)
     session_id = "10000000-0000-4000-8000-000000000001"
     path = sessions_dir / f"{session_id}.jsonl"
@@ -4802,7 +4961,7 @@ def test_session_load_skips_corrupt_jsonl_rows_without_hiding_conversation(tmp_p
 def test_session_ids_cannot_escape_session_directory(tmp_path: Path):
     import pytest
 
-    from deepseek_tulagent.session import SessionStore
+    from deepseekfathom._core.session import SessionStore
 
     store = SessionStore(tmp_path)
     for unsafe in ("../outside", r"..\outside", ".", "", "id/child"):
@@ -4813,12 +4972,12 @@ def test_session_ids_cannot_escape_session_directory(tmp_path: Path):
 
 
 def test_session_list_skips_invalid_legacy_filenames(tmp_path: Path):
-    from deepseek_tulagent.messages import Message
-    from deepseek_tulagent.session import Session, SessionStore
+    from deepseekfathom._core.messages import Message
+    from deepseekfathom._core.session import Session, SessionStore
 
     valid = Session(tmp_path, session_id="valid-session")
     valid.append(Message("user", "保留的会话"))
-    invalid = tmp_path / ".deepseek-tulagent" / "sessions" / "bad name.jsonl"
+    invalid = tmp_path / ".deepseekfathom" / "sessions" / "bad name.jsonl"
     invalid.write_text("{}\n", encoding="utf-8")
 
     rows = SessionStore(tmp_path).list()
@@ -4829,7 +4988,7 @@ def test_session_list_skips_invalid_legacy_filenames(tmp_path: Path):
 def test_concurrent_session_metadata_updates_preserve_all_fields(tmp_path: Path):
     import threading
 
-    from deepseek_tulagent.session import SessionStore
+    from deepseekfathom._core.session import SessionStore
 
     store = SessionStore(tmp_path)
     threads = [
@@ -4846,7 +5005,7 @@ def test_concurrent_session_metadata_updates_preserve_all_fields(tmp_path: Path)
 
 
 def test_desktop_transcript_does_not_hide_messages_before_320_limit():
-    from deepseek_tulagent.desktop.app import serialize_messages
+    from deepseekfathom._core.desktop.app import serialize_messages
 
     messages = [Message("user" if index % 2 == 0 else "assistant", f"message-{index}") for index in range(402)]
     visible = serialize_messages(messages)
@@ -4860,6 +5019,8 @@ class FakeWindow:
     def __init__(self, height=12, width=48):
         self.height = height
         self.width = width
+        self.writes = []
+        self.moves = []
 
     def erase(self): pass
     def getmaxyx(self): return self.height, self.width
@@ -4868,21 +5029,68 @@ class FakeWindow:
     def addnstr(self, y, x, text, n, *args):
         if y >= self.height or x >= self.width - 1 or n > self.width - x:
             raise Exception("unsafe write")
+        self.writes.append((y, x, text, n))
     def move(self, y, x):
         if y >= self.height or x >= self.width:
             raise Exception("unsafe move")
+        self.moves.append((y, x))
     def refresh(self): pass
 
 
 def test_tui_draw_avoids_bottom_right_curses_error(monkeypatch):
-    import deepseek_tulagent.tui as tui_module
+    import deepseekfathom._core.tui as tui_module
     import pytest
 
     if tui_module.curses is None:
         pytest.skip("curses is not included in the Windows standard library")
-    monkeypatch.setattr("deepseek_tulagent.tui.curses.color_pair", lambda _n: 0)
+    monkeypatch.setattr("deepseekfathom._core.tui.curses.color_pair", lambda _n: 0)
     state = TuiState(model="deepseek-v4-flash", mode="root", thinking="fast")
     ChatTui(state, lambda _text, _state: None, lambda _cmd, _state: False)._draw(FakeWindow())
+
+
+def test_tui_draw_handles_tiny_terminals(monkeypatch):
+    import deepseekfathom._core.tui as tui_module
+
+    monkeypatch.setattr(tui_module, "curses", SimpleNamespace(A_BOLD=0))
+    state = TuiState(model="deepseek-v4-flash", mode="root", thinking="max", input_text="中文")
+    tui = ChatTui(state, lambda _text, _state: None, lambda _cmd, _state: False)
+
+    for height, width in ((1, 1), (1, 2), (2, 2), (3, 5), (4, 8)):
+        tui._draw(FakeWindow(height=height, width=width))
+
+
+def test_tui_cursor_uses_chinese_display_cells(monkeypatch):
+    import deepseekfathom._core.tui as tui_module
+
+    monkeypatch.setattr(tui_module, "curses", SimpleNamespace(A_BOLD=0))
+    state = TuiState(model="deepseek-v4-flash", mode="root", thinking="max", input_text="正在输入")
+    window = FakeWindow(height=6, width=30)
+    ChatTui(state, lambda _text, _state: None, lambda _cmd, _state: False)._draw(window)
+
+    assert window.moves[-1] == (4, 10)
+    assert any("DeepSeekFathom" in write[2] for write in window.writes)
+
+
+def test_tui_wraps_chinese_by_display_width():
+    text = "中文测试ABC"
+    wrapped = wrap_display_text(text, 4)
+    assert "".join(wrapped) == text
+    assert all(display_width(line) <= 4 for line in wrapped)
+
+    rendered = render_messages([("user", text), ("assistant", "完成")], 10)
+    assert all(display_width(line) <= 10 for line in rendered)
+
+
+def test_tui_rejects_redirected_streams_cleanly(monkeypatch):
+    import deepseekfathom._core.tui as tui_module
+
+    monkeypatch.setattr(tui_module, "curses", SimpleNamespace(error=Exception))
+    monkeypatch.setattr(tui_module.sys, "stdin", io.StringIO("message\n"))
+    monkeypatch.setattr(tui_module.sys, "stdout", io.StringIO())
+    state = TuiState(model="deepseek-v4-flash", mode="root", thinking="max")
+
+    with pytest.raises(RuntimeError, match="interactive terminal"):
+        ChatTui(state, lambda _text, _state: None, lambda _cmd, _state: False).run()
 
 
 def test_tui_ctrl_c_exits_when_idle():
@@ -4900,24 +5108,73 @@ def test_tui_ctrl_c_cancels_running_turn_not_exit():
 
 
 def test_slash_filter_matches_command_initial():
-    items = [("/model", "list models"), ("/think fast", "fast"), ("/mode root", "root")]
+    items = [
+        ("/model", "list models"),
+        ("/think fast", "384000 max tokens"),
+        ("/think max", "384000 max tokens"),
+        ("/mode root", "root"),
+        ("/hooks enable", "enable one hook"),
+        ("/release-notes", "draft a release"),
+    ]
     assert filter_slash_items(items, "m")[0][0] == "/model"
     assert filter_slash_items(items, "mo")[0][0] == "/model"
     assert filter_slash_items(items, "t")[0][0] == "/think fast"
+    assert filter_slash_items(items, "max")[0][0] == "/think max"
+    assert filter_slash_items(items, "hook en")[0][0] == "/hooks enable"
+    assert filter_slash_items(items, "notes")[0][0] == "/release-notes"
 
 
 def test_slash_items_include_manual_compact(tmp_path: Path):
-    import deepseek_tulagent.cli as cli
+    import deepseekfathom._core.cli as cli
 
     commands = [command for command, _description in cli.slash_items(settings(tmp_path))]
     assert "/compact" in commands
-    assert commands.index("/goal ") < commands.index("/goal")
+    assert commands.index("/goal") < commands.index("/goal <text>")
+    assert "/think" in commands
+    assert "/think max" not in commands
+    assert cli.THINKING.index("ultra") < cli.THINKING.index("max")
+    assert cli.thinking_description("max").startswith("max")
+
+
+def test_cli_thinking_help_includes_max(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        main(["run", "--help"])
+    assert exc_info.value.code == 0
+    output = capsys.readouterr().out
+    assert "--think" in output
+    assert "max is the highest" in output
+    assert "max" in output
+    assert "auto" not in output
+    assert "instant" not in output
+    assert "standard" not in output
+    assert "careful" not in output
+    assert "deeper" not in output
+
+    with pytest.raises(SystemExit) as root_help:
+        main(["--help"])
+    assert root_help.value.code == 0
+    root_output = capsys.readouterr().out
+    assert "DeepSeekFathom" in root_output
+    assert "TuL" not in root_output
+
+
+def test_terminal_startup_uses_deepseekfathom_brand(monkeypatch, capsys):
+    import deepseekfathom._core.cli as cli
+    import deepseekfathom._core.ui as ui_module
+
+    monkeypatch.setenv("DSTUL_PLAIN_UI", "1")
+    ui_module.startup_animation()
+    output = capsys.readouterr().out
+
+    assert output == "DeepSeekFathom\n"
+    assert "DeepSeekFathom" in cli.BANNER
+    assert "TuL" not in cli.BANNER
 
 
 def test_slash_skill_selection_inserts_agent_prompt():
     assert slash_selection_insertion("/skill repo-debug") == "Use skill repo-debug: "
-    assert slash_selection_insertion("/goal ") == "/goal "
-    assert slash_selection_insertion("/goal") == "/goal "
+    assert slash_selection_insertion("/goal <text>") == "/goal "
+    assert slash_selection_insertion("/goal") is None
     assert slash_selection_insertion("/model") is None
 
 
@@ -4925,6 +5182,60 @@ def test_agent_event_formatter_labels_tools():
     assert "run_shell" in format_agent_event("tool run_shell command=ls")
     assert "done" in format_agent_event("done run_shell")
     assert "subagent" in format_agent_event("subagent reviewer mode=plan")
+
+
+def test_cli_file_change_event_has_true_old_new_lines(monkeypatch, tmp_path: Path):
+    import deepseekfathom._core.ui as ui_module
+
+    monkeypatch.setenv("DSTUL_PLAIN_UI", "1")
+    target = tmp_path / "demo.txt"
+    target.write_text("head\nold-a\nold-b\ntail\n", encoding="utf-8")
+    result = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root")).run(
+        "write_file",
+        {"path": "demo.txt", "content": "head\nnew-a\ntail\n"},
+    )
+    encoded = base64.b64encode(result.to_message().encode("utf-8")).decode("ascii")
+    rendered = format_agent_event(f"done write_file {encoded}")
+    rows = ui_module.parse_unified_diff(str(result.ui["diff"]))
+    changed = [row for row in rows if row[0] in {"delete", "add"}]
+
+    assert [(row[0], row[1], row[2], row[4]) for row in changed] == [
+        ("delete", 2, None, "old-a"),
+        ("delete", 3, None, "old-b"),
+        ("add", None, 2, "new-a"),
+    ]
+    assert "[edit] modified demo.txt  +1 -2" in rendered
+    assert "old-a" in rendered and "new-a" in rendered
+    assert encoded not in rendered
+    assert "\x1b" not in rendered
+
+
+def test_cli_file_change_colors_only_changed_rows(monkeypatch, tmp_path: Path):
+    import deepseekfathom._core.ui as ui_module
+
+    target = tmp_path / "demo.txt"
+    target.write_text("head\nold\ntail\n", encoding="utf-8")
+    result = ToolRegistry(tmp_path, policy=ApprovalPolicy.from_mode("root")).run(
+        "write_file",
+        {"path": "demo.txt", "content": "head\nnew\ntail\n"},
+    )
+    encoded = base64.b64encode(result.to_message().encode("utf-8")).decode("ascii")
+    monkeypatch.delenv("DSTUL_PLAIN_UI", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(ui_module, "terminal_supports_ansi", lambda _stream=None: True)
+
+    rendered = format_agent_event(f"done write_file {encoded}")
+    context_line = next(line for line in rendered.splitlines() if line.endswith("head"))
+
+    assert ui_module.DIFF_DELETE in rendered
+    assert ui_module.DIFF_ADD in rendered
+    assert "\x1b[48;2;" not in context_line
+
+
+def test_cli_file_tool_start_uses_edit_label(monkeypatch):
+    monkeypatch.setenv("DSTUL_PLAIN_UI", "1")
+    assert format_agent_event("tool write_file path=src/app.py content=...") == "  [edit] src/app.py"
+    assert "[tool]" not in format_agent_event("tool apply_patch patch=*** Begin Patch")
 
 
 def test_spinner_clear_active_line_is_safe_without_active_spinner():
@@ -4976,12 +5287,489 @@ def test_redraw_composer_handles_wide_chinese_text(monkeypatch):
     assert text.endswith("prompt> 画")
 
 
+def test_windows_composer_reads_chinese_without_builtin_input(monkeypatch):
+    import deepseekfathom._core.ui as ui_module
+
+    class TtyBuffer(io.StringIO):
+        def isatty(self):
+            return True
+
+    class FakeMsvcrt:
+        def __init__(self, keys):
+            self.keys = list(keys)
+
+        def getwch(self):
+            return self.keys.pop(0)
+
+        def kbhit(self):
+            return bool(self.keys)
+
+    output = TtyBuffer()
+    fake_msvcrt = FakeMsvcrt(["中", "文", "\b", "国", "\r"])
+    monkeypatch.setattr(ui_module.os, "name", "nt")
+    monkeypatch.setattr(ui_module.sys, "stdin", TtyBuffer())
+    monkeypatch.setattr(ui_module.sys, "stdout", output)
+    monkeypatch.setattr(ui_module, "_load_msvcrt", lambda: fake_msvcrt)
+    monkeypatch.setattr(ui_module, "terminal_supports_ansi", lambda _stream=None: False)
+    monkeypatch.setattr("builtins.input", lambda *_args, **_kwargs: pytest.fail("input() must not be used"))
+
+    assert read_composer("prompt> ") == "中国"
+    assert "\x1b" not in output.getvalue()
+    assert "中国" in output.getvalue()
+
+
+def test_read_composer_prefers_prompt_toolkit_with_column_commands(monkeypatch):
+    import deepseekfathom._core.ui as ui_module
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+    from prompt_toolkit.shortcuts import CompleteStyle
+
+    sessions = []
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            sessions.append(self)
+
+        def prompt(self):
+            return "检查中文光标"
+
+    monkeypatch.setattr(ui_module, "_PROMPT_SESSION_FACTORY", FakeSession)
+    monkeypatch.setattr(ui_module, "_PROMPT_TOOLKIT_HISTORY", None)
+    monkeypatch.setattr(ui_module, "_prompt_toolkit_terminal_ready", lambda: True)
+    monkeypatch.setattr(
+        ui_module,
+        "open_composer_frame",
+        lambda *_args, **_kwargs: pytest.fail("prompt-toolkit must run before the fallback frame"),
+    )
+
+    result = ui_module.read_composer(
+        "",
+        slash_items=[
+            ("/think fast", "快速思考"),
+            ("/think max", "最强思考"),
+            ("/goal <text>", "设置目标"),
+        ],
+        frame_title="DeepSeekFathom",
+        frame_status="deepseek-v4-pro  ·  root · max",
+    )
+
+    assert result == "检查中文光标"
+    options = sessions[0].kwargs
+    assert options["complete_style"] is CompleteStyle.COLUMN
+    assert options["erase_when_done"] is False
+    assert options["multiline"] is False
+    assert options["wrap_lines"] is True
+    assert options["enable_history_search"] is True
+    assert "full_screen" not in options
+    assert "› " in "".join(text for _style, text in options["message"])
+    assert "输入任务" in "".join(text for _style, text in options["placeholder"])
+    status = "".join(text for _style, text in options["rprompt"])
+    assert status == "deepseek-v4-pro · root · max"
+    assert "\n" not in status
+    assert options["reserve_space_for_menu"] == 0
+    assert "bottom_toolbar" not in options
+
+    rules = dict(options["style"].style_rules)
+    current = rules["completion-menu.completion.current"]
+    assert "fg:ansibrightcyan" in current
+    assert "bg:ansidefault" in current
+    assert "reverse" not in current.replace("noreverse", "")
+
+    completions = list(options["completer"].get_completions(Document("/max"), CompleteEvent()))
+    assert completions[0].text == "/think max"
+    assert completions[0].display_text == "/think max"
+    assert completions[0].display_meta_text == "最强思考"
+    goal = list(options["completer"].get_completions(Document("/goal"), CompleteEvent()))[0]
+    assert goal.text == "/goal "
+    assert goal.display_text == "/goal <text>"
+
+    ui_module.read_composer("", slash_items=[], frame_status="ready")
+    assert sessions[0].kwargs["history"] is sessions[1].kwargs["history"]
+
+
+def test_prompt_toolkit_ctrl_c_and_ctrl_d_semantics():
+    import deepseekfathom._core.ui as ui_module
+
+    class FakeBuffer:
+        def __init__(self, text):
+            self.text = text
+            self.reset_calls = 0
+
+        def reset(self):
+            self.text = ""
+            self.reset_calls += 1
+
+    class FakeApp:
+        def __init__(self, text):
+            self.current_buffer = FakeBuffer(text)
+            self.exits = []
+
+        def exit(self, **kwargs):
+            self.exits.append(kwargs)
+
+    nonempty = FakeApp("draft")
+    ui_module._prompt_toolkit_ctrl_c(SimpleNamespace(app=nonempty))
+    assert nonempty.current_buffer.reset_calls == 1
+    assert nonempty.exits == []
+
+    empty = FakeApp("")
+    ui_module._prompt_toolkit_ctrl_c(SimpleNamespace(app=empty))
+    assert empty.exits == [{"result": "/cancel"}]
+
+    eof = FakeApp("anything")
+    ui_module._prompt_toolkit_ctrl_d(SimpleNamespace(app=eof))
+    assert eof.exits == [{"exception": EOFError}]
+
+
+def test_prompt_toolkit_slash_and_backspace_never_trap_double_slash():
+    import deepseekfathom._core.ui as ui_module
+
+    class FakeDocument:
+        def __init__(self, buffer):
+            self.buffer = buffer
+
+        @property
+        def text_before_cursor(self):
+            return self.buffer.text[: self.buffer.cursor_position]
+
+    class FakeBuffer:
+        def __init__(self):
+            self.text = ""
+            self.cursor_position = 0
+            self.complete_state = None
+            self.started_completion = 0
+
+        @property
+        def document(self):
+            return FakeDocument(self)
+
+        def insert_text(self, text):
+            self.text = self.text[: self.cursor_position] + text + self.text[self.cursor_position :]
+            self.cursor_position += len(text)
+
+        def start_completion(self, **_kwargs):
+            self.complete_state = object()
+            self.started_completion += 1
+
+        def cancel_completion(self):
+            self.complete_state = None
+
+        def delete_before_cursor(self, count=1):
+            start = max(0, self.cursor_position - count)
+            self.text = self.text[:start] + self.text[self.cursor_position :]
+            self.cursor_position = start
+
+    buffer = FakeBuffer()
+    event = SimpleNamespace(app=SimpleNamespace(current_buffer=buffer))
+
+    ui_module._prompt_toolkit_insert_slash(event)
+    assert buffer.text == "/"
+    assert buffer.complete_state is not None
+
+    ui_module._prompt_toolkit_insert_slash(event)
+    assert buffer.text == "//"
+
+    ui_module._prompt_toolkit_backspace(event)
+    assert buffer.text == "/"
+    assert buffer.complete_state is not None
+
+    ui_module._prompt_toolkit_backspace(event)
+    assert buffer.text == ""
+
+
+@pytest.mark.parametrize("exception, expected", [(KeyboardInterrupt, "/cancel"), (EOFError, None)])
+def test_prompt_toolkit_interrupts_are_mapped(monkeypatch, exception, expected):
+    import deepseekfathom._core.ui as ui_module
+
+    class FakeSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        def prompt(self):
+            raise exception
+
+    monkeypatch.setattr(ui_module, "_PROMPT_SESSION_FACTORY", FakeSession)
+    monkeypatch.setattr(ui_module, "_prompt_toolkit_terminal_ready", lambda: True)
+    if exception is EOFError:
+        with pytest.raises(EOFError):
+            ui_module.read_composer("")
+    else:
+        assert ui_module.read_composer("") == expected
+
+
+@pytest.mark.parametrize("use_ansi", [True, False])
+def test_windows_composer_edits_at_cursor_with_chinese_text(monkeypatch, use_ansi):
+    import deepseekfathom._core.ui as ui_module
+
+    class TtyBuffer(io.StringIO):
+        def isatty(self):
+            return True
+
+    class FakeMsvcrt:
+        def __init__(self):
+            self.keys = [
+                "你", "好",
+                "\xe0", "K",  # left
+                "真",
+                "\xe0", "G",  # home
+                "\xe0", "S",  # delete 你
+                "\xe0", "M",  # right
+                "\b",           # backspace 真
+                "\xe0", "O",  # end
+                "呀",
+                "\r",
+            ]
+
+        def getwch(self):
+            return self.keys.pop(0)
+
+        def kbhit(self):
+            return bool(self.keys)
+
+    output = TtyBuffer()
+    monkeypatch.setattr(ui_module.os, "name", "nt")
+    monkeypatch.setattr(ui_module.sys, "stdin", TtyBuffer())
+    monkeypatch.setattr(ui_module.sys, "stdout", output)
+    monkeypatch.setattr(ui_module, "_load_msvcrt", FakeMsvcrt)
+    monkeypatch.setattr(ui_module, "terminal_supports_ansi", lambda _stream=None: use_ansi)
+
+    result = read_composer(
+        "",
+        frame_title="DeepSeekFathom",
+        frame_status="deepseek-v4-flash · root · max",
+    )
+
+    assert result == "好呀"
+    if use_ansi:
+        visible = re.sub(r"\033\[[0-9;?]*[A-Za-z]", "", output.getvalue())
+        assert "› 输入任务，/ 查看命令" in visible
+        assert "╭" not in visible and "DeepSeekFathom" not in visible
+    else:
+        assert "\033[" not in output.getvalue()
+
+
+def test_framed_composer_cursor_uses_cjk_display_cells(monkeypatch):
+    import deepseekfathom._core.ui as ui_module
+
+    output = io.StringIO()
+    monkeypatch.setattr(ui_module.sys, "stdout", output)
+    monkeypatch.setattr(ui_module, "terminal_supports_ansi", lambda _stream=None: True)
+
+    ui_module.redraw_composer(
+        "│  › ",
+        list("你真好"),
+        frame=ui_module.ComposerFrame(width=24, status=""),
+        cursor_index=2,
+    )
+
+    assert "\r\033[9C" in output.getvalue()
+
+
+def test_windows_composer_has_a_separate_codex_style_input_area(monkeypatch):
+    import deepseekfathom._core.ui as ui_module
+
+    class TtyBuffer(io.StringIO):
+        def isatty(self):
+            return True
+
+    class FakeMsvcrt:
+        def __init__(self):
+            self.keys = [*list("检查项目"), "\r"]
+
+        def getwch(self):
+            return self.keys.pop(0)
+
+        def kbhit(self):
+            return bool(self.keys)
+
+    output = TtyBuffer()
+    monkeypatch.setattr(ui_module.os, "name", "nt")
+    monkeypatch.setattr(ui_module.sys, "stdin", TtyBuffer())
+    monkeypatch.setattr(ui_module.sys, "stdout", output)
+    monkeypatch.setattr(ui_module, "_load_msvcrt", FakeMsvcrt)
+    monkeypatch.setattr(ui_module, "terminal_supports_ansi", lambda _stream=None: True)
+    monkeypatch.setattr(ui_module.shutil, "get_terminal_size", lambda _fallback: os.terminal_size((72, 24)))
+
+    result = read_composer(
+        "",
+        frame_title="DeepSeekFathom",
+        frame_status="deepseek-v4-flash · root · max",
+    )
+    visible = re.sub(r"\033\[[0-9;?]*[A-Za-z]", "", output.getvalue())
+
+    assert result == "检查项目"
+    assert "› 检查项目" in visible
+    assert "DeepSeekFathom" not in visible
+    assert "╭" not in visible and "╰" not in visible
+    assert "deepseek-v4-flash · root · max" in visible
+
+
+def test_windows_composer_opens_plain_slash_menu(monkeypatch):
+    import deepseekfathom._core.ui as ui_module
+
+    class TtyBuffer(io.StringIO):
+        def isatty(self):
+            return True
+
+    class FakeMsvcrt:
+        def __init__(self, keys):
+            self.keys = list(keys)
+
+        def getwch(self):
+            return self.keys.pop(0)
+
+        def kbhit(self):
+            return bool(self.keys)
+
+    output = TtyBuffer()
+    fake_msvcrt = FakeMsvcrt(["/", *list("think max"), "\r"])
+    monkeypatch.setattr(ui_module.os, "name", "nt")
+    monkeypatch.setattr(ui_module.sys, "stdin", TtyBuffer())
+    monkeypatch.setattr(ui_module.sys, "stdout", output)
+    monkeypatch.setattr(ui_module, "_load_msvcrt", lambda: fake_msvcrt)
+    monkeypatch.setattr(ui_module, "terminal_supports_ansi", lambda _stream=None: False)
+    monkeypatch.setattr("builtins.input", lambda *_args, **_kwargs: pytest.fail("input() must not be used"))
+
+    selected = read_composer(
+        "prompt> ",
+        slash_items=[("/think fast", "fast"), ("/think max", "maximum")],
+    )
+
+    assert selected == "/think max"
+    assert "commands /think max" in output.getvalue()
+    assert "\x1b" not in output.getvalue()
+
+
+def test_windows_composer_uses_vt_single_line_redraw(monkeypatch):
+    import deepseekfathom._core.ui as ui_module
+
+    class TtyBuffer(io.StringIO):
+        def isatty(self):
+            return True
+
+    class FakeMsvcrt:
+        def __init__(self):
+            self.keys = ["画", "\r"]
+
+        def getwch(self):
+            return self.keys.pop(0)
+
+        def kbhit(self):
+            return bool(self.keys)
+
+    output = TtyBuffer()
+    monkeypatch.setattr(ui_module.os, "name", "nt")
+    monkeypatch.setattr(ui_module.sys, "stdin", TtyBuffer())
+    monkeypatch.setattr(ui_module.sys, "stdout", output)
+    monkeypatch.setattr(ui_module, "_load_msvcrt", FakeMsvcrt)
+    monkeypatch.setattr(ui_module, "terminal_supports_ansi", lambda _stream=None: True)
+    monkeypatch.setattr("builtins.input", lambda *_args, **_kwargs: pytest.fail("input() must not be used"))
+
+    assert read_composer("prompt> ") == "画"
+    assert "\r\033[2K" in output.getvalue()
+
+
+def test_posix_composer_keeps_termios_raw_path(monkeypatch):
+    import deepseekfathom._core.ui as ui_module
+
+    class TtyInput(io.StringIO):
+        def isatty(self):
+            return True
+
+        def fileno(self):
+            return 42
+
+    class TtyOutput(io.StringIO):
+        def isatty(self):
+            return True
+
+    restored = []
+    fake_termios = SimpleNamespace(
+        TCSANOW=0,
+        tcgetattr=lambda _fd: ["saved"],
+        tcsetattr=lambda fd, when, state: restored.append((fd, when, state)),
+    )
+    raw_fds = []
+    keys = iter(["你", "好", "\r"])
+    output = TtyOutput()
+    monkeypatch.setattr(ui_module.os, "name", "posix")
+    monkeypatch.setattr(ui_module.sys, "stdin", TtyInput())
+    monkeypatch.setattr(ui_module.sys, "stdout", output)
+    monkeypatch.setattr(ui_module, "termios", fake_termios)
+    monkeypatch.setattr(ui_module, "tty", SimpleNamespace(setraw=lambda fd: raw_fds.append(fd)))
+    monkeypatch.setattr(ui_module, "terminal_supports_ansi", lambda _stream=None: True)
+    monkeypatch.setattr(ui_module, "read_raw_char", lambda _fd: next(keys))
+    monkeypatch.setattr(ui_module, "should_submit_newline", lambda _fd: True)
+    monkeypatch.setattr("builtins.input", lambda *_args, **_kwargs: pytest.fail("input() must not be used"))
+
+    assert read_composer("prompt> ") == "你好"
+    assert raw_fds == [42]
+    assert restored == [(42, 0, ["saved"])]
+    assert "\033[?2004h" in output.getvalue()
+    assert "\033[?2004l" in output.getvalue()
+
+
 def test_tail_for_width_keeps_single_line_window():
-    prefix = "..." if os.name == "nt" else "…"
-    assert tail_for_width("abcdef", 4) == ("...f" if os.name == "nt" else "…def")
+    prefix = "..." if plain_terminal() else "…"
+    assert tail_for_width("abcdef", 4) == ("...f" if plain_terminal() else "…def")
     chinese = tail_for_width("画画画画", 5)
     assert chinese.startswith(prefix)
     assert display_width(chinese) <= 5
+    assert display_width(clip_visible("中文abcdef", 5)) <= 5
+
+
+def test_windows_utf8_configuration_covers_redirected_streams(monkeypatch):
+    import deepseekfathom._core.ui as ui_module
+
+    class ReconfigurableStream:
+        def __init__(self):
+            self.calls = []
+
+        def reconfigure(self, **options):
+            self.calls.append(options)
+
+    stdin = ReconfigurableStream()
+    stdout = ReconfigurableStream()
+    stderr = ReconfigurableStream()
+    monkeypatch.setattr(ui_module.os, "name", "nt")
+    monkeypatch.setattr(ui_module.sys, "stdin", stdin)
+    monkeypatch.setattr(ui_module.sys, "stdout", stdout)
+    monkeypatch.setattr(ui_module.sys, "stderr", stderr)
+
+    configure_utf8_stdio()
+
+    assert stdin.calls == [{"encoding": "utf-8", "errors": "replace"}]
+    assert stdout.calls == [{"encoding": "utf-8", "errors": "replace", "write_through": True}]
+    assert stderr.calls == [{"encoding": "utf-8", "errors": "replace", "write_through": True}]
+
+
+def test_terminal_safety_does_not_emit_ansi_when_redirected(monkeypatch):
+    import deepseekfathom._core.ui as ui_module
+
+    stdout = io.StringIO()
+    monkeypatch.setattr(ui_module.sys, "stdin", io.StringIO())
+    monkeypatch.setattr(ui_module.sys, "stdout", stdout)
+    ui_module.install_terminal_safety()
+
+    assert stdout.getvalue() == ""
+
+
+def test_terminal_safety_does_not_emit_ansi_without_vt(monkeypatch):
+    import deepseekfathom._core.ui as ui_module
+
+    class TtyBuffer(io.StringIO):
+        def isatty(self):
+            return True
+
+    stdout = TtyBuffer()
+    monkeypatch.setattr(ui_module.os, "name", "nt")
+    monkeypatch.setattr(ui_module, "_enable_windows_vt", lambda _stream: False)
+    monkeypatch.setattr(ui_module.sys, "stdin", TtyBuffer())
+    monkeypatch.setattr(ui_module.sys, "stdout", stdout)
+    ui_module.force_terminal_sane()
+
+    assert stdout.getvalue() == ""
 
 
 def test_plain_ui_uses_ascii_for_windows_safe_layout(monkeypatch, capsys):
@@ -5000,7 +5788,7 @@ def test_plain_ui_uses_ascii_for_windows_safe_layout(monkeypatch, capsys):
 
 
 def test_slash_select_draw_clips_to_terminal_width(monkeypatch):
-    from deepseek_tulagent.ui import draw_slash_select
+    from deepseekfathom._core.ui import draw_slash_select
 
     for columns in (20, 42, 100):
         output = io.StringIO()
@@ -5016,11 +5804,41 @@ def test_slash_select_draw_clips_to_terminal_width(monkeypatch):
         )
         text = re.sub(r"\033\[[0-9;]*[A-Za-z]", "", output.getvalue()).replace("\r", "")
         visible_lines = [line for line in text.splitlines() if line.strip()]
-        assert lines == 5
+        assert lines == 3
         assert "\r\n" in output.getvalue()
+        assert "\033[?1049h" not in output.getvalue()
+        assert "\033[H\033[2J" not in output.getvalue()
         assert visible_lines
         assert all(len(line) <= columns for line in visible_lines)
         assert sum("/model" in line for line in visible_lines) == 1
+
+
+def test_slash_select_draw_shows_range_and_handles_tiny_heights(monkeypatch):
+    import deepseekfathom._core.ui as ui_module
+
+    items = [(f"/command-{index}", f"description {index}") for index in range(12)]
+    output = io.StringIO()
+    monkeypatch.setattr(ui_module.sys, "stdout", output)
+    monkeypatch.setattr(ui_module.shutil, "get_terminal_size", lambda _fallback: os.terminal_size((40, 8)))
+
+    lines = ui_module.draw_slash_select(items, "", 6)
+    visible = re.sub(r"\033\[[0-9;?]*[A-Za-z]", "", output.getvalue())
+
+    assert lines <= 8
+    assert "commands" in visible
+
+    for height in (1, 2, 3):
+        output = io.StringIO()
+        monkeypatch.setattr(ui_module.sys, "stdout", output)
+        monkeypatch.setattr(
+            ui_module.shutil,
+            "get_terminal_size",
+            lambda _fallback, height=height: os.terminal_size((32, height)),
+        )
+        lines = ui_module.draw_slash_select(items, "com", 0)
+        assert lines == 1
+        assert lines <= height
+        assert "[1/12]" in re.sub(r"\033\[[0-9;?]*[A-Za-z]", "", output.getvalue())
 
 
 def test_escape_suffix_reads_arrow_bytes_from_fd():
@@ -5031,6 +5849,21 @@ def test_escape_suffix_reads_arrow_bytes_from_fd():
     finally:
         os.close(read_fd)
         os.close(write_fd)
+
+
+def test_escape_suffix_uses_short_escape_disambiguation(monkeypatch):
+    import deepseekfathom._core.ui as ui_module
+
+    waits = []
+    monkeypatch.setattr(
+        ui_module,
+        "wait_for_fd_input",
+        lambda _fd, timeout: waits.append(timeout) or False,
+    )
+
+    assert ui_module.read_escape_suffix(123) == ""
+    assert len(waits) == 1
+    assert 0.03 <= waits[0] <= 0.05
 
 
 def test_raw_char_reads_complete_utf8_character():
@@ -5090,8 +5923,8 @@ def test_newline_without_pending_input_submits():
 def test_serialize_marks_pre_tool_prose_intermediate():
     """Pre-tool narration in a turn must be flagged intermediate so it carries no
     copy/retry/branch — one turn shows one set of actions, on its final reply."""
-    from deepseek_tulagent.desktop.app import serialize_messages
-    from deepseek_tulagent.messages import Message
+    from deepseekfathom._core.desktop.app import serialize_messages
+    from deepseekfathom._core.messages import Message
 
     out = serialize_messages([
         Message("user", "写个文件"),
@@ -5105,8 +5938,8 @@ def test_serialize_marks_pre_tool_prose_intermediate():
 
 
 def test_serialize_suppresses_legacy_adjacent_recovery_reply():
-    from deepseek_tulagent.desktop.app import serialize_messages
-    from deepseek_tulagent.messages import Message
+    from deepseekfathom._core.desktop.app import serialize_messages
+    from deepseekfathom._core.messages import Message
 
     out = serialize_messages([
         Message("user", "检查本机"),
@@ -5120,7 +5953,7 @@ def test_serialize_suppresses_legacy_adjacent_recovery_reply():
 
 
 def test_stream_holds_fenced_tool_call_from_fence_start():
-    from deepseek_tulagent.agent import safe_stream_emit_length, strip_tool_call_display, is_tool_intro_only
+    from deepseekfathom._core.agent import safe_stream_emit_length, strip_tool_call_display, is_tool_intro_only
 
     text = '我来调用工具：```json\n{"tool":"write_file","arguments":{"path":"a","content":"x"}}\n```'
     assert text[: safe_stream_emit_length(text)] == "我来调用工具："
@@ -5130,7 +5963,7 @@ def test_stream_holds_fenced_tool_call_from_fence_start():
 
 
 def test_stream_holds_partial_markdown_tool_fence():
-    from deepseek_tulagent.agent import safe_stream_emit_length
+    from deepseekfathom._core.agent import safe_stream_emit_length
 
     for text in ("`", "``", "```", "```j", "```js", "```jso", "```json"):
         assert safe_stream_emit_length(text) == 0
@@ -5140,7 +5973,7 @@ def test_stream_holds_partial_markdown_tool_fence():
 
 
 def test_normal_code_blocks_are_not_inferred_or_partially_held():
-    from deepseek_tulagent.agent import safe_stream_emit_length, strip_tool_call_display
+    from deepseekfathom._core.agent import safe_stream_emit_length, strip_tool_call_display
 
     # Open ordinary code fences are visible while streaming; they are not tools.
     open_python = "我给你代码：\n```python\nprint('hello')"
@@ -5159,7 +5992,7 @@ def test_normal_code_blocks_are_not_inferred_or_partially_held():
 
 
 def test_open_fenced_tool_call_is_held_from_fence_start():
-    from deepseek_tulagent.agent import safe_stream_emit_length
+    from deepseekfathom._core.agent import safe_stream_emit_length
 
     text = '我来调用工具：```json\n{"tool":"write_file"'
     assert text[: safe_stream_emit_length(text)] == "我来调用工具："
@@ -5169,14 +6002,14 @@ def test_open_fenced_tool_call_is_held_from_fence_start():
 
 
 def test_dangling_tool_json_fence_is_not_displayed_as_prose():
-    from deepseek_tulagent.agent import plainify_assistant_text
+    from deepseekfathom._core.agent import plainify_assistant_text
 
     assert plainify_assistant_text("我来调用工具：```json").strip() == "我来调用工具："
     assert plainify_assistant_text('我来调用工具：```json\n{"tool":"write_file"').strip() == "我来调用工具："
 
 
 def test_generic_pre_tool_action_intro_is_dropped():
-    from deepseek_tulagent.agent import is_tool_intro_only, strip_tool_call_display
+    from deepseekfathom._core.agent import is_tool_intro_only, strip_tool_call_display
 
     text = '我来读取 README 并检查安装说明。```json\n{"tool":"read_file","arguments":{"path":"README.md"}}\n```'
     prose = strip_tool_call_display(text)
@@ -5185,7 +6018,7 @@ def test_generic_pre_tool_action_intro_is_dropped():
 
 
 def test_substantive_pre_tool_prose_is_not_dropped():
-    from deepseek_tulagent.agent import is_tool_intro_only, strip_tool_call_display
+    from deepseekfathom._core.agent import is_tool_intro_only, strip_tool_call_display
 
     text = '问题可能是配置文件没有保存。我来读取 README。```json\n{"tool":"read_file","arguments":{"path":"README.md"}}\n```'
     prose = strip_tool_call_display(text)
@@ -5198,7 +6031,7 @@ def test_openai_chat_native_tools_non_stream(tmp_path: Path):
 
     import httpx
 
-    from deepseek_tulagent.provider import DeepSeekClient
+    from deepseekfathom._core.provider import DeepSeekClient
 
     captured = {}
 
@@ -5267,7 +6100,7 @@ def test_openai_stream_native_multi_tool_calls_execute_without_json_leak(tmp_pat
 
     import httpx
 
-    from deepseek_tulagent.provider import DeepSeekClient
+    from deepseekfathom._core.provider import DeepSeekClient
 
     (tmp_path / "a.txt").write_text("alpha", encoding="utf-8")
     (tmp_path / "b.txt").write_text("beta", encoding="utf-8")
@@ -5367,7 +6200,7 @@ def test_openai_stream_native_multi_tool_calls_execute_without_json_leak(tmp_pat
     visible = []
     events = []
     try:
-        result = TuLAgent(settings=client.settings, mode="root", thinking="instant", client=client).run(
+        result = FathomAgent(settings=client.settings, mode="root", thinking="instant", client=client).run(
             "Read a.txt and b.txt.",
             stream=True,
             on_delta=visible.append,
@@ -5390,7 +6223,7 @@ def test_openai_stream_native_multi_tool_calls_execute_without_json_leak(tmp_pat
 
 
 def test_legacy_text_multiple_tool_calls_are_all_parsed():
-    from deepseek_tulagent.agent import parse_tool_calls
+    from deepseekfathom._core.agent import parse_tool_calls
 
     separate = (
         '{"tool":"read_file","arguments":{"path":"a.txt"}}\n'
@@ -5424,7 +6257,7 @@ def test_tool_call_after_example_execution_cue_is_not_suppressed():
 
 
 def test_legacy_dsml_multiple_invokes_are_all_parsed():
-    from deepseek_tulagent.agent import DSML_PREFIX, parse_tool_calls
+    from deepseekfathom._core.agent import DSML_PREFIX, parse_tool_calls
 
     close_prefix = "</" + DSML_PREFIX[1:]
     text = (
@@ -5469,7 +6302,7 @@ def test_legacy_text_multiple_tool_calls_are_all_executed(tmp_path: Path):
             return "done"
 
     client = LegacyMultiClient()
-    result = TuLAgent(settings(tmp_path), mode="root", client=client).run(
+    result = FathomAgent(settings(tmp_path), mode="root", client=client).run(
         "Read both files.",
         require_todo=False,
     )

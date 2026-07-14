@@ -21,7 +21,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
-          $version = python -c "import sys; sys.path.insert(0, 'src'); from deepseek_tulagent.desktop import DESKTOP_VERSION; print(DESKTOP_VERSION)"
+          $version = python -c "import sys; sys.path.insert(0, 'src'); from deepseekfathom import DESKTOP_VERSION; print(DESKTOP_VERSION)"
           $expectedTag = "desktop-v$version"
           if ($env:GITHUB_REF_NAME -ne $expectedTag) {
             throw "Tag $env:GITHUB_REF_NAME does not match desktop version $version (expected $expectedTag)."

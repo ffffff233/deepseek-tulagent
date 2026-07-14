@@ -1,5 +1,33 @@
 # 桌面端更新记录 / Desktop Changelog
 
+## v0.1.17
+
+中文：
+
+- **新增 6 个可启停的官方原生插件**：代码审查、测试诊断、安全审查、提交助手、更新记录和项目体检会动态进入 `/` 命令列表；插件提示词由后端可信生成，每条命令声明的权限模式和思考等级只作用于当前一轮，重试和编辑重发也不会退回全权限。
+- **代码审查改为独立只读会话**：冻结上一轮或当前工作区改动，使用分页、哈希校验和失效检测读取完整差异；审查不会修改 Git 索引或工作区，未读完、快照变化或页数超限时会明确失败，不会伪造“审查完成”。
+- **命令输入与消息存储重新接线**：本地斜杠命令只保存一次、在会话中可见但不进入模型上下文；官方命令、重试、取消和排队回合按 `sessionId + turnId` 隔离，避免重复回答和跨会话串线。
+- **桌面界面支持完整中英文切换**：设置、扩展、动态状态、命令菜单和错误提示均可切换语言；用户消息、模型内容、代码、路径和工具输出保持原文。输入区改为克制的边框式命令输入，桌面与 390px 窄屏均无横向溢出。
+- **扩展可见性补齐**：官方插件和用户插件分来源展示并独立持久化；插件提供的 Skills 会进入真实运行时和 `/` 菜单，并在插件启停或重新加载后同步刷新。`/mcp` 只连接已经配置、启用且可信的服务器，不会顺带改配置、打开设置或授予项目权限。
+- **所有对外品牌统一为 DeepSeekFathom**：安装包、pip 分发、命令、界面和默认数据目录不再显示旧名称；首次启动会把历史配置、会话、Skills 和插件只补缺失地迁移到 `.deepseekfathom`。
+- **升级时保留并找回历史会话**：侧边栏和加载统一兼容工作区与用户目录的新旧会话位置，同一会话选择最新有效副本；当前配置优先，旧配置只补缺失项，删除会话不会因兼容副本再次出现。
+- **文件修改差异继续按真实行号展示**：删除在新增之前，删除行红色、新增行绿色、未变化上下文不着色；长差异可滚动，完整增删计数与省略状态保持可见。
+- **新增 `Max` 思考等级**：位于 `Ultra` 之后，向上游原样发送 `reasoning_effort=max` 并使用最高本地推理轮次；全局设置不会被一次性插件命令覆盖。
+- **构建与许可证闸门**：桌面版本由单一 Python 常量生成 EXE 属性、前端缓存标记和安装包名；构建会拒绝旧包目录、错版本前端或缺失许可证。安装包携带本项目 MIT、ReasoniX MIT、安装器翻译 MIT、Python 和打包依赖的完整许可证清单。
+- CLI 同步提升到 `0.1.109`，其独立改动见 `CHANGELOG-CLI.md`。
+
+English:
+
+- Added six toggleable native plugins with dynamic slash commands and backend-owned prompts. Each command now enforces its declared permission mode and thinking level for that turn, including retries and edited resends.
+- Added isolated, read-only AI review sessions backed by frozen, paginated, hash-verified diffs with stale detection and fail-closed completion rules.
+- Persisted local slash commands exactly once while keeping them out of model context, and scoped queued/retried turn state by session and turn IDs.
+- Added complete Chinese/English UI switching for static and dynamic controls while preserving user content, model output, code, paths, and tool output verbatim.
+- Refined the composer, mobile layout, plugin/Skill refresh behavior, and connection-only `/mcp` semantics.
+- Preserved sessions and settings across the current and compatibility data locations without overwriting newer user-owned data.
+- Kept file changes as real-line-number diffs with deletions before additions, red/green changed rows, neutral context rows, scrolling, and complete counts.
+- Added `Max` after `Ultra`, sending `reasoning_effort=max` upstream unchanged as the strongest deliberation tier.
+- Generated all desktop version metadata from one source and added build-time checks plus complete bundled license notices.
+
 ## v0.1.16
 
 中文：

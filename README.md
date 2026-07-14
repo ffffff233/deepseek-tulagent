@@ -13,22 +13,22 @@ English
 DeepSeekFathom is a terminal coding agent built specifically around DeepSeek's OpenAI-compatible chat API. It provides local tools, session resume, slash commands, permission modes, thinking modes, and installable skills while keeping the implementation independent and compact.
 It also includes a desktop entrypoint that can be packaged as a Windows exe.
 
-The product, repository, and CLI all use **DeepSeekFathom**. Only the pip distribution identifier and user-data directory retain `deepseek-tulagent` so existing installations can upgrade in place without losing sessions.
+The product, repository, pip distribution, desktop app, and CLI all use **DeepSeekFathom**. Existing user data is migrated automatically without overwriting sessions or settings.
 
 ## Features
 
 - DeepSeek-first provider config: `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`
-- Native DeepSeek V4 aliases: `pro`, `v4-pro`, `flash`, `v4-flash`
+- Native DeepSeek V4 aliases: `pro`, `v4-pro`, `flash`, `v4-flash`, with a 1,000,000-token context budget
 - Live model discovery through `deepseekfathom models` and `deepseekfathom doctor --live`
 - Global `deepseekfathom` command for interactive use
 - Tool registry: files, local search, web search, git status, shell, patch, downloads, resilient repository cloning, background services
 - Subagents: `delegate_agent` supports both one isolated subtask and an `agents=[...]` batch for multiple subagents in one tool call
 - Desktop app: chat, file attachments, skill list, collapsible tool calls, quick model/thinking/permission switching, third-party OpenAI-compatible API configuration, and live MCP/plugin/Hook management
 - Six permission modes: `plan`, `review`, `agent`, `trusted`, `yolo`, `root`
-- Five thinking modes: `off`, `fast`, `balanced`, `deep`, `max`
+- Five user-facing thinking modes: `fast`, `balanced`, `deep`, `ultra`, and `max`
 - Local skill directories with `SKILL.md` discovery and skill creation
-- User-owned plugins under `~/.deepseek-tulagent/plugins`; desktop updates preserve user skills, plugins, settings, and sessions
-- JSONL session transcript under `.deepseek-tulagent/sessions`
+- User-owned plugins under `~/.deepseekfathom/plugins`; desktop updates preserve user skills, plugins, settings, and sessions
+- JSONL session transcript under `.deepseekfathom/sessions`
 - One-shot and interactive CLI suitable for automation and later full TUI wrapping
 - Doctor command for local config checks
 
@@ -36,7 +36,7 @@ The product, repository, and CLI all use **DeepSeekFathom**. Only the pip distri
 
 Windows users can download and run the installer directly:
 
-**[DeepSeekFathom-0.1.16-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.16/DeepSeekFathom-0.1.16-Setup.exe)**
+**[DeepSeekFathom-0.1.17-Setup.exe](https://github.com/ffffff233/DeepSeekFathom/releases/download/desktop-v0.1.17/DeepSeekFathom-0.1.17-Setup.exe)**
 
 Linux / macOS:
 
@@ -61,14 +61,14 @@ deepseekfathom desktop
 On Windows after installation:
 
 ```powershell
-py -3 -m pip install --upgrade "deepseek-tulagent[desktop] @ https://github.com/ffffff233/DeepSeekFathom/archive/refs/tags/v0.1.108.tar.gz"
+py -3 -m pip install --upgrade "deepseekfathom[desktop] @ https://github.com/ffffff233/DeepSeekFathom/archive/refs/tags/v0.1.109.tar.gz"
 deepseekfathom-desktop
 ```
 
 Native Windows PowerShell:
 
 ```powershell
-py -3 -m pip install --upgrade https://github.com/ffffff233/DeepSeekFathom/archive/refs/tags/v0.1.108.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/DeepSeekFathom/archive/refs/tags/v0.1.109.tar.gz
 deepseekfathom config set --base-url https://api.deepseek.com --api-key sk-... --model deepseek-v4-flash
 deepseekfathom doctor --live
 deepseekfathom
@@ -77,7 +77,7 @@ deepseekfathom
 Windows CMD:
 
 ```bat
-py -3 -m pip install --upgrade https://github.com/ffffff233/DeepSeekFathom/archive/refs/tags/v0.1.108.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/DeepSeekFathom/archive/refs/tags/v0.1.109.tar.gz
 deepseekfathom version
 deepseekfathom
 ```
@@ -88,7 +88,7 @@ The desktop app uses `pywebview` and is suitable for native Windows use.
 If `git clone` is blocked by local proxy/git configuration, install directly from the tagged source tarball instead:
 
 ```bash
-python3 -m pip install --upgrade https://github.com/ffffff233/DeepSeekFathom/archive/refs/tags/v0.1.108.tar.gz
+python3 -m pip install --upgrade https://github.com/ffffff233/DeepSeekFathom/archive/refs/tags/v0.1.109.tar.gz
 ```
 
 Proxy-compatible examples:
@@ -96,7 +96,7 @@ Proxy-compatible examples:
 ```bash
 export HTTPS_PROXY=http://127.0.0.1:7890
 export HTTP_PROXY=http://127.0.0.1:7890
-python3 -m pip install --upgrade https://github.com/ffffff233/DeepSeekFathom/archive/refs/tags/v0.1.108.tar.gz
+python3 -m pip install --upgrade https://github.com/ffffff233/DeepSeekFathom/archive/refs/tags/v0.1.109.tar.gz
 ```
 
 Windows PowerShell proxy example:
@@ -104,7 +104,7 @@ Windows PowerShell proxy example:
 ```powershell
 $env:HTTPS_PROXY="http://127.0.0.1:7890"
 $env:HTTP_PROXY="http://127.0.0.1:7890"
-py -3 -m pip install --upgrade https://github.com/ffffff233/DeepSeekFathom/archive/refs/tags/v0.1.108.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/DeepSeekFathom/archive/refs/tags/v0.1.109.tar.gz
 ```
 
 Windows CMD proxy example:
@@ -112,7 +112,7 @@ Windows CMD proxy example:
 ```bat
 set HTTPS_PROXY=http://127.0.0.1:7890
 set HTTP_PROXY=http://127.0.0.1:7890
-py -3 -m pip install --upgrade https://github.com/ffffff233/DeepSeekFathom/archive/refs/tags/v0.1.108.tar.gz
+py -3 -m pip install --upgrade https://github.com/ffffff233/DeepSeekFathom/archive/refs/tags/v0.1.109.tar.gz
 ```
 
 When asking the agent to fetch another GitHub repository, say something like `clone owner/repo into path`. The agent should use `clone_repo`, which tries direct git, mirror URLs, and GitHub archive download before asking you to configure `HTTP_PROXY`, `HTTPS_PROXY`, or git proxy settings.
@@ -123,7 +123,7 @@ Windows paths are accepted, for example:
 clone nexu-io/open-design into D:\deepseek-projects\open-design
 ```
 
-The tool maps Windows-style paths into the configured workspace to avoid writing to an unexpected location. Set `DSTUL_WORKSPACE` first if you want a specific workspace root.
+The tool maps Windows-style paths into the configured workspace to avoid writing to an unexpected location. Set `DEEPSEEKFATHOM_WORKSPACE` first if you want a specific workspace root.
 
 One-shot usage:
 
@@ -158,7 +158,7 @@ The desktop app includes:
 You do **not** need to build an exe. Just install the desktop extra and run it:
 
 ```powershell
-py -3 -m pip install --upgrade "deepseek-tulagent[desktop] @ https://github.com/ffffff233/DeepSeekFathom/archive/refs/tags/v0.1.108.tar.gz"
+py -3 -m pip install --upgrade "deepseekfathom[desktop] @ https://github.com/ffffff233/DeepSeekFathom/archive/refs/tags/v0.1.109.tar.gz"
 deepseekfathom-desktop           # or: deepseekfathom desktop
 ```
 
@@ -174,20 +174,20 @@ cd DeepSeekFathom
 .\scripts\build_windows_exe.ps1
 ```
 
-Outputs: `dist\DeepSeekFathom\DeepSeekFathom.exe` and, when Inno Setup 6 is installed, `dist\installer\DeepSeekFathom-0.1.16-Setup.exe`. The installer installs per user and creates branded **DeepSeekFathom** desktop and Start menu entries. Desktop releases use independent `desktop-vX.Y.Z` tags; GitHub Actions builds the installer from those tags and attaches it to the matching Release.
+Outputs: `dist\DeepSeekFathom\DeepSeekFathom.exe` and, when Inno Setup 6 is installed, `dist\installer\DeepSeekFathom-0.1.17-Setup.exe`. The installer installs per user and creates branded **DeepSeekFathom** desktop and Start menu entries. Desktop releases use independent `desktop-vX.Y.Z` tags; GitHub Actions builds the installer from those tags and attaches it to the matching Release.
 
 ### Desktop MCP
 
 Open `Settings -> Extensions -> MCP` and select `Add`; no source or JSON editing is required. Remote services accept a name, an `http(s)` URL, and any number of request-header rows added on demand. Local services accept a command and one argument per line.
 
-User MCP configuration lives in `~/.deepseek-tulagent/config.json` and survives installer upgrades. Project and plugin MCP services remain visible in the same view but are managed by their source.
+User MCP configuration lives in `~/.deepseekfathom/config.json` and survives installer upgrades. Project and plugin MCP services remain visible in the same view but are managed by their source.
 
 ## Conversations
 
 Each conversation is saved under:
 
 ```text
-<workspace>/.deepseek-tulagent/sessions/<SESSION_ID>.jsonl
+<workspace>/.deepseekfathom/sessions/<SESSION_ID>.jsonl
 ```
 
 When you actively leave an interactive conversation with `/exit`, `/quit`, Ctrl-D, or Ctrl-C, the CLI prints the conversation id and ready-to-run commands:
@@ -215,7 +215,7 @@ Resume example:
 deepseekfathom start --resume 022a00cb-e1cf-49af-9e11-0cbc6b2e3ab8
 ```
 
-Current local default config lives at `~/.deepseek-tulagent/config.json`. Environment variables still override it.
+Current local default config lives at `~/.deepseekfathom/config.json`. Environment variables still override it.
 
 ## Slash Palette
 
@@ -315,10 +315,10 @@ Confirmation rules:
 
 DeepSeekFathom discovers skills from these directories, in order:
 
-- `<workspace>/.deepseek-tulagent/skills`
+- `<workspace>/.deepseekfathom/skills`
 - `<workspace>/.agents/skills`
 - `<workspace>/skills`
-- `~/.deepseek-tulagent/skills`
+- `~/.deepseekfathom/skills`
 - `~/.agents/skills`
 
 The first skill with a given name wins. Desktop **Settings → Capability diagnostics** shows both the winner and every shadowed candidate. Creating a skill never overwrites an existing `SKILL.md`.
@@ -350,19 +350,13 @@ Discovered skill summaries are injected into the agent prompt at startup/run tim
 
 | Mode | Recommended model | Max output | API thinking | Internal passes |
 | --- | --- | ---: | --- | ---: |
-| `auto` | auto-selected | 384K | auto | auto |
-| `off` | `deepseek-v4-flash` | 384K | disabled | 0 |
-| `instant` | `deepseek-v4-flash` | 384K | disabled | 0 |
 | `fast` | `deepseek-v4-flash` | 384K | low | 0 |
-| `standard` | `deepseek-v4-flash` | 384K | low | 0 |
 | `balanced` | `deepseek-v4-pro` | 384K | medium | 1 |
-| `careful` | `deepseek-v4-pro` | 384K | high | 1 |
 | `deep` | `deepseek-v4-pro` | 384K | high | 2 |
-| `deeper` | `deepseek-v4-pro` | 384K | xhigh | 2 |
-| `max` | `deepseek-v4-pro` | 384K | xhigh | 3 |
 | `ultra` | `deepseek-v4-pro` | 384K | xhigh | 4 |
+| `max` | `deepseek-v4-pro` | 384K | max | 6 |
 
-`fast` and higher modes send DeepSeek's native `thinking` switch. The effort values in the table apply to OpenAI; Anthropic and Gemini receive equivalent native budgets. `balanced` and deeper modes also perform client-side internal deliberation passes: the client makes extra model calls for private planning, then uses those notes as context for the final answer.
+All five modes send DeepSeek's native `thinking` switch and the listed `reasoning_effort`; `max` is sent upstream unchanged. Anthropic and Gemini receive equivalent native budgets. `balanced` and deeper modes also perform client-side internal deliberation passes: the client makes extra model calls for private planning, then uses those notes as context for the final answer. DeepSeek V4 context budgeting uses a 1,000,000-token window.
 
 Changing thinking mode does not force a model change. `/model`, `/think`, and `/mode` selections are saved as local defaults for the next session.
 
@@ -375,11 +369,11 @@ Environment variables:
 | `DEEPSEEK_API_KEY` | required for live calls | DeepSeek API key |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API base URL |
 | `DEEPSEEK_MODEL` | `deepseek-v4-flash` | Model name or alias |
-| `DSTUL_WORKSPACE` | current directory | Workspace root |
-| `DSTUL_MAX_TOOL_ROUNDS` | `256` | Max tool loop iterations |
-| `DSTUL_MAX_TOKENS` | `8192` | Max model output tokens |
-| `DSTUL_REQUEST_TIMEOUT` | `180` | DeepSeek request timeout seconds |
-| `DSTUL_SEARCH_ENGINES` | `baidu,bing,duckduckgo` | Comma-separated third-party search engines for `web_search`; result-page fetching is opt-in and respects robots.txt |
+| `DEEPSEEKFATHOM_WORKSPACE` | current directory | Workspace root |
+| `DEEPSEEKFATHOM_MAX_TOOL_ROUNDS` | `256` | Max tool loop iterations |
+| `DEEPSEEKFATHOM_MAX_TOKENS` | `8192` | Max model output tokens |
+| `DEEPSEEKFATHOM_REQUEST_TIMEOUT` | `180` | DeepSeek request timeout seconds |
+| `DEEPSEEKFATHOM_SEARCH_ENGINES` | `baidu,bing,duckduckgo` | Comma-separated third-party search engines for `web_search`; result-page fetching is opt-in and respects robots.txt |
 
 Model aliases:
 
@@ -410,7 +404,7 @@ Available tools:
 - `apply_patch`: apply a unified diff through `git apply`
 - `download_url`: download a URL into the workspace when network policy allows it
 - `clone_repo`: clone a Git/GitHub repository with mirror and archive fallbacks
-- `start_service`: launch a background service and store pid/log under `.deepseek-tulagent/services`
+- `start_service`: launch a background service and store pid/log under `.deepseekfathom/services`
 - `stop_service`: stop a recorded service
 - `service_status`: check a recorded service
 
@@ -418,7 +412,7 @@ If the model says it is about to inspect, fetch, run, or verify something and em
 
 ## Design Notes
 
-This project does not copy DeepSeek-TUI source. It implements the same broad class of terminal agent from scratch in Python:
+This project implements its terminal agent independently in Python:
 
 - provider layer is DeepSeek-specific but OpenAI-compatible;
 - tool layer is an explicit registry with workspace path checks;
@@ -428,6 +422,6 @@ This project does not copy DeepSeek-TUI source. It implements the same broad cla
 
 ## Security Notes
 
-- Do not commit `~/.deepseek-tulagent/config.json`; it may contain your API key.
+- Do not commit `~/.deepseekfathom/config.json`; it may contain your API key.
 - Local session logs can contain prompts, tool results, paths, and command output.
 - `root` and `yolo` modes execute gated tools without confirmation. Use them only in trusted workspaces.

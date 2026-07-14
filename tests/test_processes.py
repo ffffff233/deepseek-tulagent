@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from deepseek_tulagent import processes
+from deepseekfathom._core import processes
 
 
 class FakeStartupInfo:

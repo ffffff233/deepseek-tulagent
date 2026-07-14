@@ -17,8 +17,8 @@ import time
 import httpx
 import pytest
 
-import deepseek_tulagent.mcp as mcp_module
-from deepseek_tulagent.mcp import (
+import deepseekfathom._core.mcp as mcp_module
+from deepseekfathom._core.mcp import (
     MCPClient,
     MCPConnectionError,
     MCPHost,

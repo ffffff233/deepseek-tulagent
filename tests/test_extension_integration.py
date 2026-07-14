@@ -5,14 +5,18 @@ from pathlib import Path
 import json
 import threading
 
-from deepseek_tulagent.agent import TuLAgent, compact_context_messages, filter_internal_automation_messages, parse_tool_call
-from deepseek_tulagent.config import Settings
-from deepseek_tulagent.desktop.app import DesktopApi, mcp_result_to_tool_result
-from deepseek_tulagent.hooks import HookConfig, HookOutcome, HookRunner, POST_LLM_CALL, POST_TOOL_USE, PRE_TOOL_USE, SESSION_START
-from deepseek_tulagent.messages import Message
-from deepseek_tulagent.provider import NativeToolCall, openai_tool_definitions
-from deepseek_tulagent.session import Session
-from deepseek_tulagent.tool_contracts import ToolContract
+import pytest
+
+from deepseekfathom._core.agent import FathomAgent, compact_context_messages, filter_internal_automation_messages, parse_tool_call
+from deepseekfathom._core.config import Settings
+from deepseekfathom._core.desktop.app import DesktopApi, mcp_result_to_tool_result, serialize_messages
+from deepseekfathom._core.extensions import UserMCPConfigError, get_user_mcp_server
+from deepseekfathom._core.hooks import HookConfig, HookOutcome, HookRunner, POST_LLM_CALL, POST_TOOL_USE, PRE_TOOL_USE, SESSION_START
+from deepseekfathom._core.messages import Message
+from deepseekfathom._core.policy import ThinkingMode
+from deepseekfathom._core.provider import NativeToolCall, openai_tool_definitions
+from deepseekfathom._core.session import Session
+from deepseekfathom._core.tool_contracts import ToolContract
 
 
 def settings(workspace: Path) -> Settings:
@@ -59,7 +63,7 @@ def test_dynamic_contract_reaches_native_provider_and_executes(tmp_path: Path):
         origin="mcp:files",
     )
     client = Client()
-    result = TuLAgent(
+    result = FathomAgent(
         settings(tmp_path),
         mode="root",
         client=client,
@@ -86,7 +90,7 @@ def test_dynamic_mcp_name_works_in_text_fallback(tmp_path: Path):
                 return '{"tool":"mcp__clock__now","arguments":{}}'
             return "现在是测试时间。"
 
-    result = TuLAgent(
+    result = FathomAgent(
         settings(tmp_path),
         mode="root",
         client=Client(),
@@ -120,7 +124,7 @@ def test_provider_definitions_prefer_runtime_contract():
 
 
 def test_untrusted_extension_tool_is_hidden_in_plan_mode(tmp_path: Path):
-    agent = TuLAgent(
+    agent = FathomAgent(
         settings(tmp_path),
         mode="plan",
         client=type("Client", (), {"supports_native_tools": True, "runtime_tool_contracts": {}})(),
@@ -165,7 +169,7 @@ def test_untrusted_extension_text_call_cannot_bypass_plan_or_review_policy(tmp_p
         trusted_read_only=False,
     )
     for mode in ("plan", "review"):
-        result = TuLAgent(
+        result = FathomAgent(
             settings(tmp_path),
             mode=mode,
             client=Client(),
@@ -198,7 +202,7 @@ def test_untrusted_extension_native_call_cannot_bypass_execution_policy(tmp_path
             self.last_tool_calls = []
             return "Blocked: this MCP tool is disabled in the current mode."
 
-    result = TuLAgent(
+    result = FathomAgent(
         settings(tmp_path),
         mode="plan",
         client=Client(),
@@ -232,7 +236,7 @@ def test_session_start_hook_context_is_temporary_system_context(tmp_path: Path):
             return "完成。"
 
     session = Session(tmp_path)
-    TuLAgent(settings(tmp_path), mode="root", client=Client(), hook_runner=runner).run(
+    FathomAgent(settings(tmp_path), mode="root", client=Client(), hook_runner=runner).run(
         "开始",
         session=session,
         require_todo=False,
@@ -264,7 +268,7 @@ def test_post_llm_hook_stdout_cannot_replace_the_assistant_answer(tmp_path: Path
             return "真实模型回答。"
 
     session = Session(tmp_path, persist=False)
-    result = TuLAgent(
+    result = FathomAgent(
         settings(tmp_path),
         mode="root",
         client=Client(),
@@ -303,7 +307,7 @@ def test_pre_and_post_hooks_do_not_run_when_confirmation_is_denied(tmp_path: Pat
             self.last_tool_calls = []
             return "Blocked: confirmation was denied."
 
-    TuLAgent(
+    FathomAgent(
         settings(tmp_path),
         mode="agent",
         client=Client(),
@@ -331,8 +335,8 @@ def test_mcp_result_converts_text_and_bounded_image():
 
 
 def test_desktop_send_is_idempotent_by_client_request_id(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setenv("DSTUL_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_WORKSPACE", str(tmp_path / "workspace"))
     api = DesktopApi()
     calls: list[str] = []
 
@@ -352,9 +356,163 @@ def test_desktop_send_is_idempotent_by_client_request_id(monkeypatch, tmp_path: 
     api._shutdown_extensions()
 
 
+def test_desktop_send_forwards_presentation_metadata(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_WORKSPACE", str(tmp_path / "workspace"))
+    api = DesktopApi()
+    captured: dict[str, object] = {}
+
+    def start(prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured.update(kwargs)
+        return {"ok": True, "sessionId": "s1", "turnId": "t1"}
+
+    monkeypatch.setattr(api, "_start_turn", start)
+    result = api.send({
+        "prompt": "Use skill review: inspect this",
+        "displayPrompt": "/skill review inspect this",
+        "uiKind": "command",
+    })
+
+    assert result["ok"] is True
+    assert captured["prompt"] == "Use skill review: inspect this"
+    assert captured["display_prompt"] == "/skill review inspect this"
+    assert captured["ui_kind"] == "command"
+    api._shutdown_extensions()
+
+
+def test_local_slash_command_is_persisted_once_and_hidden_from_model(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_WORKSPACE", str(tmp_path / "workspace"))
+    api = DesktopApi()
+    payload = {
+        "command": "/mcp",
+        "uiKind": "command",
+        "modelVisible": False,
+        "clientRequestId": "slash-once",
+    }
+
+    first = api.record_slash_command(payload)
+    second = api.record_slash_command(payload)
+
+    assert first["ok"] is True
+    assert second == {**first, "duplicate": True}
+    assert api.session is not None
+    assert len(api.session.messages) == 1
+    message = api.session.messages[0]
+    assert message.content == "/mcp"
+    assert message.display_content == "/mcp"
+    assert message.ui_kind == "command"
+    assert message.model_visible is False
+    assert serialize_messages([message]) == [{
+        "role": "user",
+        "content": "/mcp",
+        "srcIndex": 0,
+        "modelVisible": False,
+        "uiKind": "command",
+        "displayContent": "/mcp",
+    }]
+    api._shutdown_extensions()
+
+
+def test_desktop_exposes_max_after_xhigh_and_max_is_stronger(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_WORKSPACE", str(tmp_path / "workspace"))
+    api = DesktopApi()
+    boot = api.boot()
+
+    assert boot["thinkingModes"][-2:] == ["ultra", "max"]
+    assert boot["thinkingLabels"]["ultra"] == "XHigh"
+    assert boot["thinkingLabels"]["max"] == "Max"
+    assert ThinkingMode.resolve("max").reasoning_effort == "max"
+    assert ThinkingMode.resolve("max").deliberation_passes > ThinkingMode.resolve("ultra").deliberation_passes
+    api._shutdown_extensions()
+
+
+def test_mcp_management_contracts_are_real_redacted_and_deferred(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_WORKSPACE", str(tmp_path / "workspace"))
+    api = DesktopApi()
+    contracts = {contract.name: contract for contract in api._mcp_management_contracts()}
+
+    assert set(contracts) == {"list_mcp_servers", "configure_mcp_server"}
+    assert contracts["list_mcp_servers"].read_only is True
+    assert contracts["configure_mcp_server"].always_confirm is True
+    secret = "Bearer do-not-display"
+    saved = contracts["configure_mcp_server"].handler({
+        "name": "docs",
+        "transport": "http",
+        "url": "https://example.test/mcp",
+        "headers": {"Authorization": secret},
+    })
+
+    assert saved is not None and saved.ok is True
+    assert secret not in saved.output
+    assert "Authorization" in saved.output
+    assert api._pending_mcp_refresh is True
+    assert get_user_mcp_server("docs", api._extensions.home)["headers"]["Authorization"] == secret
+    api._shutdown_extensions()
+
+
+def test_mcp_configure_does_not_treat_a_corrupt_config_as_missing(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_WORKSPACE", str(tmp_path / "workspace"))
+    api = DesktopApi()
+    config_path = api._extensions.home / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("{not-json", encoding="utf-8")
+
+    with pytest.raises(UserMCPConfigError, match="不是有效 JSON"):
+        api._configure_mcp_server_tool({
+            "name": "docs",
+            "transport": "http",
+            "url": "https://example.test/mcp",
+        })
+    api._shutdown_extensions()
+
+
+def test_always_confirm_contract_is_not_bypassed_in_root_mode(tmp_path: Path):
+    calls: list[dict] = []
+
+    class Client:
+        supports_native_tools = True
+
+        def __init__(self):
+            self.last_tool_calls = []
+            self.runtime_tool_contracts = {}
+            self.round = 0
+
+        def chat(self, _messages, *, tool_names=None):
+            self.round += 1
+            if self.round == 1:
+                self.last_tool_calls = [NativeToolCall("configure_mcp_server", {"name": "blocked"})]
+                return ""
+            self.last_tool_calls = []
+            return "Configuration was not approved."
+
+    contract = ToolContract(
+        name="configure_mcp_server",
+        description="Persist MCP configuration",
+        schema={"type": "object", "properties": {"name": {"type": "string"}}},
+        handler=lambda arguments: calls.append(arguments) or "saved",
+        origin="native:mcp-manager",
+        always_confirm=True,
+    )
+    result = FathomAgent(
+        settings(tmp_path),
+        mode="root",
+        client=Client(),
+        approve=lambda _name, _arguments: False,
+        extra_tool_contracts=[contract],
+    ).run("配置 MCP", require_todo=False)
+
+    assert calls == []
+    assert "not approved" in result.answer
+
+
 def test_desktop_turn_start_claim_is_atomic(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setenv("DSTUL_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_WORKSPACE", str(tmp_path / "workspace"))
     api = DesktopApi()
     release = threading.Event()
     started = threading.Event()
@@ -388,8 +546,8 @@ def test_desktop_turn_start_claim_is_atomic(monkeypatch, tmp_path: Path):
 
 
 def test_extension_actions_are_rejected_before_mutation_while_turn_runs(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setenv("DSTUL_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_WORKSPACE", str(tmp_path / "workspace"))
     api = DesktopApi()
     called: list[str] = []
     monkeypatch.setattr(api._mcp_host, "connect_all", lambda: called.append("connect"))
@@ -407,8 +565,8 @@ def test_extension_actions_are_rejected_before_mutation_while_turn_runs(monkeypa
 
 
 def test_turn_cannot_start_while_extension_mutation_is_in_progress(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setenv("DSTUL_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("DEEPSEEKFATHOM_WORKSPACE", str(tmp_path / "workspace"))
     api = DesktopApi()
     entered = threading.Event()
     release = threading.Event()
@@ -434,8 +592,8 @@ def test_desktop_can_trust_project_mcp_and_toggle_one_hook_by_id(monkeypatch, tm
     home = tmp_path / "config"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(home))
-    monkeypatch.setenv("DSTUL_WORKSPACE", str(workspace))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(home))
+    monkeypatch.setenv("DEEPSEEKFATHOM_WORKSPACE", str(workspace))
     (workspace / ".mcp.json").write_text(
         json.dumps({"mcpServers": {"local": {"command": "local-server"}}}),
         encoding="utf-8",
@@ -474,8 +632,8 @@ def test_desktop_user_mcp_crud_is_scoped_refreshes_and_keeps_headers_private(mon
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     home.mkdir()
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(home))
-    monkeypatch.setenv("DSTUL_WORKSPACE", str(workspace))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(home))
+    monkeypatch.setenv("DEEPSEEKFATHOM_WORKSPACE", str(workspace))
     (home / "config.json").write_text(
         json.dumps({"api_key": "keep-key", "mcpServers": {"keep": {"command": "keep-server"}}}),
         encoding="utf-8",
@@ -545,8 +703,8 @@ def test_desktop_user_mcp_save_reports_success_when_hot_refresh_fails(monkeypatc
     home = tmp_path / "config"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(home))
-    monkeypatch.setenv("DSTUL_WORKSPACE", str(workspace))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(home))
+    monkeypatch.setenv("DEEPSEEKFATHOM_WORKSPACE", str(workspace))
     api = DesktopApi()
     monkeypatch.setattr(api, "_refresh_extensions_when_idle", lambda: {"ok": False, "error": "refresh failed"})
     monkeypatch.setattr(api, "extension_status", lambda: {"mcp": {"entries": []}})
@@ -570,10 +728,10 @@ def test_desktop_user_mcp_save_reports_success_when_hot_refresh_fails(monkeypatc
 def test_project_hook_toggle_never_implicitly_trusts_other_hooks(monkeypatch, tmp_path: Path):
     home = tmp_path / "config"
     workspace = tmp_path / "workspace"
-    project_settings = workspace / ".deepseek-tulagent" / "settings.json"
+    project_settings = workspace / ".deepseekfathom" / "settings.json"
     project_settings.parent.mkdir(parents=True)
-    monkeypatch.setenv("DSTUL_CONFIG_HOME", str(home))
-    monkeypatch.setenv("DSTUL_WORKSPACE", str(workspace))
+    monkeypatch.setenv("DEEPSEEKFATHOM_CONFIG_HOME", str(home))
+    monkeypatch.setenv("DEEPSEEKFATHOM_WORKSPACE", str(workspace))
     project_settings.write_text(
         json.dumps({"hooks": {"Stop": [
             {"command": "first", "match": "*"},
@@ -637,7 +795,7 @@ def test_force_session_start_hook_runs_for_resumed_conversation(tmp_path: Path):
         messages=[Message("system", "old"), Message("user", "旧问题"), Message("assistant", "旧回答")],
         persist=False,
     )
-    TuLAgent(
+    FathomAgent(
         settings(tmp_path),
         mode="root",
         client=Client(),

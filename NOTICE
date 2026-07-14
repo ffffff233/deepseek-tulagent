@@ -1,4 +1,4 @@
-DeepSeek TuLAgent desktop UI attribution
+DeepSeekFathom desktop UI attribution
 
 The desktop workspace UI in this project is inspired by Reasonix Desktop:
 https://github.com/esengine/DeepSeek-Reasonix
@@ -58,4 +58,10 @@ https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation
 
 That translation is distributed under the MIT License; its license text is
 included at scripts/Languages/LICENSE.
+
+The Windows distribution also includes a generated `licenses` directory with
+the complete license files and component versions for its bundled Python
+runtime and dependencies. The fallback BSD text for proxy_tools is preserved
+from https://github.com/jtushman/proxy_tools/blob/master/LICENSE.txt because
+the published wheel does not include that license file.
 

@@ -10,8 +10,8 @@ from typing import Any
 
 import pytest
 
-from deepseek_tulagent import hooks
-from deepseek_tulagent.hooks import (
+from deepseekfathom._core import hooks
+from deepseekfathom._core.hooks import (
     HookConfig,
     HookOutcome,
     HookRunner,
@@ -44,7 +44,7 @@ def test_project_hooks_are_discovered_but_inactive_until_trusted(tmp_path: Path)
     home = tmp_path / "home"
     project = tmp_path / "project"
     write_settings(home / "settings.json", {"hooks": {"Stop": [{"command": "echo global"}]}})
-    write_settings(project / ".deepseek-tulagent" / "settings.json", {
+    write_settings(project / ".deepseekfathom" / "settings.json", {
         "hooks": {"PreToolUse": [{"match": "read_.*", "command": "echo project"}]}
     })
 

@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from deepseek_tulagent.extensions import (
+from deepseekfathom._core.extensions import (
     ExtensionRuntime,
     UserMCPConfigError,
     delete_user_mcp_server,
@@ -14,8 +14,8 @@ from deepseek_tulagent.extensions import (
     inspect_extensions,
     save_user_mcp_server,
 )
-from deepseek_tulagent.hooks import trust_project
-from deepseek_tulagent.plugins import InstalledPlugin, upsert_plugin_state
+from deepseekfathom._core.hooks import trust_project
+from deepseekfathom._core.plugins import InstalledPlugin, upsert_plugin_state
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -172,7 +172,7 @@ def test_invalid_plugin_state_entry_is_a_diagnostic_not_a_crash(tmp_path: Path):
 def test_project_plugin_is_visible_but_disabled(tmp_path: Path):
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
-    root = workspace / ".deepseek-tulagent" / "plugins" / "local-pack"
+    root = workspace / ".deepseekfathom" / "plugins" / "local-pack"
     write_json(root / "deepseekfathom-plugin.json", {
         "name": "local-pack",
         "hooks": {"Stop": [{"command": "echo must-not-run"}]},

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-ASSET_ROOT = Path(__file__).parents[1] / "src" / "deepseek_tulagent" / "desktop" / "assets"
+ASSET_ROOT = Path(__file__).parents[1] / "src" / "deepseekfathom" / "_core" / "desktop" / "assets"
 
 
 def _section(text: str, start: str, end: str) -> str:
@@ -177,3 +177,124 @@ def test_mcp_edit_preserves_hidden_advanced_fields_without_cross_transport_leaks
     assert '{ ...preserved, type: "stdio", command, args, enabled }' in collect
     assert '{ ...preserved, type: "http", url: rawUrl, headers, enabled }' in collect
     assert "state.mcpEditorOriginalConfig = null" in reset
+
+
+def test_slash_commands_use_a_dedicated_inline_composer_and_replay_ui_kind() -> None:
+    html = (ASSET_ROOT / "index.html").read_text(encoding="utf-8")
+    js = (ASSET_ROOT / "app.js").read_text(encoding="utf-8")
+    css = (ASSET_ROOT / "style.css").read_text(encoding="utf-8")
+    parser = _section(js, "function interpretPrompt", "function commandRequestId")
+    keyboard = _section(js, '$("prompt").addEventListener("keydown"', '$("cancel").onclick')
+
+    assert 'id="commandChip" class="commandChip" hidden' in html
+    assert 'id="promptShell" class="promptShell"' in html
+    prompt_shell = _section(html, '<div id="promptShell" class="promptShell">', '<div class="composeRow">')
+    assert 'id="commandChip"' in prompt_shell
+    assert 'id="prompt"' in prompt_shell
+    assert 'id="commandChipText"' in html
+    assert 'id="clearCommandChip"' in html
+    assert "state.activeCommand ? commandTextFromComposer()" in js
+    assert "activateSlashCommand(it);" in js
+    assert 'if (name === "mcp")' in parser
+    assert 'if (name === "review")' in parser
+    assert "const sendExact =" in keyboard
+    assert 'if (sendExact) $("send").click();' in keyboard
+    assert 'uiKind: cmd.uiKind' in js
+    assert 'entry.uiKind === "command"' in js
+    assert 'uiKind: entry.uiKind' in js
+    assert 'row.className = `message ${role}${isCommand ? " command" : ""}`' in js
+    assert ".commandChip {" in css
+    command_prefix = _section(css, ".commandChip {", "}")
+    assert "background: transparent" in command_prefix
+    assert "border: none" in command_prefix
+    assert '.promptShell.commandMode' in css
+    assert ".message.command .bubble.user {" in css
+
+
+def test_interface_language_switch_is_persisted_and_covers_dynamic_ui() -> None:
+    html = (ASSET_ROOT / "index.html").read_text(encoding="utf-8")
+    js = (ASSET_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert 'data-language-value="zh-CN"' in html
+    assert 'data-language-value="en"' in html
+    assert 'localStorage.getItem("deepseekfathom.language")' in html
+    assert 'localStorage.setItem("deepseekfathom.language", state.locale)' in js
+    assert 'function setInterfaceLanguage(locale, persist = true)' in js
+    assert 'function translateUiText(value)' in js
+    assert 'new MutationObserver' in js
+    assert 'observer.observe(document.body' in js
+    assert '"设置": "Settings"' in js
+    assert '"完全访问": "Full access"' in js
+    assert '"审查当前工作区改动": "Review current workspace changes"' in js
+    assert '".bubble, .sessionMain, pre, code' in js
+
+
+def test_mcp_slash_command_is_connection_only_and_reports_outcome() -> None:
+    js = (ASSET_ROOT / "app.js").read_text(encoding="utf-8")
+    commands = _section(js, "const SLASH_COMMANDS", "function slashCandidates")
+    connect = _section(js, "async function connectAllMcpFromCommand", "async function runLocalSlashCommand")
+
+    assert '{ key: "/mcp", command: "/mcp"' in commands
+    assert 'const extensionAction = await apiMethod("extension_action"' in connect
+    assert 'extensionAction({ kind: "mcp", action: "connect_all" })' in connect
+    assert "settingsBtn" not in connect
+    assert "trust_project" not in connect
+    assert "const connected =" in connect
+    assert "const failed =" in connect
+    assert "record_slash_command" in js
+    assert 'modelVisible: false' in js
+
+
+def test_review_command_has_toolbar_action_and_review_bridge() -> None:
+    html = (ASSET_ROOT / "index.html").read_text(encoding="utf-8")
+    js = (ASSET_ROOT / "app.js").read_text(encoding="utf-8")
+    commands = _section(js, "const SLASH_COMMANDS", "function slashCandidates")
+    review = _section(js, "async function runReviewCommand", "function toast")
+
+    assert 'id="reviewChanges"' in html
+    assert '{ key: "/review", command: "/review"' in commands
+    assert 'apiMethod("review_changes")' in review
+    assert 'uiKind: "command"' in review
+    assert 'clientRequestId: outboundId' in review
+    assert '$("prompt").value = "/review";' in js
+    assert 'review.disabled = state.running || state.resuming || state.branching' in js
+
+
+def test_enabled_native_plugin_commands_are_real_slash_commands() -> None:
+    js = (ASSET_ROOT / "app.js").read_text(encoding="utf-8")
+    candidates = _section(js, "function nativeSlashCommands", "function slashCandidates")
+    parser = _section(js, "function interpretPrompt", "function commandRequestId")
+
+    assert "state.boot.nativeCommands" in candidates
+    assert '!builtins.has(String(item.key).toLowerCase())' in candidates
+    assert "SLASH_COMMANDS.concat(nativeSlashCommands(), skills)" in js
+    assert "state.boot.nativeCommands" in parser
+    assert 'native.handler === "review"' in parser
+    assert "nativeCommand: String(native.name || name)" in parser
+    assert "send: rest" in parser
+    assert "String(native.prompt" not in parser
+    assert "nativeCommand: cmd.nativeCommand || undefined" in js
+    assert "state.boot.nativeCommands = report.nativeCommands" in js
+
+
+def test_plugin_skills_refresh_the_desktop_slash_catalog() -> None:
+    app = (ASSET_ROOT.parent / "app.py").read_text(encoding="utf-8")
+    js = (ASSET_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert "SkillStore(self.settings.workspace, extra_roots=roots).list()" in app
+    assert 'report["availableSkills"] = self._skill_catalog()' in app
+    assert "state.skills = report.availableSkills" in js
+    assert "state.boot.skills = report.availableSkills" in js
+
+
+def test_command_ui_has_mobile_overflow_guards() -> None:
+    css = (ASSET_ROOT / "style.css").read_text(encoding="utf-8")
+    command_bubble = _section(css, ".message.command .bubble.user {", "}")
+    mobile = _section(css, "@media (max-width: 600px) {", "/* ---------- thinking shimmer")
+
+    assert "max-width: 100%" in command_bubble
+    assert "min-width: 0" in command_bubble
+    assert "overflow-wrap: anywhere" in command_bubble
+    assert ".message.command .bubble.user { width: 100%; max-width: 100%; }" in mobile
+    assert ".composer { min-width: 0" in mobile
+    assert ".toolbarActions .workspace { display: none; }" in mobile
